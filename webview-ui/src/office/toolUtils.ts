@@ -47,3 +47,12 @@ export function isReadingToolName(name: string | null | undefined): boolean {
 export function isSubagentToolName(name: string | null | undefined): boolean {
   return typeof name === 'string' && providerCaps.subagentToolNames.has(name);
 }
+
+/** "Subtask: [tester] Run the suite" → type "tester", label "Run the suite".
+ *  "Subtask: tester" (hook path, no description) → type and label "tester". */
+export function parseSubtaskStatus(status: string): { agentType?: string; label: string } {
+  const body = status.startsWith('Subtask:') ? status.slice('Subtask:'.length).trim() : '';
+  const typed = /^\[([\w.-]+)\]\s*(.*)$/.exec(body);
+  if (typed) return { agentType: typed[1], label: typed[2] || typed[1] };
+  return { agentType: body || undefined, label: body };
+}

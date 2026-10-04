@@ -49,9 +49,19 @@ export function formatToolStatus(toolName: string, input?: unknown): string {
     case 'Task':
     case 'Agent': {
       const desc = typeof inp.description === 'string' ? inp.description : '';
+      // A named sub-agent type is tagged "[type]" so the webview can hand the job to
+      // a resident of that type (layout.residents) instead of a transient character.
+      const type =
+        typeof inp.subagent_type === 'string' &&
+        /^[\w.-]+$/.test(inp.subagent_type) &&
+        inp.subagent_type !== 'general-purpose'
+          ? `[${inp.subagent_type}] `
+          : '';
       return desc
-        ? `Subtask: ${desc.length > TASK_DESCRIPTION_DISPLAY_MAX_LENGTH ? desc.slice(0, TASK_DESCRIPTION_DISPLAY_MAX_LENGTH) + '\u2026' : desc}`
-        : 'Running subtask';
+        ? `Subtask: ${type}${desc.length > TASK_DESCRIPTION_DISPLAY_MAX_LENGTH ? desc.slice(0, TASK_DESCRIPTION_DISPLAY_MAX_LENGTH) + '\u2026' : desc}`
+        : type
+          ? `Subtask: ${type.trim()}`
+          : 'Running subtask';
     }
     case 'AskUserQuestion':
       return 'Waiting for your answer';

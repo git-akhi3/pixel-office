@@ -163,6 +163,19 @@ export interface OfficeLayout {
   areas?: AreaDefinition[];
   /** Per-tile Area label, parallel to tiles array. null = no area assignment. */
   areaTiles?: Array<string | null>;
+  /** Resident agents: always present in the office, idle until a sub-agent of the
+   *  same type (Agent tool `subagent_type`) runs, which then animates the resident
+   *  instead of spawning a transient Subtask character. */
+  residents?: ResidentDefinition[];
+}
+
+export interface ResidentDefinition {
+  /** Matches the sub-agent type, e.g. "tester" for .claude/agents/tester.md */
+  name: string;
+  /** Area label the resident sits and wanders in. */
+  area?: string;
+  palette?: number;
+  hueShift?: number;
 }
 
 export interface Character {
@@ -223,6 +236,9 @@ export interface Character {
   matrixEffectSeeds: number[];
   /** Workspace folder name (only set for multi-root workspaces) */
   folderName?: string;
+  /** Resident agent (layout.residents): never despawns, idles inside its area. */
+  isResident?: boolean;
+  residentArea?: string;
   /** Headless agent: adopted from outside the office, so there is no terminal to
    *  focus. Rendered translucent. Teammates and sub-agents are never headless —
    *  clicking them reaches their lead's / parent's terminal. */

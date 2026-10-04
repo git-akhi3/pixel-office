@@ -38,6 +38,9 @@ import type {
   TileType as TileTypeVal,
 } from '../types.js';
 import { CharacterState, Direction, PetState, TILE_SIZE } from '../types.js';
+
+/** First resident character id; residents count down from here (sub-agents use -1, -2, ...). */
+const RESIDENT_ID_BASE = -1_000_000;
 import { createCharacter, updateCharacter } from './characters.js';
 import { advanceMatrixEffect, startMatrixEffect } from './matrixEffectState.js';
 import { createPet, updatePet } from './petEntity.js';
@@ -71,6 +74,12 @@ export class OfficeState {
   /** Reverse lookup: sub-agent character ID → parent info */
   subagentMeta: Map<number, { parentAgentId: number; parentToolId: string }> = new Map();
   private nextSubagentId = -1;
+  /** Resident agents (layout.residents): name → character id. Ids count down from
+   *  RESIDENT_ID_BASE so they never collide with sub-agent ids (-1, -2, ...). */
+  residentIds: Map<string, number> = new Map();
+  private nextResidentId = RESIDENT_ID_BASE;
+  /** Walkable tiles inside each resident's area, so idle residents stay in their room. */
+  private residentWalkable: Map<number, Array<{ col: number; row: number }>> = new Map();
 
   /**
    * folderName → list of Area labels that workspace folder belongs to.
@@ -114,6 +123,7 @@ export class OfficeState {
     this.walkableTiles = getWalkableTiles(this.tileMap, this.blockedTiles);
     // Pets are built last because they need walkableTiles populated for spawn.
     this.rebuildPetsFromLayout(this.layout);
+    this.syncResidents();
   }
 
   /** Rebuild all derived state from a new layout. Reassigns existing characters.
@@ -179,7 +189,9 @@ export class OfficeState {
     // Second pass: assign remaining characters to free seats
     for (const ch of this.characters.values()) {
       if (ch.seatId) continue;
-      const seatId = this.findFreeSeat(ch.folderName);
+      const seatId = ch.isResident
+        ? this.findResidentSeat(ch.residentArea)
+        : this.findFreeSeat(ch.folderName);
       if (seatId) {
         this.seats.get(seatId)!.assigned = true;
         ch.seatId = seatId;
@@ -232,6 +244,102 @@ export class OfficeState {
 
     // Reconcile pets against the layout roster (handles editor add/remove)
     this.rebuildPetsFromLayout(layout);
+    this.syncResidents();
+  }
+
+  // ── Residents ─────────────────────────────────────────────────
+  // Always-present characters declared in layout.residents. They sit in their
+  // area, wander only inside it while idle, and are animated by sub-agents of the
+  // same type (see addSubagent) instead of a transient Subtask character.
+
+  /** Free seat inside `area` (preferring desks), else any free seat. */
+  private findResidentSeat(area?: string): string | null {
+    const electronics = this.buildElectronicsTileSet();
+    const free = [...this.seats.entries()].filter(([, s]) => !s.assigned).map(([uid]) => uid);
+    if (area) {
+      const inArea = free.filter((uid) => this.seatZone(uid) === area);
+      const pick = this.pickFromSeats(inArea, electronics);
+      if (pick) return pick;
+    }
+    return this.pickFromSeats(free, electronics);
+  }
+
+  /** Create, update or remove resident characters to match layout.residents. */
+  private syncResidents(): void {
+    const defs = (this.layout.residents ?? []).filter(
+      (r) => r && typeof r.name === 'string' && r.name,
+    );
+    const wanted = new Set(defs.map((r) => r.name));
+    for (const [name, id] of this.residentIds) {
+      if (wanted.has(name)) continue;
+      this.residentIds.delete(name);
+      this.residentWalkable.delete(id);
+      this.removeAgent(id);
+    }
+    const paletteCount = getLoadedCharacterCount();
+    defs.forEach((def, i) => {
+      let id = this.residentIds.get(def.name);
+      let ch = id !== undefined ? this.characters.get(id) : undefined;
+      if (!ch) {
+        id = this.nextResidentId--;
+        const seatId = this.findResidentSeat(def.area);
+        const seat = seatId ? this.seats.get(seatId)! : null;
+        const palette = def.palette ?? (paletteCount > 0 ? i % paletteCount : 0);
+        const hueShift =
+          def.hueShift ??
+          (paletteCount > 0 && i >= paletteCount ? 45 * Math.floor(i / paletteCount) : 0);
+        ch = createCharacter(id, palette, seatId, seat, hueShift);
+        if (seat) {
+          seat.assigned = true;
+        } else {
+          // No free seat: stand somewhere inside the resident's own area
+          const room = this.areaWalkableTiles(def.area);
+          const spot = room[Math.floor(Math.random() * room.length)];
+          if (spot) {
+            ch.tileCol = spot.col;
+            ch.tileRow = spot.row;
+            ch.x = spot.col * TILE_SIZE + TILE_SIZE / 2;
+            ch.y = spot.row * TILE_SIZE + TILE_SIZE / 2;
+          }
+        }
+        ch.isActive = false;
+        ch.seatTimer = -1; // start seated, no rest timer
+        startMatrixEffect(ch, 'spawn');
+        this.characters.set(id, ch);
+        this.residentIds.set(def.name, id);
+      }
+      ch.isResident = true;
+      ch.agentName = def.name;
+      ch.residentArea = def.area;
+      this.residentWalkable.set(id!, this.areaWalkableTiles(def.area));
+    });
+  }
+
+  private areaWalkableTiles(area?: string): Array<{ col: number; row: number }> {
+    const tiles = this.layout.areaTiles;
+    if (!area || !tiles) return this.walkableTiles;
+    const inArea = this.walkableTiles.filter(
+      (t) => tiles[t.row * this.layout.cols + t.col] === area,
+    );
+    return inArea.length > 0 ? inArea : this.walkableTiles;
+  }
+
+  /** Resident whose name matches a sub-agent type, if it is free to take the job. */
+  residentFor(agentType: string | undefined): number | null {
+    if (!agentType) return null;
+    const id = this.residentIds.get(agentType);
+    if (id === undefined) return null;
+    for (const busy of this.subagentMeta.keys()) if (busy === id) return null;
+    return this.characters.has(id) ? id : null;
+  }
+
+  /** A finished job sends the resident back to idling at its desk. */
+  private releaseResident(id: number): void {
+    const ch = this.characters.get(id);
+    if (!ch) return;
+    ch.bubbleType = null;
+    ch.currentTool = null;
+    this.setAgentActive(id, false);
   }
 
   /** Move a character to a random walkable tile */
@@ -687,9 +795,18 @@ export class OfficeState {
   }
 
   /** Create a sub-agent character with the parent's palette. Returns the sub-agent ID. */
-  addSubagent(parentAgentId: number, parentToolId: string): number {
+  addSubagent(parentAgentId: number, parentToolId: string, agentType?: string): number {
     const key = `${parentAgentId}:${parentToolId}`;
     if (this.subagentIdMap.has(key)) return this.subagentIdMap.get(key)!;
+
+    // A resident of this type takes the job: it lights up instead of a new character.
+    const residentId = this.residentFor(agentType);
+    if (residentId !== null) {
+      this.subagentIdMap.set(key, residentId);
+      this.subagentMeta.set(residentId, { parentAgentId, parentToolId });
+      this.setAgentActive(residentId, true);
+      return residentId;
+    }
 
     const id = this.nextSubagentId--;
     const parentCh = this.characters.get(parentAgentId);
@@ -728,6 +845,12 @@ export class OfficeState {
     if (id === undefined) return;
 
     const ch = this.characters.get(id);
+    if (ch?.isResident) {
+      this.subagentIdMap.delete(key);
+      this.subagentMeta.delete(id);
+      this.releaseResident(id);
+      return;
+    }
     if (ch) {
       if (ch.matrixEffect === 'despawn') {
         // Already despawning — just clean up maps
@@ -757,6 +880,12 @@ export class OfficeState {
       const meta = this.subagentMeta.get(id);
       if (meta && meta.parentAgentId === parentAgentId) {
         const ch = this.characters.get(id);
+        if (ch?.isResident) {
+          this.subagentMeta.delete(id);
+          toRemove.push(key);
+          this.releaseResident(id);
+          continue;
+        }
         if (ch) {
           if (ch.matrixEffect === 'despawn') {
             // Already despawning — just clean up maps
@@ -1111,7 +1240,14 @@ export class OfficeState {
 
       // Temporarily unblock own seat so character can pathfind to it
       this.withOwnSeatUnblocked(ch, () =>
-        updateCharacter(ch, dt, this.walkableTiles, this.seats, this.tileMap, this.blockedTiles),
+        updateCharacter(
+          ch,
+          dt,
+          (ch.isResident && this.residentWalkable.get(ch.id)) || this.walkableTiles,
+          this.seats,
+          this.tileMap,
+          this.blockedTiles,
+        ),
       );
 
       // Tick bubble timer for waiting bubbles

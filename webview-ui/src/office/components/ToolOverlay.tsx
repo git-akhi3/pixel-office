@@ -119,6 +119,7 @@ export function ToolOverlay({
 
   // All character IDs
   const allIds = [...agents, ...subagentCharacters.map((s) => s.id)];
+  for (const rid of officeState.residentIds.values()) if (!allIds.includes(rid)) allIds.push(rid);
 
   return (
     <>
@@ -128,7 +129,9 @@ export function ToolOverlay({
 
         const isSelected = selectedId === id;
         const isHovered = hoveredId === id;
-        const isSub = ch.isSubagent;
+        // A resident counts as a sub-agent while it is doing a sub-agent's job.
+        const isSub =
+          ch.isSubagent || (!!ch.isResident && subagentCharacters.some((s) => s.id === id));
 
         // Only show for hovered or selected agents (unless always-show is on)
         if (!alwaysShowOverlay && !isSelected && !isHovered) return null;
@@ -177,6 +180,8 @@ export function ToolOverlay({
               isSelected && rows ? [...rows].reverse().find((t) => !t.done) : undefined;
             activityText = activeRow?.status ?? (sub?.label || 'Subtask');
           }
+        } else if (ch.isResident) {
+          activityText = 'Idle';
         } else {
           activityText = getActivityText(
             id,

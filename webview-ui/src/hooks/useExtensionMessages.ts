@@ -15,6 +15,7 @@ import { setCharacterTemplates } from '../office/sprites/spriteData.js';
 import {
   extractToolName,
   isSubagentToolName,
+  parseSubtaskStatus,
   setProviderCapabilities,
 } from '../office/toolUtils.js';
 import type { OfficeLayout, ToolActivity } from '../office/types.js';
@@ -400,8 +401,8 @@ export function useExtensionMessages(
           !isTeammateSpawn &&
           (!runInBackground || !parentHasTeam)
         ) {
-          const label = status.startsWith('Subtask:') ? status.slice('Subtask:'.length).trim() : '';
-          const subId = os.addSubagent(id, toolId);
+          const { agentType, label } = parseSubtaskStatus(status);
+          const subId = os.addSubagent(id, toolId, agentType);
           setSubagentCharacters((prev) => {
             if (prev.some((s) => s.id === subId)) return prev;
             return [...prev, { id: subId, parentAgentId: id, parentToolId: toolId, label }];
