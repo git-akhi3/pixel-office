@@ -82,9 +82,17 @@ export function matchesAnyGlob(relPath: string, globs: string[]): boolean {
   return globs.some((g) => globToRegExp(g).test(relPath));
 }
 
+/**
+ * Secret check relative to the worktree when the path is inside it: the worktree itself
+ * lives under ~/.office, which must not make every file look secret.
+ */
+function isSecretFor(ctx: GuardContext, real: string): boolean {
+  return isSecretPath(isInside(ctx.worktree, real) ? `/${relative(ctx.worktree, real)}` : real);
+}
+
 function checkRead(ctx: GuardContext, p: string): GuardDecision {
   const real = realPath(isAbsolute(p) ? p : join(ctx.worktree, p));
-  if (isSecretPath(real)) return deny(`secrets are off-limits: ${p}`);
+  if (isSecretFor(ctx, real)) return deny(`secrets are off-limits: ${p}`);
   if (!isInside(ctx.worktree, real) && !isInside(realPath(tmpdir()), real)) {
     return deny(`reads are limited to the task's worktree: ${p}`);
   }
@@ -93,7 +101,7 @@ function checkRead(ctx: GuardContext, p: string): GuardDecision {
 
 function checkWrite(ctx: GuardContext, p: string): GuardDecision {
   const real = realPath(isAbsolute(p) ? p : join(ctx.worktree, p));
-  if (isSecretPath(real)) return deny(`secrets are off-limits: ${p}`);
+  if (isSecretFor(ctx, real)) return deny(`secrets are off-limits: ${p}`);
   if (!isInside(ctx.worktree, real)) return deny(`writes outside the worktree are blocked: ${p}`);
   const rel = relative(ctx.worktree, real).split(sep).join('/');
   if (rel === '.git' || rel.startsWith('.git/')) return deny('the .git directory is off-limits');
@@ -117,7 +125,9 @@ const DENIED_COMMANDS: Array<[RegExp, string]> = [
   [/\b(printenv|security|launchctl|crontab|osascript)\b|(^|[;&|]\s*)(env|set|export\s+-p|declare\s+-x)\s*($|[;&|])/, 'no reading the environment or system credentials'],
   [/\$\{?\w*(TOKEN|SECRET|KEY|OAUTH|PASSWORD|CREDENTIAL)\w*/i, 'no reading tokens or secrets from the environment'],
   [/(^|[\s'"=/])\.env(\.(?!example|sample|template|dist)[\w-]+)?(?=$|[\s'";|&)/])/, 'secrets are off-limits: .env'],
-  [/(^|[\s'"=/])(\.ssh|\.aws|\.gnupg|\.office|\.netrc|\.npmrc|\.git-credentials|id_rsa|id_ed25519)\b|\.pem\b|\.config\/gh/, 'secrets are off-limits'],
+  [/(^|[\s'"=/])(\.ssh|\.aws|\.gnupg|\.netrc|\.npmrc|\.git-credentials|id_rsa|id_ed25519)\b|\.pem\b|\.config\/gh/, 'secrets are off-limits'],
+  // ~/.office holds the token and other tasks; only the worktrees under it are fair game.
+  [/\.office(?!\/worktrees\/)(\/|\b)/, 'secrets are off-limits: ~/.office'],
 ];
 
 /** Splits a command line into simple commands on && || ; | and newlines. Quote-naive on purpose: over-splitting only causes an "ask". */

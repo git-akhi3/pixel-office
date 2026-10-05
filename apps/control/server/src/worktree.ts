@@ -39,6 +39,11 @@ export async function createWorktree(
   const hasRemote = (await run('git', ['rev-parse', '--verify', '--quiet', remoteRef], { cwd: repo.path })).code === 0;
   await git(repo.path, ['worktree', 'add', '-b', branch, path, hasRemote ? remoteRef : repo.defaultBranch]);
   const baseSha = (await git(path, ['rev-parse', 'HEAD'])).trim();
+  if (repo.setupCmd) {
+    // Configured by me, run by the office: not subject to the agent guard.
+    const setup = await run('/bin/sh', ['-c', repo.setupCmd], { cwd: path, env: { ...process.env, REPO_PATH: repo.path }, timeoutMs: 15 * 60_000 });
+    if (setup.code !== 0) throw new Error(`Setup command failed (${setup.code}): ${(setup.stderr || setup.stdout).trim().slice(-500)}`);
+  }
   return { path: realpathSync(path), branch, baseSha };
 }
 

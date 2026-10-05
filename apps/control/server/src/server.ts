@@ -1,0 +1,186 @@
+import fastifyStatic from '@fastify/static';
+import fastifyWebsocket from '@fastify/websocket';
+import { and, desc, eq, gt } from 'drizzle-orm';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { existsSync } from 'node:fs';
+import { z } from 'zod';
+import type { OfficeConfig } from './config.js';
+import { getSettings, schema, setSetting, type Db } from './db/index.js';
+import { boardColumn, TASK_STATUSES } from './domain.js';
+import type { EventBus } from './events.js';
+import type { TaskDocs } from './handoffs.js';
+import type { Pipeline } from './pipeline.js';
+import { createRepo, deleteRepo, effectiveAllowlist, getRepo, ghAccounts, listRepos, updateRepo } from './repos.js';
+import { run } from './util/exec.js';
+import { diff } from './worktree.js';
+
+export interface ServerDeps {
+  db: Db;
+  bus: EventBus;
+  config: OfficeConfig;
+  pipeline: Pipeline;
+  docs: TaskDocs;
+}
+
+const id = z.coerce.number().int().positive();
+
+export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
+  const { db, bus, config, pipeline, docs } = deps;
+  const app = Fastify({ logger: { level: process.env.OFFICE_LOG ?? 'warn' }, forceCloseConnections: true });
+  const allowedHosts = new Set([
+    `127.0.0.1:${config.port}`,
+    `localhost:${config.port}`,
+    ...(process.env.OFFICE_ALLOWED_HOSTS?.split(',').map((h) => h.trim()) ?? []),
+  ]);
+  const devHosts = new Set(['127.0.0.1:5173', 'localhost:5173']);
+  const devOrigins = new Set([...devHosts].map((h) => `http://${h}`));
+
+  // The API can run agents on this machine: refuse other sites (CSRF) and other hostnames (DNS rebinding).
+  app.addHook('onRequest', async (req, reply) => {
+    const host = req.headers.host ?? '';
+    if (!allowedHosts.has(host) && !devHosts.has(host)) return reply.code(403).send({ error: 'host not allowed' });
+    const origin = req.headers.origin;
+    if (origin && !devOrigins.has(origin) && !allowedHosts.has(origin.replace(/^https?:\/\//, ''))) {
+      return reply.code(403).send({ error: 'origin not allowed' });
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers['x-office'] !== '1') {
+      return reply.code(403).send({ error: 'missing x-office header' });
+    }
+  });
+
+  app.setErrorHandler((err: Error & { statusCode?: number }, _req, reply) => {
+    const status = err instanceof z.ZodError ? 400 : (err.statusCode ?? 400);
+    const message = err instanceof z.ZodError ? err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') : err.message;
+    reply.code(status >= 500 ? 500 : status).send({ error: message });
+  });
+
+  await app.register(fastifyWebsocket);
+
+  // ---------------------------------------------------------------- repos
+
+  app.get('/api/repos', async () => listRepos(db).map((r) => ({ ...r, effectiveAllowlist: effectiveAllowlist(r) })));
+  app.post('/api/repos', async (req) => createRepo(db, req.body as never));
+  app.put('/api/repos/:id', async (req) => updateRepo(db, id.parse((req.params as { id: string }).id), req.body as never));
+  app.delete('/api/repos/:id', async (req) => {
+    deleteRepo(db, id.parse((req.params as { id: string }).id));
+    return { ok: true };
+  });
+  app.get('/api/gh-accounts', async () => ghAccounts());
+
+  // ---------------------------------------------------------------- tasks
+
+  const summary = (t: typeof schema.tasks.$inferSelect) => ({
+    ...t,
+    column: boardColumn(t.status),
+    running: pipeline.isRunning(t.id),
+    tokens: pipeline.tokensUsed(t.id),
+    pendingGates: pipeline.pendingGates(t.id).map((g) => ({ id: g.id, kind: g.kind, subject: g.subject })),
+  });
+
+  app.get('/api/tasks', async () => db.select().from(schema.tasks).orderBy(desc(schema.tasks.updatedAt)).all().map(summary));
+
+  app.post('/api/tasks', async (req) => {
+    const body = z
+      .object({ repoId: id, input: z.string().min(1).max(20_000), kind: z.enum(['feature', 'bug']).optional(), title: z.string().max(80).optional() })
+      .parse(req.body);
+    return summary(pipeline.createTask(body));
+  });
+
+  app.get('/api/tasks/:id', async (req) => {
+    const taskId = id.parse((req.params as { id: string }).id);
+    const task = pipeline.getTask(taskId);
+    const repo = getRepo(db, task.repoId);
+    return {
+      task: summary(task),
+      repo: { id: repo.id, name: repo.name, defaultBranch: repo.defaultBranch },
+      runs: db.select().from(schema.runs).where(eq(schema.runs.taskId, taskId)).all(),
+      gates: db.select().from(schema.gates).where(eq(schema.gates.taskId, taskId)).all(),
+      docs: docs.list(taskId),
+      alerts: db
+        .select()
+        .from(schema.events)
+        .where(and(eq(schema.events.taskId, taskId), eq(schema.events.type, 'alert')))
+        .all(),
+    };
+  });
+
+  app.get('/api/tasks/:id/docs/:file', async (req, reply) => {
+    const p = req.params as { id: string; file: string };
+    const text = docs.read(id.parse(p.id), p.file);
+    if (text === null) return reply.code(404).send({ error: 'no such document' });
+    return reply.type('text/markdown; charset=utf-8').send(text);
+  });
+
+  app.get('/api/tasks/:id/diff', async (req, reply) => {
+    const task = pipeline.getTask(id.parse((req.params as { id: string }).id));
+    if (!task.worktreePath || !task.baseSha || !existsSync(task.worktreePath)) return reply.type('text/plain').send('');
+    return reply.type('text/plain; charset=utf-8').send(await diff(task.worktreePath, task.baseSha));
+  });
+
+  app.get('/api/tasks/:id/events', async (req) => {
+    const taskId = id.parse((req.params as { id: string }).id);
+    const q = z.object({ after: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(2000).default(500) }).parse(req.query);
+    return db
+      .select()
+      .from(schema.events)
+      .where(and(eq(schema.events.taskId, taskId), gt(schema.events.id, q.after)))
+      .orderBy(schema.events.id)
+      .limit(q.limit)
+      .all();
+  });
+
+  app.post('/api/gates/:id', async (req) => {
+    const body = z
+      .object({ decision: z.enum(['approve', 'reject', 'allow_once', 'allow_always', 'deny']), comment: z.string().max(10_000).optional() })
+      .parse(req.body);
+    await pipeline.decideGate(id.parse((req.params as { id: string }).id), body.decision, body.comment);
+    return { ok: true };
+  });
+
+  app.post('/api/tasks/:id/actions', async (req) => {
+    const taskId = id.parse((req.params as { id: string }).id);
+    const { action } = z.object({ action: z.enum(['stop', 'resume', 'discard', 'done', 'takeover']) }).parse(req.body);
+    if (action === 'takeover') {
+      const task = pipeline.getTask(taskId);
+      if (!task.worktreePath || !existsSync(task.worktreePath)) throw new Error('This task has no worktree.');
+      const editor = await run('code', [task.worktreePath]);
+      if (editor.code !== 0) await run('open', [task.worktreePath]);
+      return { ok: true, path: task.worktreePath };
+    }
+    return summary(await pipeline.action(taskId, action));
+  });
+
+  // ---------------------------------------------------------------- settings
+
+  app.get('/api/settings', async () => ({ ...getSettings(db), statuses: TASK_STATUSES }));
+  app.put('/api/settings', async (req) => {
+    const body = z.object({ autoApprovePush: z.boolean().optional(), concurrency: z.number().int().min(1).max(6).optional() }).parse(req.body);
+    if (body.autoApprovePush !== undefined) setSetting(db, 'autoApprovePush', body.autoApprovePush);
+    if (body.concurrency !== undefined) setSetting(db, 'concurrency', body.concurrency);
+    void pipeline.tick();
+    return getSettings(db);
+  });
+
+  app.get('/api/health', async () => ({ ok: true }));
+
+  // ---------------------------------------------------------------- live updates
+
+  app.get('/ws', { websocket: true }, (socket) => {
+    const unsubscribe = bus.subscribe((msg) => {
+      const payload = msg.type === 'task' ? { type: 'task', task: summary(msg.task) } : msg;
+      socket.send(JSON.stringify(payload));
+    });
+    socket.on('close', unsubscribe);
+  });
+
+  // ---------------------------------------------------------------- board
+
+  if (existsSync(config.webDist)) {
+    await app.register(fastifyStatic, { root: config.webDist });
+    app.setNotFoundHandler((req, reply) =>
+      req.url.startsWith('/api/') ? reply.code(404).send({ error: 'not found' }) : reply.sendFile('index.html'),
+    );
+  }
+
+  return app;
+}

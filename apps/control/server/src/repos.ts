@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Db } from './db/index.js';
 import { schema } from './db/index.js';
 import type { Repo } from './db/schema.js';
+import { splitCommand } from './guard.js';
 import { run } from './util/exec.js';
 
 /** Read-only commands every repo allows, on top of its own build/test/lint commands. */
@@ -33,6 +34,7 @@ export const repoInput = z.object({
   path: z.string().trim().min(1),
   defaultBranch: z.string().trim().min(1).default('main'),
   protectedBranches: z.array(z.string().trim().min(1)).default([]),
+  setupCmd: z.string().trim().nullish(),
   buildCmd: z.string().trim().nullish(),
   testCmd: z.string().trim().nullish(),
   lintCmd: z.string().trim().nullish(),
@@ -106,7 +108,11 @@ export function addToAllowlist(db: Db, repo: Repo, command: string): Repo {
 
 /** The full allow-list for a repo: base read-only commands, its configured commands, and what I approved. */
 export function effectiveAllowlist(repo: Repo): string[] {
-  const own = [repo.buildCmd, repo.testCmd, repo.lintCmd].filter((c): c is string => !!c);
+  // The guard checks each part of a command line separately, so allow the parts of the configured commands.
+  const own = [repo.buildCmd, repo.testCmd, repo.lintCmd]
+    .filter((c): c is string => !!c)
+    .flatMap(splitCommand)
+    .filter((part) => !/^cd\s/.test(part));
   return [...new Set([...BASE_ALLOWLIST, ...own, ...repo.allowlist])];
 }
 

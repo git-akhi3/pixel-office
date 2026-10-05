@@ -575,7 +575,7 @@ export class Pipeline {
       }
       case 'discard': {
         if (task.status === 'discarded') return task;
-        this.cancelPermissions(taskId);
+        this.cancelGates(taskId);
         const discarded = this.update(taskId, { status: 'discarded', statusNote: null });
         this.running.get(taskId)?.abort();
         if (task.worktreePath) {
@@ -589,12 +589,22 @@ export class Pipeline {
         if (!['pr_open', 'blocked', 'stopped', 'awaiting_push_approval'].includes(task.status)) {
           throw new Error(`The task is ${task.status}; it cannot be marked done.`);
         }
-        this.cancelPermissions(taskId);
+        this.cancelGates(taskId);
         const done = this.update(taskId, { status: 'retro', statusNote: null, resumeStatus: null });
         void this.tick();
         return done;
       }
     }
+  }
+
+  /** A finished or discarded task leaves no gate waiting for me. */
+  private cancelGates(taskId: number): void {
+    this.cancelPermissions(taskId);
+    this.deps.db
+      .update(schema.gates)
+      .set({ status: 'cancelled', decidedAt: this.now() })
+      .where(and(eq(schema.gates.taskId, taskId), eq(schema.gates.status, 'pending')))
+      .run();
   }
 
   private cancelPermissions(taskId: number): void {

@@ -10,14 +10,17 @@ import {
   splitCommand,
   type GuardContext,
 } from '../server/src/guard.js';
-import { BASE_ALLOWLIST } from '../server/src/repos.js';
+import { BASE_ALLOWLIST, effectiveAllowlist } from '../server/src/repos.js';
+import type { Repo } from '../server/src/db/schema.js';
 
 let wt: string;
 let ctx: (write?: GuardContext['write']) => GuardContext;
 
 beforeAll(() => {
-  wt = realpathSync(mkdtempSync(join(tmpdir(), 'guard-wt-')));
-  mkdirSync(join(wt, 'src'));
+  // Same shape as real worktrees: ~/.office/worktrees/<id>
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'guard-home-')));
+  wt = join(home, '.office', 'worktrees', '1');
+  mkdirSync(join(wt, 'src'), { recursive: true });
   ctx = (write = 'all') => ({
     worktree: wt,
     write,
@@ -27,6 +30,23 @@ beforeAll(() => {
 });
 
 const decision = (d: { decision: string }) => d.decision;
+
+describe('worktree under ~/.office', () => {
+  it('reads and writes ordinary files in the worktree', () => {
+    expect(decision(checkToolCall(ctx(), 'Read', { file_path: join(wt, 'src/math.js') }))).toBe('allow');
+    expect(decision(checkToolCall(ctx(), 'Read', { file_path: 'src/math.js' }))).toBe('allow');
+    expect(decision(checkToolCall(ctx(), 'Edit', { file_path: join(wt, 'src/math.js') }))).toBe('allow');
+    expect(decision(checkCommand(ctx(), `cat ${wt}/src/math.js`))).toBe('allow');
+  });
+
+  it('still blocks the rest of ~/.office', () => {
+    const office = join(wt, '..', '..');
+    expect(decision(checkToolCall(ctx(), 'Read', { file_path: join(office, 'env') }))).toBe('deny');
+    expect(decision(checkCommand(ctx(), `cat ${office}/env`))).toBe('deny');
+    expect(decision(checkCommand(ctx(), 'cat ~/.office/env'))).toBe('deny');
+    expect(decision(checkCommand(ctx(), 'ls ~/.office/tasks'))).toBe('deny');
+  });
+});
 
 describe('file writes', () => {
   it('allows writes inside the worktree', () => {
@@ -172,5 +192,16 @@ describe('globToRegExp', () => {
     expect(globToRegExp('**/*.test.ts').test('a/b/c.test.ts')).toBe(true);
     expect(globToRegExp('**/*.test.ts').test('c.test.ts')).toBe(true);
     expect(globToRegExp('src/*.ts').test('src/a/b.ts')).toBe(false);
+  });
+});
+
+describe('effectiveAllowlist', () => {
+  it('allows each part of a chained configured command', () => {
+    const repo = { buildCmd: null, testCmd: 'cd app && ../poc/.venv/bin/python -m pytest -q tests', lintCmd: 'poc/.venv/bin/ruff check .', allowlist: [] } as unknown as Repo;
+    const allowlist = effectiveAllowlist(repo);
+    const c = { ...ctx(), allowlist };
+    expect(decision(checkCommand(c, 'cd app && ../poc/.venv/bin/python -m pytest -q tests'))).toBe('allow');
+    expect(decision(checkCommand(c, 'poc/.venv/bin/ruff check .'))).toBe('allow');
+    expect(allowlist).not.toContain('cd app');
   });
 });

@@ -28,6 +28,7 @@ CREATE TABLE `repos` (
 	`path` text NOT NULL,
 	`default_branch` text DEFAULT 'main' NOT NULL,
 	`protected_branches` text DEFAULT '[]' NOT NULL,
+	`setup_cmd` text,
 	`build_cmd` text,
 	`test_cmd` text,
 	`lint_cmd` text,

@@ -202,6 +202,24 @@ describe('pipeline', () => {
     expect(steps().at(-1)).toBe('retro');
   });
 
+  it('leaves no pending gate behind when a task is discarded or marked done', async () => {
+    const a = pipeline.createTask({ repoId: repo.id, input: 'a' });
+    await settle();
+    expect(pipeline.pendingGates(a.id)).toHaveLength(1);
+    await pipeline.action(a.id, 'discard');
+    expect(pipeline.pendingGates(a.id)).toHaveLength(0);
+
+    const b = pipeline.createTask({ repoId: repo.id, input: 'b' });
+    await settle();
+    await pipeline.decideGate(planGate(b).id, 'approve');
+    await settle();
+    expect(pushGate(b)).toBeTruthy();
+    await pipeline.action(b.id, 'done');
+    expect(pipeline.pendingGates(b.id)).toHaveLength(0);
+    await settle();
+    expect(statusOf(b)).toBe('done');
+  });
+
   it('records token usage per run', async () => {
     const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
     await settle();
@@ -390,6 +408,15 @@ describe('pipeline', () => {
     const events = db.query.events.findMany().sync();
     for (const e of events) if (e.type === 'alert') alerts.push(String(e.payload.kind));
     expect(alerts).toContain('scope');
+  });
+
+  it('runs the repo setup command in each new worktree', async () => {
+    const { updateRepo } = await import('../server/src/repos.js');
+    await updateRepo(db, repo.id, { ...repo, setupCmd: 'echo "$REPO_PATH" > .setup-ran' });
+    const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
+    await settle();
+    const wt = pipeline.getTask(task.id).worktreePath!;
+    expect(execSync(`cat "${wt}/.setup-ran"`).toString().trim()).toBe(repo.path);
   });
 
   it('moves a merged PR to retro and removes the worktree', async () => {

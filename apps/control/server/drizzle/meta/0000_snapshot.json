@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "fe1a9ef8-b626-4a2a-b4ae-912874cece76",
+  "id": "5dc57132-f38e-4058-a9cc-1eaace7bfcfa",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "events": {
@@ -206,6 +206,13 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'[]'"
+        },
+        "setup_cmd": {
+          "name": "setup_cmd",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         },
         "build_cmd": {
           "name": "build_cmd",

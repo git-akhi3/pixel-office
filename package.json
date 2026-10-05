@@ -6,6 +6,8 @@
     "apps/control"
   ],
   "scripts": {
-    "pixel": "./start.sh"
+    "office": "npm start -w @pixel-office/control",
+    "pixel": "./start.sh",
+    "test": "npm test -w @pixel-office/control"
   }
 }

@@ -9,6 +9,8 @@ export const repos = sqliteTable('repos', {
   path: text('path').notNull(),
   defaultBranch: text('default_branch').notNull().default('main'),
   protectedBranches: text('protected_branches', { mode: 'json' }).$type<string[]>().notNull().default([]),
+  /** Run by the office (not an agent) in each new worktree, e.g. npm ci or linking a venv. $REPO_PATH is the main checkout. */
+  setupCmd: text('setup_cmd'),
   buildCmd: text('build_cmd'),
   testCmd: text('test_cmd'),
   lintCmd: text('lint_cmd'),

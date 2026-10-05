@@ -1,0 +1,322 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { api, type Gate, type OfficeEvent, type TaskDetail } from './api';
+import { DiffView, Doc, duration, formatTokens, StatusBadge, timeAgo } from './ui';
+
+type Tab = 'docs' | 'diff' | 'activity' | 'runs';
+
+const REFRESH_ON = new Set(['step_start', 'step_end', 'gate', 'gate_decided', 'alert', 'pr_opened', 'stopped', 'resumed', 'worktree', 'paused']);
+
+export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: OfficeEvent | null; onError: (e: unknown) => void }) {
+  const [detail, setDetail] = useState<TaskDetail | null>(null);
+  const [tab, setTab] = useState<Tab>('docs');
+  const [events, setEvents] = useState<OfficeEvent[]>([]);
+  const [docFile, setDocFile] = useState<string | null>(null);
+  const [docText, setDocText] = useState('');
+  const [diff, setDiff] = useState('');
+
+  const load = useCallback(() => api.task(id).then(setDetail).catch(onError), [id, onError]);
+
+  useEffect(() => {
+    void load();
+    api.events(id).then(setEvents).catch(onError);
+  }, [id, load, onError]);
+
+  useEffect(() => {
+    if (!lastEvent || lastEvent.taskId !== id) return;
+    setEvents((prev) => (prev.some((e) => e.id === lastEvent.id) ? prev : [...prev, lastEvent]));
+    if (REFRESH_ON.has(lastEvent.type)) void load();
+  }, [lastEvent, id, load]);
+
+  // Default to the newest document.
+  const latestByName = useMemo(() => {
+    const map = new Map<string, { file: string; version: number }[]>();
+    for (const d of detail?.docs ?? []) map.set(d.name, [...(map.get(d.name) ?? []), d]);
+    return map;
+  }, [detail?.docs]);
+
+  useEffect(() => {
+    if (!detail || docFile) return;
+    const order = ['plan', 'review', 'test-report', 'changes', 'blocked', 'diagnosis', 'research', 'task', 'pr', 'retro'];
+    const newest = [...(detail.docs ?? [])].sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name))[0];
+    if (newest) setDocFile((latestByName.get(newest.name) ?? []).at(-1)?.file ?? null);
+  }, [detail, docFile, latestByName]);
+
+  useEffect(() => {
+    if (docFile) api.doc(id, docFile).then(setDocText).catch(onError);
+  }, [id, docFile, detail?.docs.length, onError]);
+
+  useEffect(() => {
+    if (tab === 'diff') api.diff(id).then(setDiff).catch(onError);
+  }, [tab, id, detail?.task.updatedAt, onError]);
+
+  if (!detail) return <p className="empty">Loading…</p>;
+  const { task, repo, runs, gates, alerts } = detail;
+  const pending = gates.filter((g) => g.status === 'pending');
+
+  const act = async (action: Parameters<typeof api.action>[1]) => {
+    if (action === 'discard' && !confirm('Discard this task and delete its worktree? The branch stays.')) return;
+    try {
+      await api.action(id, action);
+      await load();
+    } catch (e) {
+      onError(e);
+    }
+  };
+
+  const canStop = !['done', 'discarded', 'failed', 'stopped'].includes(task.status);
+  const canResume = ['stopped', 'paused', 'blocked'].includes(task.status);
+  const canDone = ['pr_open', 'blocked', 'stopped', 'awaiting_push_approval'].includes(task.status);
+
+  return (
+    <div className="task-view">
+      <a href="#/" className="back">
+        ← Board
+      </a>
+      <header className="task-header">
+        <div className="card-top">
+          <span className="task-id">#{task.id}</span>
+          <span className="repo-chip">{repo.name}</span>
+          {task.size && <span className="size">{task.size}</span>}
+          <span className="kind">{task.kind}</span>
+        </div>
+        <h1>{task.title}</h1>
+        <div className="task-facts">
+          <StatusBadge status={task.status} running={task.running} />
+          {task.branch && <code>{task.branch}</code>}
+          {task.prUrl && (
+            <a href={task.prUrl} target="_blank" rel="noreferrer">
+              Draft PR ↗
+            </a>
+          )}
+          <span>{formatTokens(task.tokens)} tokens{task.tokenEstimate ? ` / est. ${formatTokens(task.tokenEstimate)}` : ''}</span>
+          {task.loopCount > 0 && <span>fix loop {task.loopCount}/2</span>}
+          {task.replanCount > 0 && <span>re-plan {task.replanCount}/2</span>}
+        </div>
+        {task.statusNote && <p className="note">{task.statusNote}</p>}
+      </header>
+
+      {pending.map((g) => (
+        <GateBar key={g.id} gate={g} onDone={load} onError={onError} />
+      ))}
+
+      <div className="actions">
+        {canStop && <button onClick={() => act('stop')}>Stop</button>}
+        {canResume && (
+          <button className="primary" onClick={() => act('resume')}>
+            Resume{task.resumeStatus ? ` (${task.resumeStatus.replace(/_/g, ' ')})` : ''}
+          </button>
+        )}
+        {canDone && <button onClick={() => act('done')}>Mark done</button>}
+        {task.worktreePath && <button onClick={() => act('takeover')}>Take over in editor</button>}
+        {task.status !== 'discarded' && task.status !== 'done' && (
+          <button className="danger" onClick={() => act('discard')}>
+            Discard
+          </button>
+        )}
+      </div>
+
+      {alerts.length > 0 && (
+        <ul className="alerts">
+          {alerts.slice(-5).map((a) => (
+            <li key={a.id} className={`alert alert-${String(a.payload.kind)}`}>
+              <strong>{String(a.payload.kind).replace(/_/g, ' ')}</strong> {String(a.payload.message ?? '')}
+              <span className="when">{timeAgo(a.at)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <nav className="tabs">
+        {(['docs', 'diff', 'activity', 'runs'] as Tab[]).map((t) => (
+          <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
+            {{ docs: 'Documents', diff: 'Diff', activity: 'Activity', runs: 'Runs & tokens' }[t]}
+          </button>
+        ))}
+      </nav>
+
+      {tab === 'docs' && (
+        <div className="docs">
+          {latestByName.size === 0 ? (
+            <p className="empty">No documents yet. The request:</p>
+          ) : (
+            <div className="doc-picker">
+              {[...latestByName.entries()].map(([name, versions]) => (
+                <span key={name} className="doc-group">
+                  {versions.map((v) => (
+                    <button key={v.file} className={docFile === v.file ? 'active' : ''} onClick={() => setDocFile(v.file)}>
+                      {name}
+                      {versions.length > 1 ? ` v${v.version}` : ''}
+                    </button>
+                  ))}
+                </span>
+              ))}
+            </div>
+          )}
+          {latestByName.size === 0 ? <pre className="request">{task.input}</pre> : <Doc text={docText} />}
+        </div>
+      )}
+      {tab === 'diff' && <DiffView diff={diff} />}
+      {tab === 'activity' && <Activity events={events} />}
+      {tab === 'runs' && <Runs runs={runs} />}
+    </div>
+  );
+}
+
+function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; onError: (e: unknown) => void }) {
+  const [comment, setComment] = useState('');
+  const [rejecting, setRejecting] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const decide = async (decision: string) => {
+    setBusy(true);
+    try {
+      await api.decide(gate.id, decision, comment || undefined);
+      onDone();
+    } catch (e) {
+      onError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (gate.kind === 'command') {
+    return (
+      <div className="gate gate-command">
+        <div className="gate-title">An agent wants to run a command that isn't on the allow-list</div>
+        <pre>{gate.subject}</pre>
+        <div className="gate-buttons">
+          <button disabled={busy} onClick={() => decide('allow_once')}>
+            Allow once
+          </button>
+          <button disabled={busy} className="primary" onClick={() => decide('allow_always')}>
+            Always for this repo
+          </button>
+          <button disabled={busy} className="danger" onClick={() => decide('deny')}>
+            Deny
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const label = gate.kind === 'plan' ? 'Approve the plan?' : 'Push the branch and open a draft PR?';
+  return (
+    <div className="gate">
+      <div className="gate-title">{label}</div>
+      {gate.kind === 'plan' && <p className="gate-hint">Read the plan below. Approving starts the coder.</p>}
+      {rejecting && (
+        <textarea
+          autoFocus
+          placeholder={gate.kind === 'plan' ? 'What should the architect change?' : 'What should the coder fix before pushing?'}
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+        />
+      )}
+      <div className="gate-buttons">
+        {!rejecting && (
+          <button disabled={busy} className="primary" onClick={() => decide('approve')}>
+            {gate.kind === 'plan' ? 'Approve plan' : 'Push & open draft PR'}
+          </button>
+        )}
+        {rejecting ? (
+          <>
+            <button disabled={busy || !comment.trim()} className="primary" onClick={() => decide('reject')}>
+              Send back
+            </button>
+            <button onClick={() => setRejecting(false)}>Cancel</button>
+          </>
+        ) : (
+          <button disabled={busy} onClick={() => setRejecting(true)}>
+            Reject with comment
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Activity({ events }: { events: OfficeEvent[] }) {
+  const [showTools, setShowTools] = useState(false);
+  const shown = events.filter((e) => showTools || !['tool', 'text'].includes(e.type));
+  return (
+    <div className="activity">
+      <label className="toggle">
+        <input type="checkbox" checked={showTools} onChange={(e) => setShowTools(e.target.checked)} /> Show tool calls and agent messages
+      </label>
+      <ol>
+        {[...shown].reverse().map((e) => (
+          <li key={e.id} className={`ev ev-${e.type}`}>
+            <span className="when">{new Date(e.at).toLocaleTimeString()}</span>
+            <span className="ev-type">{e.type.replace(/_/g, ' ')}</span>
+            <span className="ev-body">{describe(e)}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function describe(e: OfficeEvent): string {
+  const p = e.payload;
+  switch (e.type) {
+    case 'step_start':
+      return `${p.role} started (${p.model}${p.effort ? `, ${p.effort}` : ''})`;
+    case 'step_end':
+      return `${p.role} ${p.status}${p.error ? `: ${p.error}` : ''}`;
+    case 'tool':
+      return `${p.tool} ${p.input}`;
+    case 'text':
+      return String(p.text);
+    case 'tool_denied':
+      return `${p.tool} blocked: ${p.reason}`;
+    case 'gate':
+      return `${p.kind} gate ${p.auto ? 'auto-approved' : 'opened'}${p.subject ? `: ${p.subject}` : ''}`;
+    case 'gate_decided':
+      return `${p.kind}: ${p.decision}${p.comment ? ` — ${p.comment}` : ''}`;
+    case 'alert':
+      return String(p.message);
+    case 'correction':
+      return `output sent back for a fix: ${p.reason}`;
+    default:
+      return Object.keys(p).length ? JSON.stringify(p) : '';
+  }
+}
+
+function Runs({ runs }: { runs: TaskDetail['runs'] }) {
+  const total = runs.reduce((s, r) => s + r.inputTokens + r.outputTokens + r.cacheWriteTokens, 0);
+  return (
+    <div className="runs">
+      <table>
+        <thead>
+          <tr>
+            <th>Step</th>
+            <th>Model</th>
+            <th>Status</th>
+            <th>In</th>
+            <th>Out</th>
+            <th>Cache r/w</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((r) => (
+            <tr key={r.id}>
+              <td>{r.role}</td>
+              <td>
+                {r.model.replace('claude-', '')}
+                {r.effort ? ` · ${r.effort}` : ''}
+              </td>
+              <td title={r.error ?? ''}>{r.status}</td>
+              <td>{formatTokens(r.inputTokens)}</td>
+              <td>{formatTokens(r.outputTokens)}</td>
+              <td>
+                {formatTokens(r.cacheReadTokens)} / {formatTokens(r.cacheWriteTokens)}
+              </td>
+              <td>{duration(r.durationMs)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="hint">Total (input + output + cache writes): {formatTokens(total)} tokens. Cache reads are cheap and not counted.</p>
+    </div>
+  );
+}
