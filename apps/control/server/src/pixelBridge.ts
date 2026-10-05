@@ -85,6 +85,8 @@ export class PixelBridge {
       const { type, payload, runId, taskId } = msg.event;
       void this.enqueue(type, payload, taskId, runId);
     });
+    // Announce right away, which also closes a turn a crashed run left "working".
+    void this.enqueue('startup', {}, 0, null);
   }
 
   stop(): void {
@@ -218,7 +220,7 @@ export class PixelBridge {
   }
 
   async onEvent(type: string, payload: Record<string, unknown>, taskId: number, runId: number | null): Promise<void> {
-    if (!['step_start', 'step_end', 'gate', 'gate_decided'].includes(type)) return;
+    if (!['startup', 'step_start', 'step_end', 'gate', 'gate_decided'].includes(type)) return;
     const server = this.server();
     if (!server) {
       this.announcedTo = null;

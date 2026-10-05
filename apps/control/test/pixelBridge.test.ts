@@ -78,6 +78,13 @@ describe('pixel bridge', () => {
     });
   });
 
+  it('announces at startup, closing a stale turn before any task event', async () => {
+    pixelRunning();
+    await bridge.enqueue('startup', {}, 0, null);
+    expect(hooks()).toEqual(['SessionStart', 'PostToolUse', 'Stop']);
+    expect(records().map((r) => r.type)).toEqual(['system']);
+  });
+
   it('goes idle in both places when the last step ends: transcript turn end and a Stop hook', async () => {
     pixelRunning();
     await bridge.enqueue('step_start', { role: 'coder' }, 3, 10);

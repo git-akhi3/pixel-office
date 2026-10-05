@@ -9,7 +9,11 @@ interface OfficeInfo {
   start: string;
 }
 
-/** The pixel office, live: residents work at their desks while office agents run. */
+/**
+ * The pixel office, live: residents work at their desks while office agents run. Embedded without
+ * Pixel Agents' token, so it can't change Claude settings; it can still move or close characters and
+ * edit the layout, like the pixel office itself.
+ */
 export function Office({ tasks, onError }: { tasks: Task[]; onError: (e: unknown) => void }) {
   const [info, setInfo] = useState<OfficeInfo | null>(null);
 

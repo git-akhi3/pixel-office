@@ -8,7 +8,7 @@ Updated 2026-10-05. Design: [design.md](design.md). Phase 1 detail: [phase-1-pla
 | 2. Remote (Slack, Cloudflare) | Deferred by the owner. Groundwork only: settings in `~/.office/env`, Slack app manifest in `tools/`, steer/replan available on the board |
 | 3. PR reviews | Built and reviewed (three review rounds, security hardening) |
 | 4. Smarts | Built and reviewed |
-| 5. Office tab | Built; under review at the time of writing |
+| 5. Office tab | Built, reviewed (two rounds), verified live against Pixel Agents |
 
 ## Using it
 
