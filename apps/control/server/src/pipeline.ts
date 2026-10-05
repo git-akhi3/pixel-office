@@ -13,14 +13,17 @@ import { getSettings, schema, type Db } from './db/index.js';
 import type { Gate, Repo, Task } from './db/schema.js';
 import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, type GateDecision, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
-import type { Publisher } from './github.js';
+import type { PrInfo, Publisher } from './github.js';
 import { matchesAnyGlob, realPath } from './guard.js';
 import { CONTRACTS, extractPr, normalizeOutput, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
 import { buildPrompt } from './prompts.js';
-import { addToAllowlist, effectiveAllowlist, getRepo } from './repos.js';
+import { addToAllowlist, BASE_ALLOWLIST, effectiveAllowlist, getRepo } from './repos.js';
 import type { AgentRunner, PermissionAnswer, RunOutcome } from './runner.js';
 import { commentableLines, formatComment, originSlug, parsePrUrl, parseReviewDoc, prSlug, reviewBody, splitComments } from './reviews.js';
 import { changedFiles, commitAll, createReviewWorktree, createWorktree, diff, removeWorktree } from './worktree.js';
+
+/** One spelling per PR, so manual and auto-picked reviews of the same PR match. */
+const canonicalPrUrl = (slug: string, number: number) => `https://github.com/${slug.toLowerCase()}/pull/${number}`;
 
 export const MAX_CODER_LOOPS = 2;
 export const MAX_REPLANS = 2;
@@ -60,6 +63,9 @@ interface PendingPermission {
 export class Pipeline {
   private running = new Map<number, AbortController>();
   private currentRun = new Map<number, number>();
+  private pickingUp = false;
+  /** PRs auto-pickup decided to skip (too small, or failed), until the server restarts. */
+  private skippedPrs = new Set<string>();
   private pending = new Map<number, PendingPermission>();
   private timers: NodeJS.Timeout[] = [];
   private ticking = false;
@@ -276,7 +282,13 @@ export class Pipeline {
       agent,
       prompt,
       cwd: worktree,
-      guard: { worktree, write: agent.write, testGlobs: repo.testGlobs, allowlist: effectiveAllowlist(repo) },
+      // A PR under review is untrusted code: the reviewer gets read-only commands only, never the repo's build/test commands.
+      guard: {
+        worktree,
+        write: agent.write,
+        testGlobs: repo.testGlobs,
+        allowlist: step === 'reviewing_pr' ? [...BASE_ALLOWLIST] : effectiveAllowlist(repo),
+      },
       signal: abort.signal,
       onEvent: (type, payload) => bus.emit(task.id, type, payload, run.id),
       askPermission: (subject, unmatched) => this.requestPermission(task.id, subject, unmatched),
@@ -648,7 +660,7 @@ export class Pipeline {
         const discarded = this.update(taskId, { status: 'discarded', statusNote: null });
         this.running.get(taskId)?.abort();
         if (task.worktreePath) {
-          await removeWorktree(getRepo(this.deps.db, task.repoId), task.worktreePath).catch(() => {});
+          await removeWorktree(getRepo(this.deps.db, task.repoId), task.worktreePath, task.id).catch(() => {});
           this.update(taskId, { worktreePath: null });
         }
         this.deps.bus.emit(taskId, 'discarded', {});
@@ -699,14 +711,14 @@ export class Pipeline {
     return null;
   }
 
-  async createReviewTask(prUrl: string, source: 'manual' | 'auto' = 'manual'): Promise<Task> {
+  async createReviewTask(prUrl: string, source: 'manual' | 'auto' = 'manual', known?: { repo: Repo; info: PrInfo }): Promise<Task> {
     const ref = parsePrUrl(prUrl);
     const slug = prSlug(ref);
-    const repo = await this.repoForSlug(slug);
+    const repo = known?.repo ?? (await this.repoForSlug(slug));
     if (!repo) throw new Error(`${slug} isn't a registered repo. Add its local checkout under Repos first.`);
-    const pr = await this.deps.publisher.prInfo(repo, slug, ref.number);
+    const pr = known?.info ?? (await this.deps.publisher.prInfo(repo, slug, ref.number));
     if (pr.state !== 'open') throw new Error(`PR #${ref.number} is ${pr.state}.`);
-    const url = `https://github.com/${ref.owner}/${ref.name}/pull/${ref.number}`;
+    const url = canonicalPrUrl(slug, ref.number);
     const task = this.deps.db
       .insert(schema.tasks)
       .values({
@@ -748,10 +760,19 @@ export class Pipeline {
 
   private async postReview(task: Task): Promise<void> {
     task = this.update(task.id, { status: 'posting_review', statusNote: null });
+    const repo = getRepo(this.deps.db, task.repoId);
     try {
-      const repo = getRepo(this.deps.db, task.repoId);
+      // After a restart or failure, GitHub may already have the review: never post it twice.
+      const existing = await this.deps.publisher.findMyReview(repo, task.prRepo!, task.prNumber!, task.prHeadSha!);
+      if (existing) {
+        this.update(task.id, { status: 'done', doneAt: this.now(), reviewPostedUrl: existing });
+        this.deps.bus.emit(task.id, 'review_posted', { url: existing, alreadyPosted: true });
+        await this.dropWorktree(this.getTask(task.id));
+        return;
+      }
       const kept = this.reviewComments(task.id).filter((c) => !c.deleted);
-      const prDiff = task.worktreePath && task.baseSha ? await diff(task.worktreePath, task.baseSha, Number.MAX_SAFE_INTEGER) : '';
+      // Committed PR changes only: anything the reviewer's commands touched in the worktree must not count.
+      const prDiff = task.worktreePath && task.baseSha ? await diff(task.worktreePath, task.baseSha, Number.MAX_SAFE_INTEGER, true) : '';
       const { inline, general } = splitComments(kept, commentableLines(prDiff));
       const url = await this.deps.publisher.postReview(repo, task.prRepo!, task.prNumber!, {
         commitId: task.prHeadSha!,
@@ -762,7 +783,11 @@ export class Pipeline {
       this.deps.bus.emit(task.id, 'review_posted', { url, inline: inline.length, general: general.length });
       await this.dropWorktree(this.getTask(task.id));
     } catch (e) {
-      this.block(task, `Posting the review failed: ${e instanceof Error ? e.message : String(e)}`, 'posting_review');
+      // Back to the editable draft, so I can fix whatever GitHub rejected and post again.
+      const note = `Posting the review failed: ${e instanceof Error ? e.message : String(e)}`;
+      this.update(task.id, { status: 'awaiting_review_post', statusNote: note });
+      this.alert(task, 'post_failed', note);
+      this.openGate(task.id, 'review_post');
     }
   }
 
@@ -773,6 +798,8 @@ export class Pipeline {
     const repo = getRepo(this.deps.db, review.repoId);
     const me = await this.deps.publisher.login(repo.ghAccount);
     if (me.toLowerCase() !== (review.prAuthor ?? '').toLowerCase()) throw new Error(`"Fix it" is for your own PRs; #${review.prNumber} is by ${review.prAuthor}.`);
+    const info = await this.deps.publisher.prInfo(repo, review.prRepo!, review.prNumber!);
+    if (info.headRepo !== review.prRepo) throw new Error(`"Fix it" only works when the PR branch is in ${review.prRepo} itself, not a fork.`);
     const findings = this.reviewComments(reviewTaskId).filter((c) => !c.deleted && c.severity === 'blocking');
     if (!findings.length) throw new Error('The review has no blocking findings to fix.');
     return this.createTask({
@@ -789,6 +816,16 @@ export class Pipeline {
 
   /** Queues reviews for open PRs that request my review, in registered repos, once per PR. */
   async pickUpReviews(): Promise<number> {
+    if (this.pickingUp) return 0; // the timer, startup sweep and the "check now" button must not overlap
+    this.pickingUp = true;
+    try {
+      return await this.pickUpReviewsOnce();
+    } finally {
+      this.pickingUp = false;
+    }
+  }
+
+  private async pickUpReviewsOnce(): Promise<number> {
     const { db, publisher } = this.deps;
     const settings = getSettings(db);
     if (!settings.reviewAutoPickup) return 0;
@@ -798,19 +835,34 @@ export class Pipeline {
       const slug = await this.slugOf(r);
       if (slug) slugs.set(slug, r);
     }
-    const seen = new Set(db.select().from(schema.tasks).where(eq(schema.tasks.kind, 'review')).all().map((t) => t.prUrl));
+    const seen = new Set(
+      db
+        .select()
+        .from(schema.tasks)
+        .where(eq(schema.tasks.kind, 'review'))
+        .all()
+        .map((t) => t.prUrl?.toLowerCase()),
+    );
     let created = 0;
     for (const account of new Set(repos.map((r) => r.ghAccount))) {
       const requests = await publisher.reviewRequests(account).catch(() => []);
       for (const pr of requests) {
+        const url = canonicalPrUrl(pr.repo, pr.number);
         const repo = slugs.get(pr.repo);
-        if (!repo || (repo.ghAccount ?? null) !== account || seen.has(pr.url)) continue;
-        seen.add(pr.url);
-        if (settings.reviewMinLines > 0) {
-          const info = await publisher.prInfo(repo, pr.repo, pr.number).catch(() => null);
-          if (!info || info.changedLines < settings.reviewMinLines) continue;
+        if (!repo || (repo.ghAccount ?? null) !== account || seen.has(url) || this.skippedPrs.has(url)) continue;
+        seen.add(url);
+        try {
+          const info = await publisher.prInfo(repo, pr.repo, pr.number);
+          if (info.changedLines < settings.reviewMinLines) {
+            this.skippedPrs.add(url); // too small: don't re-check every sweep
+            continue;
+          }
+          await this.createReviewTask(url, 'auto', { repo, info });
+          created++;
+        } catch (e) {
+          this.skippedPrs.add(url);
+          this.deps.bus.emit(null, 'pickup_failed', { url, error: e instanceof Error ? e.message : String(e) });
         }
-        await this.createReviewTask(pr.url, 'auto').then(() => created++).catch(() => {});
       }
     }
     return created;
@@ -842,7 +894,7 @@ export class Pipeline {
 
   private async dropWorktree(t: Task): Promise<void> {
     if (!t.worktreePath) return;
-    await removeWorktree(getRepo(this.deps.db, t.repoId), t.worktreePath).catch(() => {});
+    await removeWorktree(getRepo(this.deps.db, t.repoId), t.worktreePath, t.id).catch(() => {});
     this.update(t.id, { worktreePath: null });
   }
 }

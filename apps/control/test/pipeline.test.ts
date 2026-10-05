@@ -1,11 +1,12 @@
 import { execSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadAgents } from '../server/src/agents.js';
 import { ensureDirs, loadConfig, type OfficeConfig } from '../server/src/config.js';
-import { openDb, setSetting, type Db } from '../server/src/db/index.js';
+import { eq } from 'drizzle-orm';
+import { openDb, schema, setSetting, type Db } from '../server/src/db/index.js';
 import type { Repo, Task } from '../server/src/db/schema.js';
 import type { TaskStatus } from '../server/src/domain.js';
 import { EventBus } from '../server/src/events.js';
@@ -125,11 +126,21 @@ class FakePublisher implements Publisher {
     return this.state;
   }
   async prInfo(): Promise<PrInfo> {
-    return { title: 'Add feature', body: 'Adds a feature.', author: 'octo', headSha: '', headRef: 'feature', baseRef: 'main', changedLines: 2, state: 'open' };
+    this.prInfoCalls++;
+    return { title: 'Add feature', body: 'Adds a feature.', author: 'octo', headSha: '', headRef: 'feature', baseRef: 'main', changedLines: this.changedLines, state: 'open', headRepo: this.headRepo };
   }
+  changedLines = 2;
+  headRepo = 'acme/app';
+  failPost = false;
+  alreadyPosted: string | null = null;
+  prInfoCalls = 0;
   async postReview(_repo: Repo, _slug: string, _n: number, review: PostedReview): Promise<string> {
+    if (this.failPost) throw new Error('422 Unprocessable: line must be part of the diff');
     this.posted.push(review);
     return 'https://github.com/acme/app/pull/1#pullrequestreview-1';
+  }
+  async findMyReview(): Promise<string | null> {
+    return this.alreadyPosted;
   }
   async reviewRequests(): Promise<ReviewRequest[]> {
     return this.requests;
@@ -584,6 +595,7 @@ describe('pr reviews', () => {
 
   it('picks up requested reviews once, only for registered repos', async () => {
     addOriginWithPr();
+    setSetting(db, 'reviewAutoPickup', true);
     publisher.requests = [
       { url: 'https://github.com/acme/app/pull/1', repo: 'acme/app', number: 1, title: 'Add feature', changedLines: -1 },
       { url: 'https://github.com/other/thing/pull/9', repo: 'other/thing', number: 9, title: 'x', changedLines: -1 },
@@ -597,5 +609,92 @@ describe('pr reviews', () => {
 
   it('rejects PRs from repos that are not registered', async () => {
     await expect(pipeline.createReviewTask('https://github.com/other/thing/pull/9')).rejects.toThrow(/isn't a registered repo/);
+  });
+
+  it('auto-pickup is off by default', async () => {
+    addOriginWithPr();
+    publisher.requests = [{ url: 'https://github.com/acme/app/pull/1', repo: 'acme/app', number: 1, title: 'x', changedLines: -1 }];
+    expect(await pipeline.pickUpReviews()).toBe(0);
+  });
+
+  it('never runs code from the PR: no setup command, read-only commands for the reviewer', async () => {
+    addOriginWithPr();
+    const { updateRepo } = await import('../server/src/repos.js');
+    await updateRepo(db, repo.id, { ...repo, setupCmd: 'touch .setup-ran' });
+    let allowlist: string[] = [];
+    runner.queue('reviewing_pr', (req) => ((allowlist = req.guard.allowlist), { text: docs.prReview }));
+    const task = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    expect(existsSync(join(pipeline.getTask(task.id).worktreePath!, '.setup-ran'))).toBe(false);
+    expect(allowlist).not.toContain('npm test');
+    expect(allowlist).toContain('git diff');
+  });
+
+  it('returns to the editable draft when GitHub rejects the post', async () => {
+    addOriginWithPr();
+    publisher.failPost = true;
+    const task = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    await pipeline.decideGate(pipeline.pendingGates(task.id)[0]!.id, 'approve');
+    const t = pipeline.getTask(task.id);
+    expect(t.status).toBe('awaiting_review_post');
+    expect(t.statusNote).toMatch(/422/);
+    const c = pipeline.reviewComments(task.id)[0]!;
+    pipeline.editReviewComment(c.id, { deleted: true }); // still editable
+    publisher.failPost = false;
+    await pipeline.decideGate(pipeline.pendingGates(task.id)[0]!.id, 'approve');
+    expect(statusOf(task)).toBe('done');
+    expect(publisher.posted[0]!.comments.map((c) => `${c.path}:${c.line}`)).toEqual(['src/feature.ts:1']); // the deleted one is gone
+  });
+
+  it('does not post twice when GitHub already has the review (restart during posting)', async () => {
+    addOriginWithPr();
+    const task = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    // Simulate a crash mid-post: the task is left in posting_review, then the server restarts.
+    db.update(schema.tasks).set({ status: 'posting_review' }).where(eq(schema.tasks.id, task.id)).run();
+    const restarted = makePipeline();
+    restarted.recover();
+    expect(restarted.getTask(task.id).status).toBe('paused');
+    publisher.alreadyPosted = 'https://github.com/acme/app/pull/1#pullrequestreview-9';
+    await restarted.action(task.id, 'resume');
+    const t = restarted.getTask(task.id);
+    expect(t.status).toBe('done');
+    expect(t.reviewPostedUrl).toContain('review-9');
+    expect(publisher.posted).toHaveLength(0);
+    await restarted.shutdown();
+  });
+
+  it('refuses "fix it" for a PR from a fork', async () => {
+    addOriginWithPr();
+    publisher.headRepo = 'someone/app-fork';
+    const review = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    await expect(pipeline.fixIt(review.id)).rejects.toThrow(/fork/);
+  });
+
+  it('treats PR links case-insensitively and never picks up twice, even concurrently', async () => {
+    addOriginWithPr();
+    setSetting(db, 'reviewAutoPickup', true);
+    const manual = await pipeline.createReviewTask('https://github.com/ACME/App/pull/1');
+    expect(manual.prUrl).toBe('https://github.com/acme/app/pull/1');
+    publisher.requests = [
+      { url: 'https://github.com/Acme/App/pull/1', repo: 'acme/app', number: 1, title: 'x', changedLines: -1 },
+      { url: 'https://github.com/acme/app/pull/2', repo: 'acme/app', number: 2, title: 'y', changedLines: -1 },
+    ];
+    const [a, b] = await Promise.all([pipeline.pickUpReviews(), pipeline.pickUpReviews()]);
+    expect(a + b).toBe(1);
+    expect(db.select().from(schema.tasks).all().filter((t) => t.kind === 'review')).toHaveLength(2);
+  });
+
+  it('skips PRs below the size threshold and remembers that', async () => {
+    addOriginWithPr();
+    setSetting(db, 'reviewAutoPickup', true);
+    setSetting(db, 'reviewMinLines', 50);
+    publisher.requests = [{ url: 'https://github.com/acme/app/pull/1', repo: 'acme/app', number: 1, title: 'x', changedLines: -1 }];
+    expect(await pipeline.pickUpReviews()).toBe(0);
+    const calls = publisher.prInfoCalls;
+    expect(await pipeline.pickUpReviews()).toBe(0);
+    expect(publisher.prInfoCalls).toBe(calls);
   });
 });

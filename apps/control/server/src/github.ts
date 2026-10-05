@@ -12,6 +12,8 @@ export interface PrInfo {
   baseRef: string;
   changedLines: number;
   state: string;
+  /** owner/name the head branch lives in; differs from the base repo for fork PRs. */
+  headRepo: string | null;
 }
 
 export interface ReviewRequest {
@@ -36,6 +38,8 @@ export interface Publisher {
   postReview(repo: Repo, slug: string, number: number, review: PostedReview): Promise<string>;
   reviewRequests(account: string | null): Promise<ReviewRequest[]>;
   login(account: string | null): Promise<string>;
+  /** A review I already posted on this commit (to avoid posting twice after a restart), or null. */
+  findMyReview(repo: Repo, slug: string, number: number, commitId: string): Promise<string | null>;
 }
 
 /** Hard limits, enforced here regardless of settings. */
@@ -85,7 +89,7 @@ export class GhPublisher implements Publisher {
       title: string;
       body: string | null;
       user: { login: string };
-      head: { sha: string; ref: string };
+      head: { sha: string; ref: string; repo: { full_name: string } | null };
       base: { ref: string };
       additions: number;
       deletions: number;
@@ -100,6 +104,7 @@ export class GhPublisher implements Publisher {
       baseRef: pr.base.ref,
       changedLines: pr.additions + pr.deletions,
       state: pr.state,
+      headRepo: pr.head.repo?.full_name.toLowerCase() ?? null,
     };
   }
 
@@ -125,6 +130,13 @@ export class GhPublisher implements Publisher {
     );
     const items = JSON.parse(out) as Array<{ url: string; repository: { nameWithOwner: string }; number: number; title: string }>;
     return items.map((i) => ({ url: i.url, repo: i.repository.nameWithOwner.toLowerCase(), number: i.number, title: i.title, changedLines: -1 }));
+  }
+
+  async findMyReview(repo: Repo, slug: string, number: number, commitId: string): Promise<string | null> {
+    const me = (await this.login(repo.ghAccount)).toLowerCase();
+    const out = await runOk('gh', ['api', '--paginate', `repos/${slug}/pulls/${number}/reviews`], { env: await ghEnv(repo.ghAccount) });
+    const reviews = JSON.parse(out.replace(/\]\s*\[/g, ',')) as Array<{ user: { login: string } | null; commit_id: string; html_url: string }>;
+    return reviews.find((r) => r.user?.login.toLowerCase() === me && r.commit_id === commitId)?.html_url ?? null;
   }
 
   async login(account: string | null): Promise<string> {

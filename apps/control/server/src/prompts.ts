@@ -18,7 +18,6 @@ export interface PromptContext {
   diff?: string;
 }
 
-
 const JOBS: Record<ContractStep, string> = {
   intake:
     'Size and route this task. Skim the repo only as much as you need to judge it. Do not plan the implementation.',
@@ -34,7 +33,7 @@ const JOBS: Record<ContractStep, string> = {
     "Write tests for the plan's acceptance criteria, then run the full test suite. Only create or change test files.",
   retro: 'The task is finished. Write the retrospective from the documents below.',
   reviewing_pr:
-    "Review this pull request as a strict, constructive senior reviewer. Your current directory is a checkout of the PR's head. Read the code around the changes, and run the repo's tests or lint if that helps you judge. Your draft is edited by the owner before anything is posted.",
+    "Review this pull request as a strict, constructive senior reviewer. Your current directory is a checkout of the PR's head. Read the code around the changes. Do NOT run anything from the PR (no tests, builds, installs or scripts): its code is untrusted, so judge it by reading. Your draft is edited by the owner before anything is posted.",
 };
 
 /** Which handoff documents each step reads. */
@@ -75,7 +74,9 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
   const notes = repoNotes(ctx.worktree);
   if (notes) parts.push(`## Repo instructions\n${notes}`);
   if (task.kind === 'review') {
-    parts.push(`## Pull request\n${task.prRepo}#${task.prNumber} by ${task.prAuthor}: ${task.title}\n${task.input}`);
+    parts.push(
+      `## Pull request\n${task.prRepo}#${task.prNumber} by ${task.prAuthor}: ${task.title}\n${task.input}`,
+    );
   } else {
     parts.push(`## The request (owner's words)\n${task.input}`);
   }
@@ -84,15 +85,24 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
     .map((name) => [name, docs.latest(task.id, name)] as const)
     .filter(([, text]) => text);
   if (included.length) {
-    parts.push(`## Handoff documents\n${included.map(([name, text]) => `### ${name}.md\n${text}`).join('\n\n')}`);
+    parts.push(
+      `## Handoff documents\n${included.map(([name, text]) => `### ${name}.md\n${text}`).join('\n\n')}`,
+    );
   }
   if (ctx.feedback) parts.push(`## Feedback to address\n${ctx.feedback}`);
   if (ctx.diff) {
-    const d = ctx.diff.length > MAX_DIFF ? `${ctx.diff.slice(0, MAX_DIFF)}\n… (truncated; run git diff ${task.baseSha} for the rest)` : ctx.diff;
-    parts.push(`## Diff against ${repo.defaultBranch} (base ${task.baseSha?.slice(0, 10)})\n\`\`\`diff\n${d}\n\`\`\``);
+    const d =
+      ctx.diff.length > MAX_DIFF
+        ? `${ctx.diff.slice(0, MAX_DIFF)}\n… (truncated; run git diff ${task.baseSha} for the rest)`
+        : ctx.diff;
+    parts.push(
+      `## Diff against ${repo.defaultBranch} (base ${task.baseSha?.slice(0, 10)})\n\`\`\`diff\n${d}\n\`\`\``,
+    );
   }
   if (step === 'planning' && task.designFlag) {
-    parts.push('## Design review\nThis task was flagged as UI or architecture work: include the Design section in the plan.');
+    parts.push(
+      '## Design review\nThis task was flagged as UI or architecture work: include the Design section in the plan.',
+    );
   }
   parts.push(`## Your job now\n${JOBS[step]}`);
   parts.push(

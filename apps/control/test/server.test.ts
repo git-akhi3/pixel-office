@@ -45,6 +45,7 @@ beforeEach(async () => {
       postReview: async () => '',
       reviewRequests: async () => [],
       login: async () => 'me',
+      findMyReview: async () => null,
     },
     docs,
   });
@@ -96,6 +97,11 @@ describe('server', () => {
     expect(r.statusCode).toBe(400);
     const ok = await app.inject({ method: 'PUT', url: '/api/settings', headers, payload: { autoApprovePush: true, concurrency: 3 } });
     expect(ok.json()).toMatchObject({ autoApprovePush: true, concurrency: 3 });
+  });
+
+  it('rejects an empty review comment edit with a 400, not a 500', async () => {
+    const r = await app.inject({ method: 'PUT', url: '/api/review-comments/1', headers, payload: {} });
+    expect(r.statusCode).toBe(400);
   });
 
   it('refuses document paths that escape the task folder', async () => {

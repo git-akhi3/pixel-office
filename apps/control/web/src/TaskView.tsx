@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type Gate, type OfficeEvent, type TaskDetail } from './api';
-import { ReviewPanel } from './Review';
+import { flushReviewEdits, ReviewPanel } from './Review';
 import { DiffView, Doc, duration, formatTokens, StatusBadge, timeAgo } from './ui';
 
 type Tab = 'docs' | 'diff' | 'activity' | 'runs';
@@ -217,6 +217,7 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
   const decide = async (decision: string) => {
     setBusy(true);
     try {
+      if (gate.kind === 'review_post') await flushReviewEdits();
       await api.decide(gate.id, decision, comment || undefined);
       onDone();
     } catch (e) {

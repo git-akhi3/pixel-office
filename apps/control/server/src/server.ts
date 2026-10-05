@@ -171,7 +171,10 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   app.post('/api/reviews/pickup', async () => ({ created: await pipeline.pickUpReviews() }));
 
   app.put('/api/review-comments/:id', async (req) => {
-    const patch = z.object({ body: z.string().trim().min(1).max(10_000).optional(), deleted: z.boolean().optional() }).parse(req.body);
+    const patch = z
+      .object({ body: z.string().trim().min(1).max(10_000).optional(), deleted: z.boolean().optional() })
+      .refine((p) => p.body !== undefined || p.deleted !== undefined, 'Send body or deleted.')
+      .parse(req.body);
     return pipeline.editReviewComment(id.parse((req.params as { id: string }).id), patch);
   });
 

@@ -30,7 +30,10 @@ export function NewTask({ repos, onError }: { repos: Repo[]; onError: (e: unknow
     if (mode === 'review' ? !prUrl.trim() : repoId === '' || !input.trim()) return;
     setBusy(true);
     try {
-      const task = mode === 'review' ? await api.createReview(prUrl.trim()) : await api.createTask({ repoId: repoId as number, input, kind });
+      const task =
+        mode === 'review'
+          ? await api.createReview(prUrl.trim())
+          : await api.createTask({ repoId: repoId as number, input, kind });
       location.hash = `#/task/${task.id}`;
     } catch (err) {
       onError(err);
@@ -57,64 +60,101 @@ export function NewTask({ repos, onError }: { repos: Repo[]; onError: (e: unknow
         <>
           <label>
             Pull request link
-            <input value={prUrl} onChange={(e) => setPrUrl(e.target.value)} placeholder="https://github.com/owner/repo/pull/123" />
+            <input
+              value={prUrl}
+              onChange={(e) => setPrUrl(e.target.value)}
+              placeholder="https://github.com/owner/repo/pull/123"
+            />
           </label>
-          <p className="hint">The PR's repo must be registered under Repos. The reviewer drafts comments; you edit them and decide whether to post.</p>
+          <p className="hint">
+            The PR's repo must be registered under Repos. The reviewer drafts comments; you edit them and
+            decide whether to post.
+          </p>
           <button className="primary" disabled={busy || !prUrl.trim()}>
             {busy ? 'Creating…' : 'Review it'}
           </button>
         </>
       ) : (
         <>
-      <label>
-        Repository
-        <select value={repoId} onChange={(e) => setRepoId(Number(e.target.value))}>
-          {repos.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <fieldset className="segmented">
-        <legend>Kind</legend>
-        {(['feature', 'bug'] as const).map((k) => (
-          <label key={k} className={kind === k ? 'active' : ''}>
-            <input type="radio" name="kind" checked={kind === k} onChange={() => setKind(k)} />
-            {k === 'feature' ? 'Feature / change' : 'Bug'}
+          <label>
+            Repository
+            <select value={repoId} onChange={(e) => setRepoId(Number(e.target.value))}>
+              {repos.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
           </label>
-        ))}
-      </fieldset>
-      <label>
-        What should be done?
-        <textarea
-          rows={8}
-          required
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Describe the task as you would to a teammate: what, why, and anything they should know (links, error messages, files)."
-        />
-      </label>
-      <p className="hint">The manager sizes it, the architect writes a plan, and you approve the plan before any code is written.</p>
-      <button className="primary" disabled={busy || !input.trim()}>
-        {busy ? 'Creating…' : 'Hand it to the team'}
-      </button>
+          <fieldset className="segmented">
+            <legend>Kind</legend>
+            {(['feature', 'bug'] as const).map((k) => (
+              <label key={k} className={kind === k ? 'active' : ''}>
+                <input type="radio" name="kind" checked={kind === k} onChange={() => setKind(k)} />
+                {k === 'feature' ? 'Feature / change' : 'Bug'}
+              </label>
+            ))}
+          </fieldset>
+          <label>
+            What should be done?
+            <textarea
+              rows={8}
+              required
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Describe the task as you would to a teammate: what, why, and anything they should know (links, error messages, files)."
+            />
+          </label>
+          <p className="hint">
+            The manager sizes it, the architect writes a plan, and you approve the plan before any code is
+            written.
+          </p>
+          <button className="primary" disabled={busy || !input.trim()}>
+            {busy ? 'Creating…' : 'Hand it to the team'}
+          </button>
         </>
       )}
     </form>
   );
 }
 
-const EMPTY: Partial<Repo> = { name: '', path: '', defaultBranch: 'main', protectedBranches: [], setupCmd: '', buildCmd: '', testCmd: '', lintCmd: '', ghAccount: '', gitAuthor: '', allowlist: [] };
+const EMPTY: Partial<Repo> = {
+  name: '',
+  path: '',
+  defaultBranch: 'main',
+  protectedBranches: [],
+  setupCmd: '',
+  buildCmd: '',
+  testCmd: '',
+  lintCmd: '',
+  ghAccount: '',
+  gitAuthor: '',
+  allowlist: [],
+};
 
-const lines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean);
+const lines = (s: string) =>
+  s
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
 
-export function Repos({ repos, reload, onError }: { repos: Repo[]; reload: () => void; onError: (e: unknown) => void }) {
+export function Repos({
+  repos,
+  reload,
+  onError,
+}: {
+  repos: Repo[];
+  reload: () => void;
+  onError: (e: unknown) => void;
+}) {
   const [editing, setEditing] = useState<Partial<Repo> | null>(null);
   const [accounts, setAccounts] = useState<string[]>([]);
 
   useEffect(() => {
-    api.ghAccounts().then(setAccounts).catch(() => setAccounts([]));
+    api
+      .ghAccounts()
+      .then(setAccounts)
+      .catch(() => setAccounts([]));
   }, []);
 
   const save = async (e: React.FormEvent) => {
@@ -157,33 +197,63 @@ export function Repos({ repos, reload, onError }: { repos: Repo[]; reload: () =>
         <div className="grid2">
           <label>
             Name
-            <input required value={editing.name ?? ''} onChange={(e) => set('name', e.target.value)} placeholder="galaxy" />
+            <input
+              required
+              value={editing.name ?? ''}
+              onChange={(e) => set('name', e.target.value)}
+              placeholder="galaxy"
+            />
           </label>
           <label>
             Default branch
-            <input required value={editing.defaultBranch ?? ''} onChange={(e) => set('defaultBranch', e.target.value)} />
+            <input
+              required
+              value={editing.defaultBranch ?? ''}
+              onChange={(e) => set('defaultBranch', e.target.value)}
+            />
           </label>
         </div>
         <label>
           Local path (repository root)
-          <input required value={editing.path ?? ''} onChange={(e) => set('path', e.target.value)} placeholder="/Users/you/code/galaxy" />
+          <input
+            required
+            value={editing.path ?? ''}
+            onChange={(e) => set('path', e.target.value)}
+            placeholder="/Users/you/code/galaxy"
+          />
         </label>
         <label>
           Worktree setup command (run by the office in each new worktree; $REPO_PATH is this checkout)
-          <input value={editing.setupCmd ?? ''} onChange={(e) => set('setupCmd', e.target.value)} placeholder={'npm ci   or   ln -s "$REPO_PATH/.venv" .venv'} />
+          <input
+            value={editing.setupCmd ?? ''}
+            onChange={(e) => set('setupCmd', e.target.value)}
+            placeholder={'npm ci   or   ln -s "$REPO_PATH/.venv" .venv'}
+          />
         </label>
         <div className="grid3">
           <label>
             Build command
-            <input value={editing.buildCmd ?? ''} onChange={(e) => set('buildCmd', e.target.value)} placeholder="npm run build" />
+            <input
+              value={editing.buildCmd ?? ''}
+              onChange={(e) => set('buildCmd', e.target.value)}
+              placeholder="npm run build"
+            />
           </label>
           <label>
             Test command
-            <input value={editing.testCmd ?? ''} onChange={(e) => set('testCmd', e.target.value)} placeholder="npm test" />
+            <input
+              value={editing.testCmd ?? ''}
+              onChange={(e) => set('testCmd', e.target.value)}
+              placeholder="npm test"
+            />
           </label>
           <label>
             Lint command
-            <input value={editing.lintCmd ?? ''} onChange={(e) => set('lintCmd', e.target.value)} placeholder="npm run lint" />
+            <input
+              value={editing.lintCmd ?? ''}
+              onChange={(e) => set('lintCmd', e.target.value)}
+              placeholder="npm run lint"
+            />
           </label>
         </div>
         <div className="grid2">
@@ -198,16 +268,29 @@ export function Repos({ repos, reload, onError }: { repos: Repo[]; reload: () =>
           </label>
           <label>
             Git author, if the repo has none
-            <input value={editing.gitAuthor ?? ''} onChange={(e) => set('gitAuthor', e.target.value)} placeholder="Your Name <you@example.com>" />
+            <input
+              value={editing.gitAuthor ?? ''}
+              onChange={(e) => set('gitAuthor', e.target.value)}
+              placeholder="Your Name <you@example.com>"
+            />
           </label>
         </div>
         <label>
           Protected branches (one per line; main, master and the default branch are always protected)
-          <textarea rows={2} value={(editing.protectedBranches ?? []).join('\n')} onChange={(e) => set('protectedBranches', lines(e.target.value))} />
+          <textarea
+            rows={2}
+            value={(editing.protectedBranches ?? []).join('\n')}
+            onChange={(e) => set('protectedBranches', lines(e.target.value))}
+          />
         </label>
         <label>
           Extra allowed commands (one per line; end with " *" to allow any arguments)
-          <textarea rows={4} value={(editing.allowlist ?? []).join('\n')} onChange={(e) => set('allowlist', lines(e.target.value))} placeholder={'npx tsc --noEmit\nnpm run *'} />
+          <textarea
+            rows={4}
+            value={(editing.allowlist ?? []).join('\n')}
+            onChange={(e) => set('allowlist', lines(e.target.value))}
+            placeholder={'npx tsc --noEmit\nnpm run *'}
+          />
         </label>
         <div className="gate-buttons">
           <button className="primary">Save</button>
@@ -272,11 +355,16 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
     <div className="panel">
       <h1>Settings</h1>
       <label className="switch">
-        <input type="checkbox" checked={s.autoApprovePush} onChange={(e) => save({ autoApprovePush: e.target.checked })} />
+        <input
+          type="checkbox"
+          checked={s.autoApprovePush}
+          onChange={(e) => save({ autoApprovePush: e.target.checked })}
+        />
         <span>
           <strong>Auto-approve push and draft PR</strong>
           <span className="hint">
-            Only when review and tests both pass. Never pushes protected branches; PRs always open as drafts. Plans always wait for you.
+            Only when review and tests both pass. Never pushes protected branches; PRs always open as drafts.
+            Plans always wait for you.
           </span>
         </span>
       </label>
@@ -291,24 +379,53 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
       </label>
       <h2>PR reviews</h2>
       <label className="switch">
-        <input type="checkbox" checked={s.reviewAutoPickup} onChange={(e) => save({ reviewAutoPickup: e.target.checked })} />
+        <input
+          type="checkbox"
+          checked={s.reviewAutoPickup}
+          onChange={(e) => save({ reviewAutoPickup: e.target.checked })}
+        />
         <span>
           <strong>Pick up review requests automatically</strong>
-          <span className="hint">Every 10 minutes, PRs that request your review (in registered repos, per GitHub account) get a draft review. Nothing is posted without you.</span>
+          <span className="hint">
+            Every 10 minutes, PRs that request your review (in registered repos, per GitHub account) get a
+            draft review. Nothing is posted without you.
+          </span>
         </span>
       </label>
       <label>
         Skip PRs smaller than (changed lines)
-        <input type="number" min={0} value={s.reviewMinLines} onChange={(e) => save({ reviewMinLines: Math.max(0, Number(e.target.value) || 0) })} />
+        <input
+          type="number"
+          min={0}
+          value={s.reviewMinLines}
+          onChange={(e) => save({ reviewMinLines: Math.max(0, Number(e.target.value) || 0) })}
+        />
       </label>
-      <button onClick={async () => { try { const r = await api.pickupReviews(); alert(r.created ? `Queued ${r.created} review(s).` : 'No new review requests.'); } catch (err) { onError(err); } }}>
+      <button
+        onClick={async () => {
+          try {
+            const r = await api.pickupReviews();
+            alert(r.created ? `Queued ${r.created} review(s).` : 'No new review requests.');
+          } catch (err) {
+            onError(err);
+          }
+        }}
+      >
         Check for review requests now
       </button>
       <h2>Usage</h2>
       {s.rateLimit ? (
         <p>
-          5-hour window: <strong>{pct(s.rateLimit.fiveHour)}</strong> · 7-day: <strong>{pct(s.rateLimit.sevenDay)}</strong>
-          <span className="hint"> (as of {timeAgo(s.rateLimit.at)}{s.rateLimit.resetsAt ? `, 5-hour window resets ${new Date(s.rateLimit.resetsAt * 1000).toLocaleTimeString()}` : ''})</span>
+          5-hour window: <strong>{pct(s.rateLimit.fiveHour)}</strong> · 7-day:{' '}
+          <strong>{pct(s.rateLimit.sevenDay)}</strong>
+          <span className="hint">
+            {' '}
+            (as of {timeAgo(s.rateLimit.at)}
+            {s.rateLimit.resetsAt
+              ? `, 5-hour window resets ${new Date(s.rateLimit.resetsAt * 1000).toLocaleTimeString()}`
+              : ''}
+            )
+          </span>
         </p>
       ) : (
         <p className="hint">Shown after the first agent run.</p>

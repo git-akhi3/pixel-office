@@ -47,6 +47,9 @@ export async function createWorktree(
 /**
  * A detached checkout of a pull request's head for reviewing. baseSha is the merge base with the PR's
  * base branch, so the diff shows exactly the PR's changes.
+ *
+ * The PR head is fetched into a ref unique to this task (concurrent reviews must not share FETCH_HEAD).
+ * The setup command is NOT run: a PR's code is untrusted and must never execute here.
  */
 export async function createReviewWorktree(
   repo: Repo,
@@ -57,15 +60,16 @@ export async function createReviewWorktree(
 ): Promise<{ path: string; headSha: string; baseSha: string }> {
   const path = join(worktreesDir, String(taskId));
   if (!existsSync(path)) {
-    await git(repo.path, ['fetch', '--quiet', 'origin', `pull/${prNumber}/head`, baseRef], { timeoutMs: 120_000 });
-    const head = (await git(repo.path, ['rev-parse', 'FETCH_HEAD'])).trim();
-    await git(repo.path, ['worktree', 'add', '--detach', path, head]);
-    await runSetup(repo, path);
+    const ref = reviewRef(taskId);
+    await git(repo.path, ['fetch', '--quiet', 'origin', `+pull/${prNumber}/head:${ref}`, `+${baseRef}:refs/remotes/origin/${baseRef}`], { timeoutMs: 120_000 });
+    await git(repo.path, ['worktree', 'add', '--detach', path, ref]);
   }
   const headSha = (await git(path, ['rev-parse', 'HEAD'])).trim();
   const baseSha = (await git(path, ['merge-base', `origin/${baseRef}`, 'HEAD'])).trim();
   return { path: realpathSync(path), headSha, baseSha };
 }
+
+export const reviewRef = (taskId: number) => `refs/office/pr/${taskId}`;
 
 async function runSetup(repo: Repo, path: string): Promise<void> {
   if (repo.setupCmd) {
@@ -122,12 +126,16 @@ export async function changedFiles(worktree: string, baseSha: string): Promise<s
   );
 }
 
-export async function diff(worktree: string, baseSha: string, maxChars = 400_000): Promise<string> {
-  const out = await git(worktree, ['diff', '--stat', '--patch', baseSha]);
+/** Stable diff output whatever the user's git config says (prefixes, color, external diff tools). */
+const DIFF_FLAGS = ['--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
+
+/** The diff from base. `committedOnly` compares base..HEAD, ignoring anything uncommitted in the worktree. */
+export async function diff(worktree: string, baseSha: string, maxChars = 400_000, committedOnly = false): Promise<string> {
+  const out = await git(worktree, ['diff', ...DIFF_FLAGS, '--stat', '--patch', baseSha, ...(committedOnly ? ['HEAD'] : [])]);
   return out.length > maxChars ? `${out.slice(0, maxChars)}\n\n… diff truncated (${out.length} chars)` : out;
 }
 
-export async function removeWorktree(repo: Repo, path: string): Promise<void> {
-  if (!existsSync(path)) return;
-  await git(repo.path, ['worktree', 'remove', '--force', path]);
+export async function removeWorktree(repo: Repo, path: string, taskId?: number): Promise<void> {
+  if (existsSync(path)) await git(repo.path, ['worktree', 'remove', '--force', path]);
+  if (taskId !== undefined) await run('git', ['update-ref', '-d', reviewRef(taskId)], { cwd: repo.path });
 }

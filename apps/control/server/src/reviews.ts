@@ -20,7 +20,8 @@ export const prSlug = (r: { owner: string; name: string }) => `${r.owner}/${r.na
 /** owner/name of a checkout's origin remote, or null if it isn't on GitHub. */
 export async function originSlug(repoPath: string): Promise<string | null> {
   const r = await run('git', ['remote', 'get-url', 'origin'], { cwd: repoPath });
-  const m = r.stdout.trim().match(/github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
+  // Also matches SSH host aliases such as git@github-work:org/repo (common with several gh accounts).
+  const m = r.stdout.trim().match(/github[\w.-]*[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/);
   return m ? prSlug({ owner: m[1]!, name: m[2]! }) : null;
 }
 
@@ -32,24 +33,30 @@ export function commentableLines(diff: string): Map<string, Set<number>> {
   const out = new Map<string, Set<number>>();
   let file: string | null = null;
   let line = 0;
+  let inHunk = false;
   for (const raw of diff.split('\n')) {
     if (raw.startsWith('diff --git')) {
       file = null;
+      inHunk = false;
       continue;
     }
-    const plus = raw.match(/^\+\+\+ (?:b\/)?(.+)$/);
-    if (plus) {
-      file = plus[1] === '/dev/null' ? null : plus[1]!;
-      if (file && !out.has(file)) out.set(file, new Set());
-      continue;
+    // ---/+++ are file headers only before the first hunk; inside a hunk they are content lines.
+    if (!inHunk) {
+      const plus = raw.match(/^\+\+\+ (?:b\/)?(.+)$/);
+      if (plus) {
+        file = plus[1] === '/dev/null' ? null : plus[1]!;
+        if (file && !out.has(file)) out.set(file, new Set());
+        continue;
+      }
+      if (raw.startsWith('--- ')) continue;
     }
-    if (raw.startsWith('--- ')) continue;
     const hunk = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunk) {
       line = Number(hunk[1]);
+      inHunk = true;
       continue;
     }
-    if (!file || line === 0) continue;
+    if (!file || !inHunk) continue;
     if (raw.startsWith('+') || raw.startsWith(' ')) {
       out.get(file)!.add(line);
       line++;
@@ -71,8 +78,9 @@ export function parseReviewDoc(text: string): { summary: string; comments: Draft
   const { body } = parseDoc(text);
   const summary = body.match(/## Summary\s*\n([\s\S]*?)(?=\n## |\s*$)/)?.[1]?.trim() ?? '';
   const comments: DraftComment[] = [];
-  for (const m of body.matchAll(/^- \[(blocking|suggestion|nit)\]\s+`?([^\s`:]+)`?:(\d+)\s*[—–-]+\s*(.+)$/gm)) {
-    comments.push({ severity: m[1] as DraftComment['severity'], path: m[2]!, line: Number(m[3]), body: m[4]!.trim() });
+  // "path:12" or a range "path:10-12" (GitHub anchors a comment on the range's last line).
+  for (const m of body.matchAll(/^- \[(blocking|suggestion|nit)\]\s+`?([^\s`:]+)`?:(\d+)(?:-(\d+))?\s*[—–-]+\s*(.+)$/gm)) {
+    comments.push({ severity: m[1] as DraftComment['severity'], path: m[2]!, line: Number(m[4] ?? m[3]), body: m[5]!.trim() });
   }
   return { summary, comments };
 }

@@ -48,7 +48,37 @@ describe('commentableLines', () => {
   });
 });
 
+describe('commentableLines edge cases', () => {
+  it('treats +++/--- inside a hunk as content, and handles renames, binaries and no-newline markers', () => {
+    const d = [
+      'diff --git a/old.ts b/new.ts',
+      'similarity index 90%',
+      'rename from old.ts',
+      'rename to new.ts',
+      '--- a/old.ts',
+      '+++ b/new.ts',
+      '@@ -1,2 +1,3 @@',
+      ' keep',
+      '+++ looks like a header',
+      '--- looks like a header too',
+      '+last',
+      '\\ No newline at end of file',
+      'diff --git a/img.png b/img.png',
+      'Binary files a/img.png and b/img.png differ',
+    ].join('\n');
+    const lines = commentableLines(d);
+    expect([...lines.get('new.ts')!]).toEqual([1, 2, 3]);
+    expect(lines.has('img.png')).toBe(false);
+    expect(lines.has('looks like a header')).toBe(false);
+  });
+});
+
 describe('parseReviewDoc', () => {
+  it('anchors a line range on its last line', () => {
+    const { comments } = parseReviewDoc('## Comments\n- [nit] src/a.ts:10-12 — tidy this block');
+    expect(comments[0]).toMatchObject({ line: 12, body: 'tidy this block' });
+  });
+
   it('reads the summary and comments, including backticked paths and different dashes', () => {
     const doc = `---\nverdict: request_changes\n---\n## Summary\nAdds caching. One bug.\n\n## Comments\n- [blocking] src/a.ts:3 — off by one\n- [nit] \`src/new.ts\`:2 - naming\n- [suggestion] src/a.ts:21 – extract helper`;
     const { summary, comments } = parseReviewDoc(doc);
