@@ -153,6 +153,20 @@ describe('shell allow-list', () => {
     expect(decision(checkCommand(ctx(), 'echo $(cat x)'))).toBe('ask');
   });
 
+  it.each([
+    'rg --pre ./evil.sh foo',
+    'rg foo --pre=./evil.sh',
+    'git grep -O./evil.sh foo',
+    'git grep --open-files-in-pager=sh foo',
+    'git diff --ext-diff',
+    'git diff --output=/tmp/x',
+    'git -c core.pager=./evil.sh log',
+    'sort -o out.txt in.txt',
+    'tree -o x.txt',
+  ])('blocks read-only tools used to run or write: %s', (cmd) => {
+    expect(decision(checkCommand(ctx(), cmd))).toBe('deny');
+  });
+
   it('allows read-only text pipelines', () => {
     expect(decision(checkCommand(ctx(), `cat tsconfig*.json | grep -n "strict\\|noUnused" ; grep -o '"category": "[^"]*"' src/seed.json | sort | uniq -c | head -30`))).toBe('allow');
     expect(decision(checkCommand(ctx(), 'find . -name x -delete'))).toBe('ask');

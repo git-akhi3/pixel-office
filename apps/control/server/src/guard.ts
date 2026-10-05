@@ -120,6 +120,11 @@ const DENIED_COMMANDS: Array<[RegExp, string]> = [
   [/(^|[\s;&|(])gh(\s|$)/, 'only the office talks to GitHub'],
   [/\bgit\s+(remote\s+(add|set-url|remove|rm|rename)|config|commit|merge|rebase|tag|worktree|filter-branch|update-ref|reset\s+--hard|clean\s+-\w*f)\b/, 'the office manages git history; agents only edit files'],
   [/\bsudo\b/, 'no sudo'],
+  // Flags that make "read-only" tools run programs or write files.
+  [/\brg\b[^|;&]*\s--pre(-glob)?(=|\s)/, 'rg --pre runs a program'],
+  [/\bgit\b[^|;&]*\s(-O|--open-files-in-pager|--ext-diff|--output)(\S*)/, 'that git flag runs a program or writes a file'],
+  [/\bgit\s+(-c|--config-env|--exec-path)\b/, 'no git config overrides'],
+  [/\b(sort|tree)\b[^|;&]*\s(-o|--output)(=|\s|\S)/, 'that flag writes a file'],
   [/\brm\s+-\w*r\w*\s+(\/|~|\$HOME)(\s|$|\/\s|\/$)/, 'no deleting outside the project'],
   [/\b(curl|wget)\b[^|]*\|\s*(ba|z)?sh\b/, 'no piping downloads into a shell'],
   [/\b(printenv|security|launchctl|crontab|osascript)\b|(^|[;&|]\s*)(env|set|export\s+-p|declare\s+-x)\s*($|[;&|])/, 'no reading the environment or system credentials'],

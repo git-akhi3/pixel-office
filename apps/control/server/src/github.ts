@@ -38,8 +38,8 @@ export interface Publisher {
   postReview(repo: Repo, slug: string, number: number, review: PostedReview): Promise<string>;
   reviewRequests(account: string | null): Promise<ReviewRequest[]>;
   login(account: string | null): Promise<string>;
-  /** A review I already posted on this commit (to avoid posting twice after a restart), or null. */
-  findMyReview(repo: Repo, slug: string, number: number, commitId: string): Promise<string | null>;
+  /** A submitted review whose body contains `marker` (to avoid posting twice after a crash mid-post), or null. */
+  findReviewWithMarker(repo: Repo, slug: string, number: number, marker: string): Promise<string | null>;
 }
 
 /** Hard limits, enforced here regardless of settings. */
@@ -132,11 +132,10 @@ export class GhPublisher implements Publisher {
     return items.map((i) => ({ url: i.url, repo: i.repository.nameWithOwner.toLowerCase(), number: i.number, title: i.title, changedLines: -1 }));
   }
 
-  async findMyReview(repo: Repo, slug: string, number: number, commitId: string): Promise<string | null> {
-    const me = (await this.login(repo.ghAccount)).toLowerCase();
+  async findReviewWithMarker(repo: Repo, slug: string, number: number, marker: string): Promise<string | null> {
     const out = await runOk('gh', ['api', '--paginate', `repos/${slug}/pulls/${number}/reviews`], { env: await ghEnv(repo.ghAccount) });
-    const reviews = JSON.parse(out.replace(/\]\s*\[/g, ',')) as Array<{ user: { login: string } | null; commit_id: string; html_url: string }>;
-    return reviews.find((r) => r.user?.login.toLowerCase() === me && r.commit_id === commitId)?.html_url ?? null;
+    const reviews = JSON.parse(out.replace(/\]\s*\[/g, ',')) as Array<{ body: string | null; state: string; html_url: string }>;
+    return reviews.find((r) => r.state !== 'PENDING' && (r.body ?? '').includes(marker))?.html_url ?? null;
   }
 
   async login(account: string | null): Promise<string> {

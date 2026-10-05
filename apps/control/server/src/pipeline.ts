@@ -24,6 +24,10 @@ import { changedFiles, commitAll, createReviewWorktree, createWorktree, diff, re
 
 /** One spelling per PR, so manual and auto-picked reviews of the same PR match. */
 const canonicalPrUrl = (slug: string, number: number) => `https://github.com/${slug.toLowerCase()}/pull/${number}`;
+/** Hidden in posted review bodies so a resumed post can tell whether GitHub already has it. */
+const reviewMarker = (taskId: number) => `<!-- pixel-office review task #${taskId} -->`;
+/** Auto-pickup retries a skipped or failed PR after this long (it may have grown or the error passed). */
+const PICKUP_RETRY_MS = 60 * 60 * 1000;
 
 export const MAX_CODER_LOOPS = 2;
 export const MAX_REPLANS = 2;
@@ -64,8 +68,8 @@ export class Pipeline {
   private running = new Map<number, AbortController>();
   private currentRun = new Map<number, number>();
   private pickingUp = false;
-  /** PRs auto-pickup decided to skip (too small, or failed), until the server restarts. */
-  private skippedPrs = new Set<string>();
+  /** PRs auto-pickup skipped (too small, or failed) and when, so they are retried later rather than every sweep. */
+  private skippedPrs = new Map<string, number>();
   private pending = new Map<number, PendingPermission>();
   private timers: NodeJS.Timeout[] = [];
   private ticking = false;
@@ -643,7 +647,7 @@ export class Pipeline {
         const target = task.resumeStatus ?? 'queued';
         this.deps.bus.emit(taskId, 'resumed', { status: target });
         if (target === 'posting_review') {
-          await this.postReview(task);
+          await this.postReview(task, true);
           return this.getTask(taskId);
         }
         if (target === 'pushing') {
@@ -758,12 +762,17 @@ export class Pipeline {
     return this.update(taskId, { reviewSummary: summary });
   }
 
-  private async postReview(task: Task): Promise<void> {
+  /**
+   * Posts the edited draft. `resuming` is true only when continuing an interrupted post: then GitHub may
+   * already have it, recognised by this task's marker in the body (never by author or commit, which
+   * would match reviews I wrote by hand).
+   */
+  private async postReview(task: Task, resuming = false): Promise<void> {
     task = this.update(task.id, { status: 'posting_review', statusNote: null });
     const repo = getRepo(this.deps.db, task.repoId);
+    const marker = reviewMarker(task.id);
     try {
-      // After a restart or failure, GitHub may already have the review: never post it twice.
-      const existing = await this.deps.publisher.findMyReview(repo, task.prRepo!, task.prNumber!, task.prHeadSha!);
+      const existing = resuming ? await this.deps.publisher.findReviewWithMarker(repo, task.prRepo!, task.prNumber!, marker) : null;
       if (existing) {
         this.update(task.id, { status: 'done', doneAt: this.now(), reviewPostedUrl: existing });
         this.deps.bus.emit(task.id, 'review_posted', { url: existing, alreadyPosted: true });
@@ -776,7 +785,7 @@ export class Pipeline {
       const { inline, general } = splitComments(kept, commentableLines(prDiff));
       const url = await this.deps.publisher.postReview(repo, task.prRepo!, task.prNumber!, {
         commitId: task.prHeadSha!,
-        body: reviewBody(task.reviewSummary ?? '', general),
+        body: `${reviewBody(task.reviewSummary ?? '', general)}\n\n${marker}`,
         comments: inline.map((c) => ({ path: c.path, line: c.line, body: formatComment(c) })),
       });
       this.update(task.id, { status: 'done', doneAt: this.now(), reviewPostedUrl: url });
@@ -849,18 +858,19 @@ export class Pipeline {
       for (const pr of requests) {
         const url = canonicalPrUrl(pr.repo, pr.number);
         const repo = slugs.get(pr.repo);
-        if (!repo || (repo.ghAccount ?? null) !== account || seen.has(url) || this.skippedPrs.has(url)) continue;
+        const skippedAt = this.skippedPrs.get(url);
+        if (!repo || (repo.ghAccount ?? null) !== account || seen.has(url) || (skippedAt && this.now() - skippedAt < PICKUP_RETRY_MS)) continue;
         seen.add(url);
         try {
           const info = await publisher.prInfo(repo, pr.repo, pr.number);
           if (info.changedLines < settings.reviewMinLines) {
-            this.skippedPrs.add(url); // too small: don't re-check every sweep
+            this.skippedPrs.set(url, this.now()); // too small: re-check in an hour, not every sweep
             continue;
           }
           await this.createReviewTask(url, 'auto', { repo, info });
           created++;
         } catch (e) {
-          this.skippedPrs.add(url);
+          this.skippedPrs.set(url, this.now());
           this.deps.bus.emit(null, 'pickup_failed', { url, error: e instanceof Error ? e.message : String(e) });
         }
       }

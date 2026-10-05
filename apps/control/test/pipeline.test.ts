@@ -139,9 +139,11 @@ class FakePublisher implements Publisher {
     this.posted.push(review);
     return 'https://github.com/acme/app/pull/1#pullrequestreview-1';
   }
-  async findMyReview(): Promise<string | null> {
+  async findReviewWithMarker(_r: Repo, _s: string, _n: number, marker: string): Promise<string | null> {
+    this.markers.push(marker);
     return this.alreadyPosted;
   }
+  markers: string[] = [];
   async reviewRequests(): Promise<ReviewRequest[]> {
     return this.requests;
   }
@@ -555,6 +557,8 @@ describe('pr reviews', () => {
     expect(posted.body).toContain('Nice feature, one bug.');
     expect(posted.body).toContain('README.md:1'); // outside the diff: moved into the body, not dropped
     expect(posted.commitId).toMatch(/^[0-9a-f]{40}$/);
+    expect(posted.body).toContain(`<!-- pixel-office review task #${task.id} -->`);
+    expect(publisher.markers).toHaveLength(0); // a fresh post never searches for "already posted"
   });
 
   it('sends a rejected draft back to the reviewer with my comment', async () => {
@@ -647,6 +651,15 @@ describe('pr reviews', () => {
     expect(publisher.posted[0]!.comments.map((c) => `${c.path}:${c.line}`)).toEqual(['src/feature.ts:1']); // the deleted one is gone
   });
 
+  it('posts my draft even when I already reviewed that commit by hand', async () => {
+    addOriginWithPr();
+    publisher.alreadyPosted = 'https://github.com/acme/app/pull/1#pullrequestreview-hand-written';
+    const task = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    await pipeline.decideGate(pipeline.pendingGates(task.id)[0]!.id, 'approve');
+    expect(publisher.posted).toHaveLength(1);
+  });
+
   it('does not post twice when GitHub already has the review (restart during posting)', async () => {
     addOriginWithPr();
     const task = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
@@ -662,6 +675,7 @@ describe('pr reviews', () => {
     expect(t.status).toBe('done');
     expect(t.reviewPostedUrl).toContain('review-9');
     expect(publisher.posted).toHaveLength(0);
+    expect(publisher.markers).toEqual([`<!-- pixel-office review task #${task.id} -->`]);
     await restarted.shutdown();
   });
 

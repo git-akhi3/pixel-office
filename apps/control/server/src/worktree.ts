@@ -61,7 +61,16 @@ export async function createReviewWorktree(
   const path = join(worktreesDir, String(taskId));
   if (!existsSync(path)) {
     const ref = reviewRef(taskId);
-    await git(repo.path, ['fetch', '--quiet', 'origin', `+pull/${prNumber}/head:${ref}`, `+${baseRef}:refs/remotes/origin/${baseRef}`], { timeoutMs: 120_000 });
+    // Two reviews on the same base may update origin/<base> at once: retry on a ref-lock failure.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await git(repo.path, ['fetch', '--quiet', 'origin', `+pull/${prNumber}/head:${ref}`, `+${baseRef}:refs/remotes/origin/${baseRef}`], { timeoutMs: 120_000 });
+        break;
+      } catch (e) {
+        if (attempt >= 3 || !/lock|cannot lock ref/i.test(String(e))) throw e;
+        await new Promise((r) => setTimeout(r, 500 * attempt));
+      }
+    }
     await git(repo.path, ['worktree', 'add', '--detach', path, ref]);
   }
   const headSha = (await git(path, ['rev-parse', 'HEAD'])).trim();

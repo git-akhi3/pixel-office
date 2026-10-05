@@ -45,7 +45,7 @@ beforeEach(async () => {
       postReview: async () => '',
       reviewRequests: async () => [],
       login: async () => 'me',
-      findMyReview: async () => null,
+      findReviewWithMarker: async () => null,
     },
     docs,
   });
