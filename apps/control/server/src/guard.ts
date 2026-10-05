@@ -162,7 +162,9 @@ export function splitCommand(command: string): string[] {
       i++;
       continue;
     }
-    if (c === ';' || c === '|' || c === '\n') {
+    // Plain ( ) group commands; $( and <( are caught separately and always ask.
+    const grouping = (c === '(' && command[i - 1] !== '$' && command[i - 1] !== '<') || c === ')';
+    if (c === ';' || c === '|' || c === '\n' || grouping) {
       parts.push(current);
       current = '';
       continue;

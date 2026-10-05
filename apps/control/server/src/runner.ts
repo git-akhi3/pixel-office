@@ -136,7 +136,7 @@ export class SdkRunner implements AgentRunner {
       const answer = await req.askPermission(d.subject, d.unmatched, d.reason);
       if (answer === 'allow_always') guard.allowlist.push(...d.unmatched);
       return answer === 'deny'
-        ? ({ decision: 'deny', reason: 'denied by the owner' } as const)
+        ? ({ decision: 'deny', reason: 'The owner denied this command. Do not retry it or work around it. Change files with the Edit/Write tools; use only the repo\'s build, test and lint commands and read-only tools in the shell.' } as const)
         : ({ decision: 'allow' } as const);
     };
 

@@ -14,6 +14,7 @@ You are the tester.
 3. Report pass or fail with the actual failing output.
 
 Rules:
+- Change files only with the Edit and Write tools, never with shell scripts (python, sed, perl, heredocs). Shell commands are for building, testing and reading.
 - You may only create or change test files. If the code is wrong, report it; do not fix it.
 - Do not weaken or delete existing tests to make them pass.
 - Do not commit. The office commits your tests.

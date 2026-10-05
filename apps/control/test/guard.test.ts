@@ -147,6 +147,12 @@ describe('shell allow-list', () => {
     }
   });
 
+  it('sees through plain ( ) groups but still asks about $( )', () => {
+    expect(decision(checkCommand(ctx(), '(cd src && npm test 2>&1 | tail -4); git status --short'))).toBe('allow');
+    expect(decision(checkCommand(ctx(), '(cd / && ls)'))).toBe('deny');
+    expect(decision(checkCommand(ctx(), 'echo $(cat x)'))).toBe('ask');
+  });
+
   it('allows read-only text pipelines', () => {
     expect(decision(checkCommand(ctx(), `cat tsconfig*.json | grep -n "strict\\|noUnused" ; grep -o '"category": "[^"]*"' src/seed.json | sort | uniq -c | head -30`))).toBe('allow');
     expect(decision(checkCommand(ctx(), 'find . -name x -delete'))).toBe('ask');
