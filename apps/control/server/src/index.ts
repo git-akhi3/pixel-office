@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { connect } from 'node:net';
 import { loadAgents } from './agents.js';
 import { ensureDirs, loadConfig, loadOauthToken } from './config.js';
 import { getSettings, openDb, setSetting } from './db/index.js';
@@ -20,6 +21,13 @@ try {
   token = loadOauthToken(config.envFile);
 } catch (e) {
   console.error(`\n${(e as Error).message}\n`);
+  process.exit(1);
+}
+
+// One office per data folder. Check before touching the database: a second copy must not run
+// startup recovery (which parks running steps) underneath the one that is serving.
+if (await portInUse(config.host, config.port)) {
+  console.error(`\nThe office is already running on http://${config.host}:${config.port}. Stop that one first (Ctrl-C in its terminal).\n`);
   process.exit(1);
 }
 
@@ -55,10 +63,10 @@ const bridge = new PixelBridge({
   onRotate: (id) => setSetting(db, 'pixelSessionId', id),
   taskTitle: titleFrom((id) => pipeline.getTask(id)),
 });
-bridge.start(bus);
-
-pipeline.start();
+// Claim the port before recovery and scheduling, so a lost race also exits before changing anything.
 await app.listen({ host: config.host, port: config.port });
+bridge.start(bus);
+pipeline.start();
 console.log(`Pixel Office control: http://${config.host}:${config.port}  (data: ${config.home})`);
 
 const shutdown = async () => {
@@ -69,3 +77,14 @@ const shutdown = async () => {
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+function portInUse(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect({ host, port });
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => resolve(false));
+  });
+}
