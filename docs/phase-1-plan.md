@@ -2,6 +2,19 @@
 
 Goal: from the browser on my Mac, I can create a task for a registered repo, approve the architect's plan, watch the coder, reviewer and tester run in an isolated worktree, and approve a push that opens a draft PR. Every step is visible on the board with its handoff document and token use.
 
+## Status (2026-10-05)
+
+Steps 0–7 are built and tested: 83 tests, plus one real end-to-end run on a scratch repo, from intake to the push gate and through the retrospective. Step 8, the trial on real repos, is next and needs the owner.
+
+Changes from the plan, found while building:
+- **Repo setup command.** Worktrees don't contain untracked environments (venvs, `node_modules`), so each repo has a setup command the office runs in every new worktree, with `$REPO_PATH` pointing to the main checkout.
+- **Handoffs are the agent's final message.** The office saves the document, so read-only agents never need write access outside their worktree. Output that breaks its format is sent back once for a fix in the same session.
+- **Orchestration is code.** The state machine drives every transition. The manager only does intake sizing and the retrospective.
+- **Re-plan limit.** A task is re-planned at most twice, whether for a coder blocker or for repeated review/test failures. After that it's blocked for the owner.
+- **Bug found by the smoke run.** The guard treated every worktree file as a secret, because worktrees live under `~/.office`. Fixed, with tests that use the real layout.
+
+Run it: `npm run office` from the repo root → http://127.0.0.1:4100
+
 Design: [design.md](design.md). Not in this phase: Slack, Cloudflare, PR review flow, knowledge files, Graphify, the agent editor UI, usage-limit pausing, the office tab.
 
 ## Step 0: SDK spike (done 2026-10-05)
