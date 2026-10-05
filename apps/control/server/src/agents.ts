@@ -16,7 +16,7 @@ const frontmatter = z.object({
   tools: z.array(z.enum(KNOWN_TOOLS)).min(1),
   /** none: read-only. tests: may only write files matching the repo's test globs. all: anywhere in the worktree. */
   write: z.enum(['none', 'tests', 'all']).default('none'),
-  skills: z.array(z.string()).default([]),
+  skills: z.array(z.string().regex(/^[a-z0-9][a-z0-9-]{0,47}$/, 'skill names use lowercase letters, digits and dashes')).default([]),
   maxTurns: z.number().int().positive().default(60),
 });
 
@@ -52,6 +52,7 @@ export function parseSkill(text: string, file: string): Skill {
 }
 
 export function loadSkill(skillsDirs: Dirs, name: string): Skill {
+  if (!SKILL_NAME.test(name)) throw new Error(`Invalid skill name "${name}"`);
   for (const dir of dirList(skillsDirs)) {
     const file = join(dir, name, 'SKILL.md');
     if (existsSync(file)) return parseSkill(readFileSync(file, 'utf8'), file);
@@ -91,19 +92,29 @@ export function parseAgent(text: string, file: string, skillsDir: Dirs): AgentDe
   return { ...def, prompt: body, skillDefs: def.skills.map((s) => loadSkill(skillsDir, s)) };
 }
 
-/** Loads every role, taking each from the first directory that has it (my custom version wins). */
-export function loadAgents(agentsDirs: Dirs, skillsDir: Dirs): Record<Role, AgentDef> {
+/**
+ * Loads every role, taking each from the first directory that has a valid definition (my custom
+ * version wins). A broken custom file is skipped, reported through onError, and the next one used.
+ */
+export function loadAgents(agentsDirs: Dirs, skillsDir: Dirs, onError: (message: string) => void = () => {}): Record<Role, AgentDef> {
   const out: Partial<Record<Role, AgentDef>> = {};
-  for (const dir of dirList(agentsDirs)) {
-    if (!existsSync(dir)) continue;
+  const dirs = dirList(agentsDirs);
+  dirs.forEach((dir, i) => {
+    if (!existsSync(dir)) return;
+    const isLast = i === dirs.length - 1;
     for (const f of readdirSync(dir).filter((f) => f.endsWith('.md'))) {
       const role = f.slice(0, -3) as Role;
       if (out[role] || !ROLES.includes(role)) continue;
-      const def = parseAgent(readFileSync(join(dir, f), 'utf8'), f, skillsDir);
-      if (`${def.name}.md` !== f) throw new Error(`${f}: name "${def.name}" does not match the file name`);
-      out[def.name] = def;
+      try {
+        const def = parseAgent(readFileSync(join(dir, f), 'utf8'), f, skillsDir);
+        if (`${def.name}.md` !== f) throw new Error(`${f}: name "${def.name}" does not match the file name`);
+        out[def.name] = def;
+      } catch (e) {
+        if (isLast) throw e; // the built-in definitions must be valid
+        onError(`${join(dir, f)} is invalid, using the built-in ${role}: ${(e as Error).message}`);
+      }
     }
-  }
+  });
   const missing = ROLES.filter((r) => !out[r]);
   if (missing.length) throw new Error(`Missing agent definitions: ${missing.join(', ')}`);
   return out as Record<Role, AgentDef>;

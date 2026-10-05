@@ -180,6 +180,12 @@ export function Repos({
     try {
       await api.buildGraph(r.id);
       setGraph(await api.graphify());
+      // Builds run in the background: refresh until this one is done.
+      const poll = window.setInterval(async () => {
+        const g = await api.graphify().catch(() => null);
+        if (g) setGraph(g);
+        if (!g?.repos.find((x) => x.repoId === r.id)?.building) window.clearInterval(poll);
+      }, 5000);
     } catch (err) {
       onError(err);
     }

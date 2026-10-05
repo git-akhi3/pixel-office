@@ -794,6 +794,35 @@ button.link {
   border-bottom: 1px solid var(--border);
 }
 
+/* ------------------------------------------------------------ office tab */
+
+.office {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 16px;
+  height: calc(100vh - 100px);
+}
+.office-side {
+  overflow-y: auto;
+}
+.office-side h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+.office-frame {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #1e1e2e;
+}
+.office-off {
+  align-self: start;
+}
+
 /* ------------------------------------------------------------ phone */
 
 @media (max-width: 760px) {
@@ -827,5 +856,12 @@ button.link {
   }
   .repo-list li {
     flex-direction: column;
+  }
+  .office {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .office-frame {
+    height: 70vh;
   }
 }

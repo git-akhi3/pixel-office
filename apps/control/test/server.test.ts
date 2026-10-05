@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { mkdtempSync, realpathSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -19,6 +19,7 @@ const appDir = resolve(import.meta.dirname, '..');
 let app: FastifyInstance;
 let pipeline: Pipeline;
 let repoPath: string;
+let claudeSkillsDir: string;
 
 const idleRunner: AgentRunner = {
   run: (req) => new Promise((res) => req.signal.addEventListener('abort', () => res({ status: 'interrupted', text: '', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 }, durationMs: 0 }))),
@@ -27,7 +28,8 @@ const idleRunner: AgentRunner = {
 
 beforeEach(async () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'office-srv-')));
-  const config = { ...loadConfig({ OFFICE_HOME: join(home, 'office') }), webDist: join(home, 'none') };
+  claudeSkillsDir = join(home, 'claude-skills');
+  const config = { ...loadConfig({ OFFICE_HOME: join(home, 'office') }), webDist: join(home, 'none'), claudeSkillsDir };
   ensureDirs(config);
   repoPath = join(home, 'app');
   execSync(`mkdir -p "${repoPath}" && cd "${repoPath}" && git init -q -b main && touch a && git add a && git -c user.name=t -c user.email=t@t commit -qm i`);
@@ -139,6 +141,32 @@ describe('server', () => {
     expect((await app.inject({ method: 'PUT', url: '/api/skills/Bad Name', headers, payload: { text } })).statusCode).toBe(400);
     await app.inject({ method: 'DELETE', url: '/api/skills/our-style', headers });
     expect((await app.inject({ method: 'GET', url: '/api/skills', headers })).json().some((x: { name: string }) => x.name === 'our-style')).toBe(false);
+  });
+
+  it('refuses per-repo skills that do not exist or are not valid names', async () => {
+    const unknown = await app.inject({ method: 'POST', url: '/api/repos', headers, payload: { name: 'app', path: repoPath, skills: { coder: ['nope'] } } });
+    expect(unknown.json().error).toMatch(/Unknown skill\(s\): nope/);
+    const traversal = await app.inject({ method: 'POST', url: '/api/repos', headers, payload: { name: 'app', path: repoPath, skills: { coder: ['../x'] } } });
+    expect(traversal.statusCode).toBe(400);
+    const badRole = await app.inject({ method: 'POST', url: '/api/repos', headers, payload: { name: 'app', path: repoPath, skills: { hacker: ['write-pr'] } } });
+    expect(badRole.statusCode).toBe(400);
+    const ok = await app.inject({ method: 'POST', url: '/api/repos', headers, payload: { name: 'app', path: repoPath, skills: { coder: ['write-pr'] } } });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it('installs a skill into the configured Claude skills folder once, never overwriting', async () => {
+    const first = await app.inject({ method: 'POST', url: '/api/skills/write-pr/install-global', headers, payload: {} });
+    expect(first.statusCode).toBe(200);
+    expect(readFileSync(join(claudeSkillsDir, 'write-pr', 'SKILL.md'), 'utf8')).toContain('name: write-pr');
+    const again = await app.inject({ method: 'POST', url: '/api/skills/write-pr/install-global', headers, payload: {} });
+    expect(again.json().error).toMatch(/already exists/);
+  });
+
+  it('a skill used by a repo cannot be deleted', async () => {
+    await app.inject({ method: 'PUT', url: '/api/skills/our-style', headers, payload: { text: '---\nname: our-style\ndescription: x\n---\nbody' } });
+    await app.inject({ method: 'POST', url: '/api/repos', headers, payload: { name: 'app', path: repoPath, skills: { coder: ['our-style'] } } });
+    const del = await app.inject({ method: 'DELETE', url: '/api/skills/our-style', headers });
+    expect(del.json().error).toMatch(/Used by: repo app/);
   });
 
   it('saves a knowledge file and enforces its size cap', async () => {

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Db } from './db/index.js';
 import { schema } from './db/index.js';
 import type { Repo } from './db/schema.js';
+import { ROLES } from './domain.js';
 import { splitCommand } from './guard.js';
 import { run } from './util/exec.js';
 
@@ -59,7 +60,9 @@ export const repoInput = z.object({
     .regex(/^[^<>]+ <[^<>@\s]+@[^<>\s]+>$/, 'use "Name <email>"')
     .nullish(),
   allowlist: z.array(z.string().trim().min(1)).default([]),
-  skills: z.record(z.string(), z.array(z.string().trim().min(1))).default({}),
+  skills: z
+    .partialRecord(z.enum(ROLES), z.array(z.string().trim().regex(/^[a-z0-9][a-z0-9-]{0,47}$/, 'skill names use lowercase letters, digits and dashes')))
+    .default({}),
   graphify: z.boolean().default(false),
 });
 export type RepoInput = z.input<typeof repoInput>;

@@ -1,6 +1,8 @@
 import { loadAgents } from './agents.js';
 import { ensureDirs, loadConfig, loadOauthToken } from './config.js';
-import { openDb, setSetting } from './db/index.js';
+import { randomUUID } from 'node:crypto';
+import { getSettings, openDb, setSetting } from './db/index.js';
+import { PixelBridge, titleFrom } from './pixelBridge.js';
 import { EventBus } from './events.js';
 import { GhPublisher } from './github.js';
 import { Graphs } from './graph.js';
@@ -24,9 +26,9 @@ try {
 const db = openDb(config.dbPath);
 const bus = new EventBus(db);
 // My edited agents and skills (~/.office) override the built-in defaults.
-const agents = loadAgents([config.customAgentsDir, config.agentsDir], [config.customSkillsDir, config.skillsDir]);
+const agents = loadAgents([config.customAgentsDir, config.agentsDir], [config.customSkillsDir, config.skillsDir], (m) => console.warn(m));
 const knowledge = new Knowledge(db, config.knowledgeDir);
-const graphs = new Graphs(config.graphsDir);
+const graphs = new Graphs(config.graphsDir, config.worktreesDir);
 const runner = new SdkRunner(token, (snapshot) =>
   setSetting(db, 'rateLimit', {
     fiveHour: snapshot.fiveHour,
@@ -39,7 +41,20 @@ const runner = new SdkRunner(token, (snapshot) =>
 );
 const docs = new TaskDocs(config.tasksDir);
 const pipeline = new Pipeline({ db, bus, config, agents, runner, publisher: new GhPublisher(), docs, knowledge, graphs });
-const app = await buildServer({ db, bus, config, pipeline, docs, knowledge, graphs });
+const app = await buildServer({ db, bus, config, pipeline, docs, knowledge, graphs, pixel: () => bridge });
+
+// Show the office's agents in the Pixel Agents office (no-op while it isn't running).
+let pixelSessionId = getSettings(db).pixelSessionId;
+if (!pixelSessionId) {
+  pixelSessionId = randomUUID();
+  setSetting(db, 'pixelSessionId', pixelSessionId);
+}
+const bridge = new PixelBridge({
+  workspaceFile: config.pixelWorkspaceFile,
+  sessionId: pixelSessionId,
+  taskTitle: titleFrom((id) => pipeline.getTask(id)),
+});
+bridge.start(bus);
 
 pipeline.start();
 await app.listen({ host: config.host, port: config.port });

@@ -10,6 +10,7 @@ import { parseDoc } from './handoffs.js';
 
 /** About two pages. Longer files cost every agent tokens on every step. */
 export const MAX_KNOWLEDGE_LINES = 120;
+export const MAX_KNOWLEDGE_CHARS = 12_000;
 
 export class Knowledge {
   constructor(
@@ -30,8 +31,10 @@ export class Knowledge {
 
   write(repoId: number, text: string): void {
     const lines = text.trimEnd().split('\n').length;
-    if (lines > MAX_KNOWLEDGE_LINES) {
-      throw new Error(`The knowledge file is ${lines} lines; keep it under ${MAX_KNOWLEDGE_LINES} (every agent reads it on every step).`);
+    if (lines > MAX_KNOWLEDGE_LINES || text.length > MAX_KNOWLEDGE_CHARS) {
+      throw new Error(
+        `The knowledge file would be ${lines} lines / ${text.length} characters; the limit is ${MAX_KNOWLEDGE_LINES} lines and ${MAX_KNOWLEDGE_CHARS} characters (every agent reads it on every step). Trim it on the Knowledge page first.`,
+      );
     }
     writeFileSync(this.file(repoId), text.trimEnd() + '\n');
   }

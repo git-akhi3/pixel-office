@@ -123,6 +123,8 @@ export interface AgentInfo {
   tools: string[];
   skills: string[];
   description: string;
+  /** Set when my custom file is invalid (the built-in agent is used meanwhile). */
+  error?: string;
 }
 
 export interface SkillInfo {
@@ -130,6 +132,7 @@ export interface SkillInfo {
   description: string;
   text: string;
   custom: boolean;
+  builtIn: boolean;
 }
 
 export interface Proposal {
@@ -208,6 +211,7 @@ export const api = {
   decideProposal: (id: number, decision: 'accept' | 'reject', text?: string) => request('POST', `/api/knowledge/proposals/${id}`, { decision, text }),
   graphify: () => request<GraphInfo>('GET', '/api/graphify'),
   buildGraph: (repoId: number) => request('POST', `/api/repos/${repoId}/graph`, {}),
+  office: () => request<{ running: boolean; url: string | null; linked: boolean; start: string }>('GET', '/api/office'),
   repos: () => request<Repo[]>('GET', '/api/repos'),
   saveRepo: (repo: Partial<Repo>, id?: number) => request<Repo>(id ? 'PUT' : 'POST', id ? `/api/repos/${id}` : '/api/repos', repo),
   deleteRepo: (id: number) => request('DELETE', `/api/repos/${id}`),

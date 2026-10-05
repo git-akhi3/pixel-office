@@ -87,6 +87,7 @@ export function Team({ onError }: { onError: (e: unknown) => void }) {
                 <strong>{a.role}</strong>
                 {a.custom && <span className="kind kind-review">edited</span>}
                 <div className="hint">{a.description}</div>
+                {a.error && <div className="hint over">Your file is invalid, so the built-in {a.role} is used: {a.error}</div>}
               </td>
               <td>
                 {a.model.replace('claude-', '')}
@@ -116,7 +117,7 @@ export function Team({ onError }: { onError: (e: unknown) => void }) {
         {skills.map((s) => (
           <li key={s.name}>
             <div>
-              <strong>{s.name}</strong> {s.custom ? <span className="kind kind-review">mine</span> : <span className="kind">built-in</span>}
+              <strong>{s.name}</strong> {s.custom ? <span className="kind kind-review">{s.builtIn ? 'edited' : 'mine'}</span> : <span className="kind">built-in</span>}
               <div className="hint">{s.description}</div>
             </div>
             <div className="row-buttons">
@@ -133,8 +134,16 @@ export function Team({ onError }: { onError: (e: unknown) => void }) {
                 Install globally
               </button>
               {s.custom && (
-                <button className="danger" onClick={() => act(() => api.deleteSkill(s.name), `Delete your skill "${s.name}"?`)}>
-                  Delete
+                <button
+                  className="danger"
+                  onClick={() =>
+                    act(
+                      () => api.deleteSkill(s.name),
+                      s.builtIn ? `Reset "${s.name}" to the built-in version?` : `Delete your skill "${s.name}"?`,
+                    )
+                  }
+                >
+                  {s.builtIn ? 'Reset' : 'Delete'}
                 </button>
               )}
             </div>
@@ -147,6 +156,13 @@ export function Team({ onError }: { onError: (e: unknown) => void }) {
           e.preventDefault();
           const name = newSkill.trim().toLowerCase();
           if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(name)) return onError(new Error('Skill names use lowercase letters, digits and dashes.'));
+          const existing = skills.find((s) => s.name === name);
+          if (existing) {
+            if (!confirm(`"${name}" already exists${existing.custom ? '' : ' (built-in)'}. Edit it instead?`)) return;
+            setEditing({ kind: 'skill', key: name, text: existing.text });
+            setNewSkill('');
+            return;
+          }
           setEditing({ kind: 'skill', key: name, text: NEW_SKILL(name), isNew: true });
           setNewSkill('');
         }}

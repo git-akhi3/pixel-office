@@ -293,8 +293,9 @@ export class Pipeline {
     const role = AGENT_STEPS[step]!;
     // This repo's extra skills for the role (my custom skills first, then the built-in ones).
     const roleAgent = withRepoSkills(this.agents[role], getRepo(db, initial.repoId).skills, [config.customSkillsDir, config.skillsDir]);
-    // A PR under review is untrusted code: its reviewer gets no shell at all, only Read/Grep/Glob.
-    const agent = step === 'reviewing_pr' ? { ...roleAgent, tools: roleAgent.tools.filter((t) => t !== 'Bash') } : roleAgent;
+    // A PR under review is untrusted code (and untrusted text): its reviewer gets exactly Read/Grep/Glob,
+    // read-only, whatever a custom reviewer definition lists. No shell, no writes, no web.
+    const agent: AgentDef = step === 'reviewing_pr' ? { ...roleAgent, tools: ['Read', 'Grep', 'Glob'], write: 'none' } : roleAgent;
     const repo = getRepo(db, task.repoId);
 
     // The retrospective only reads handoff documents; the worktree may already be gone after a merge.

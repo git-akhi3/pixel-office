@@ -26,7 +26,11 @@ export interface GraphStatus {
 export class Graphs {
   private building = new Set<number>();
 
-  constructor(private dir: string) {}
+  /** worktreesDir: graphify-mcp must never resolve to a file inside a task's worktree. */
+  constructor(
+    private dir: string,
+    private worktreesDir: string = join(homedir(), '.office', 'worktrees'),
+  ) {}
 
   graphPath(repoId: number): string {
     return join(this.dir, String(repoId), 'graph.json');
@@ -81,15 +85,15 @@ export class Graphs {
    * task's worktree as cwd, so a relative PATH entry (".", node_modules/.bin) could pick up a PR's file.
    */
   private mcpBinary(): string | null {
-    if (this.mcpBin === undefined) {
-      try {
-        const out = execFileSync('/usr/bin/which', ['graphify-mcp'], { cwd: homedir(), encoding: 'utf8' }).trim();
-        this.mcpBin = isAbsolute(out) && !out.startsWith(homedir() + '/.office/worktrees') ? out : null;
-      } catch {
-        this.mcpBin = null;
-      }
+    // Only a found binary is cached, so installing Graphify later works without a restart.
+    if (this.mcpBin) return this.mcpBin;
+    try {
+      const out = execFileSync('/usr/bin/which', ['graphify-mcp'], { cwd: homedir(), encoding: 'utf8' }).trim();
+      if (isAbsolute(out) && !out.startsWith(this.worktreesDir + '/')) this.mcpBin = out;
+    } catch {
+      // not installed
     }
-    return this.mcpBin;
+    return this.mcpBin ?? null;
   }
-  private mcpBin: string | null | undefined;
+  private mcpBin: string | undefined;
 }

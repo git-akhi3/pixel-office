@@ -19,6 +19,10 @@ export interface OfficeConfig {
   customSkillsDir: string;
   knowledgeDir: string;
   graphsDir: string;
+  /** "Install globally" copies a skill here, for my own Claude Code sessions. */
+  claudeSkillsDir: string;
+  /** Written by start.sh: the workspace the pixel office watches. */
+  pixelWorkspaceFile: string;
   webDist: string;
   host: string;
   port: number;
@@ -38,6 +42,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OfficeConfig {
     customSkillsDir: join(home, 'skills'),
     knowledgeDir: join(home, 'knowledge'),
     graphsDir: join(home, 'graphs'),
+    pixelWorkspaceFile: join(home, 'pixel-workspace'),
+    claudeSkillsDir: env.OFFICE_CLAUDE_SKILLS_DIR ?? join(homedir(), '.claude', 'skills'),
     webDist: join(appDir, 'web', 'dist'),
     host: '127.0.0.1',
     port: Number(env.OFFICE_PORT ?? 4100),

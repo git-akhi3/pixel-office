@@ -15,6 +15,7 @@ export function KnowledgePage({ repos, onError, onChanged }: { repos: Repo[]; on
   useEffect(() => {
     if (repoId === null && repos[0]) setRepoId(repos[0].id);
   }, [repos, repoId]);
+  const [version, setVersion] = useState(0);
   useEffect(() => {
     if (repoId === null) return;
     api
@@ -25,12 +26,15 @@ export function KnowledgePage({ repos, onError, onChanged }: { repos: Repo[]; on
         setMaxLines(k.maxLines);
       })
       .catch(onError);
-  }, [repoId, onError, proposals.length]);
+  }, [repoId, onError, version]);
+  const dirty = text !== saved;
 
   const decide = async (p: Proposal, decision: 'accept' | 'reject', edited?: string) => {
     try {
       await api.decideProposal(p.id, decision, edited);
       await loadProposals();
+      // An accepted note changes the file; reload it unless I have unsaved edits open.
+      if (decision === 'accept' && p.repoId === repoId && !dirty) setVersion((v) => v + 1);
       onChanged();
     } catch (e) {
       onError(e);
@@ -61,7 +65,13 @@ export function KnowledgePage({ repos, onError, onChanged }: { repos: Repo[]; on
         <p className="empty">Add a repo first.</p>
       ) : (
         <>
-          <select value={repoId ?? ''} onChange={(e) => setRepoId(Number(e.target.value))}>
+          <select
+            value={repoId ?? ''}
+            onChange={(e) => {
+              if (dirty && !confirm('Discard your unsaved edits to these notes?')) return;
+              setRepoId(Number(e.target.value));
+            }}
+          >
             {repos.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.name}
@@ -72,7 +82,7 @@ export function KnowledgePage({ repos, onError, onChanged }: { repos: Repo[]; on
           <div className="gate-buttons">
             <button
               className="primary"
-              disabled={text === saved || lines > maxLines}
+              disabled={!dirty || lines > maxLines}
               onClick={async () => {
                 try {
                   await api.saveKnowledge(repoId!, text);

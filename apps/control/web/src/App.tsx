@@ -3,6 +3,7 @@ import { api, connectLive, type OfficeEvent, type Repo, type Settings, type Task
 import { Board } from './Board';
 import { NewTask, Repos, SettingsPanel } from './Forms';
 import { KnowledgePage } from './Knowledge';
+import { Office } from './Office';
 import { TaskView } from './TaskView';
 import { Team } from './Team';
 
@@ -76,6 +77,9 @@ export function App() {
           <a href="#/" className={hash === '#/' ? 'active' : ''}>
             Board{waiting ? <span className="dot">{waiting}</span> : null}
           </a>
+          <a href="#/office" className={hash === '#/office' ? 'active' : ''}>
+            Office
+          </a>
           <a href="#/repos" className={hash === '#/repos' ? 'active' : ''}>
             Repos
           </a>
@@ -116,6 +120,8 @@ export function App() {
           <NewTask repos={repos} onError={onError} />
         ) : hash === '#/repos' ? (
           <Repos repos={repos} reload={loadRepos} onError={onError} />
+        ) : hash === '#/office' ? (
+          <Office tasks={tasks} onError={onError} />
         ) : hash === '#/team' ? (
           <Team onError={onError} />
         ) : hash === '#/knowledge' ? (

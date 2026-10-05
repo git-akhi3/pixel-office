@@ -741,6 +741,19 @@ describe('pr reviews', () => {
     await expect(pipeline.fixIt(review.id)).rejects.toThrow(/fork/);
   });
 
+  it('a custom reviewer definition cannot widen what the PR reviewer may do', async () => {
+    addOriginWithPr();
+    const agents = loadAgents(join(appDir, 'agents'), join(appDir, 'skills'));
+    pipeline.setAgents({ ...agents, reviewer: { ...agents.reviewer, tools: ['Read', 'Grep', 'Glob', 'Bash', 'Write', 'WebFetch'], write: 'all' } });
+    let seen: RunRequest | undefined;
+    runner.queue('reviewing_pr', (req) => ((seen = req), { text: docs.prReview }));
+    await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    expect(seen!.agent.tools).toEqual(['Read', 'Grep', 'Glob']);
+    expect(seen!.agent.write).toBe('none');
+    expect(seen!.guard.write).toBe('none');
+  });
+
   it('treats PR links case-insensitively and never picks up twice, even concurrently', async () => {
     addOriginWithPr();
     setSetting(db, 'reviewAutoPickup', true);

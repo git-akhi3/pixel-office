@@ -3,7 +3,6 @@ import fastifyWebsocket from '@fastify/websocket';
 import { and, desc, eq, gt } from 'drizzle-orm';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { OfficeConfig } from './config.js';
@@ -17,6 +16,7 @@ import type { TaskDocs } from './handoffs.js';
 import type { Graphs } from './graph.js';
 import type { Knowledge } from './knowledge.js';
 import type { Pipeline } from './pipeline.js';
+import type { PixelBridge } from './pixelBridge.js';
 import { createRepo, deleteRepo, effectiveAllowlist, getRepo, ghAccounts, listRepos, updateRepo } from './repos.js';
 import { run } from './util/exec.js';
 import { diff } from './worktree.js';
@@ -29,6 +29,7 @@ export interface ServerDeps {
   docs: TaskDocs;
   knowledge: Knowledge;
   graphs: Graphs;
+  pixel?: () => PixelBridge;
 }
 
 const id = z.coerce.number().int().positive();
@@ -68,8 +69,27 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   // ---------------------------------------------------------------- repos
 
   app.get('/api/repos', async () => listRepos(db).map((r) => ({ ...r, effectiveAllowlist: effectiveAllowlist(r) })));
-  app.post('/api/repos', async (req) => createRepo(db, req.body as never));
-  app.put('/api/repos/:id', async (req) => updateRepo(db, id.parse((req.params as { id: string }).id), req.body as never));
+  /** Per-repo skills must exist, so a typo can't block every step of that repo later. */
+  const checkRepoSkills = (body: unknown) => {
+    const skills = (body as { skills?: Record<string, string[]> } | null)?.skills ?? {};
+    const known = new Set(listSkills([config.customSkillsDir, config.skillsDir]).map((s) => s.name));
+    const missing = Object.values(skills).flat().filter((n) => !known.has(n));
+    if (missing.length) throw new Error(`Unknown skill(s): ${[...new Set(missing)].join(', ')}. Create them on the Team page first.`);
+  };
+  app.post('/api/repos', async (req) => {
+    checkRepoSkills(req.body);
+    const repo = await createRepo(db, req.body as never);
+    if (repo.graphify) pipeline.refreshGraph(repo.id);
+    return repo;
+  });
+  app.put('/api/repos/:id', async (req) => {
+    const repoId = id.parse((req.params as { id: string }).id);
+    const before = getRepo(db, repoId);
+    checkRepoSkills(req.body);
+    const repo = await updateRepo(db, repoId, req.body as never);
+    if (repo.graphify && !before.graphify) pipeline.refreshGraph(repo.id); // turning the graph on builds it
+    return repo;
+  });
   app.delete('/api/repos/:id', async (req) => {
     deleteRepo(db, id.parse((req.params as { id: string }).id));
     return { ok: true };
@@ -217,15 +237,21 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   const agentDirs = [config.customAgentsDir, config.agentsDir];
   const skillDirs = [config.customSkillsDir, config.skillsDir];
-  const reloadAgents = () => pipeline.setAgents(loadAgents(agentDirs, skillDirs));
+  const reloadAgents = () => pipeline.setAgents(loadAgents(agentDirs, skillDirs, (m) => app.log.warn(m)));
   const role = z.enum(ROLES);
 
   app.get('/api/agents', async () =>
     ROLES.map((r) => {
       const custom = join(config.customAgentsDir, `${r}.md`);
       const file = existsSync(custom) ? custom : join(config.agentsDir, `${r}.md`);
-      const def = parseAgent(readFileSync(file, 'utf8'), file, skillDirs);
-      return { role: r, custom: existsSync(custom), text: readFileSync(file, 'utf8'), model: def.model, effort: def.effort, tools: def.tools, skills: def.skills, description: def.description };
+      const text = readFileSync(file, 'utf8');
+      try {
+        const def = parseAgent(text, file, skillDirs);
+        return { role: r, custom: existsSync(custom), text, model: def.model, effort: def.effort, tools: def.tools, skills: def.skills, description: def.description };
+      } catch (e) {
+        // A broken custom file: show it so it can be fixed or reset (the built-in one is in use).
+        return { role: r, custom: true, text, model: '?', tools: [], skills: [], description: '', error: (e as Error).message };
+      }
     }),
   );
   app.put('/api/agents/:role', async (req) => {
@@ -245,7 +271,13 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   });
 
   app.get('/api/skills', async () =>
-    listSkills(skillDirs).map((s) => ({ name: s.name, description: s.description, text: s.text, custom: s.source === config.customSkillsDir })),
+    listSkills(skillDirs).map((s) => ({
+      name: s.name,
+      description: s.description,
+      text: s.text,
+      custom: s.source === config.customSkillsDir,
+      builtIn: existsSync(join(config.skillsDir, s.name, 'SKILL.md')),
+    })),
   );
   app.put('/api/skills/:name', async (req) => {
     const name = z.string().regex(SKILL_NAME).parse((req.params as { name: string }).name);
@@ -259,8 +291,13 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   });
   app.delete('/api/skills/:name', async (req) => {
     const name = z.string().regex(SKILL_NAME).parse((req.params as { name: string }).name);
-    const inUse = ROLES.filter((r) => pipeline.agentSkills(r).includes(name));
-    if (inUse.length && !existsSync(join(config.skillsDir, name))) throw new Error(`Used by: ${inUse.join(', ')}. Remove it from those agents first.`);
+    const builtIn = existsSync(join(config.skillsDir, name, 'SKILL.md'));
+    if (!builtIn) {
+      const byAgents = ROLES.filter((r) => pipeline.agentSkills(r).includes(name));
+      const byRepos = listRepos(db).filter((repo) => Object.values(repo.skills).some((list) => list.includes(name)));
+      const users = [...byAgents, ...byRepos.map((r) => `repo ${r.name}`)];
+      if (users.length) throw new Error(`Used by: ${users.join(', ')}. Remove it there first.`);
+    }
     rmSync(join(config.customSkillsDir, name), { recursive: true, force: true });
     reloadAgents();
     return { ok: true };
@@ -270,9 +307,9 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     const name = z.string().regex(SKILL_NAME).parse((req.params as { name: string }).name);
     const skill = listSkills(skillDirs).find((s) => s.name === name);
     if (!skill) throw new Error(`Unknown skill ${name}`);
-    const dest = join(homedir(), '.claude', 'skills', name);
-    if (existsSync(join(dest, 'SKILL.md'))) throw new Error(`~/.claude/skills/${name} already exists; not overwriting it.`);
-    mkdirSync(dest, { recursive: true });
+    const dest = join(config.claudeSkillsDir, name);
+    if (existsSync(join(dest, 'SKILL.md'))) throw new Error(`${dest} already exists; not overwriting it.`);
+    mkdirSync(dest, { recursive: true, mode: 0o700 });
     writeFileSync(join(dest, 'SKILL.md'), skill.text);
     return { ok: true, path: dest };
   });
@@ -287,8 +324,22 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   app.post('/api/repos/:id/graph', async (req) => {
     const repo = getRepo(db, id.parse((req.params as { id: string }).id));
     if (!(await graphs.status()).installed) throw new Error(`Graphify isn't installed. Run: ${GRAPHIFY_INSTALL}`);
-    await graphs.build(repo);
-    return { ok: true, builtAt: graphs.builtAt(repo.id) };
+    if (graphs.isBuilding(repo.id)) return { building: true };
+    // Builds can take minutes: start it and report progress through GET /api/graphify.
+    void graphs.build(repo).then(
+      () => bus.emit(null, 'graph_built', { repoId: repo.id }),
+      (e: unknown) => bus.emit(null, 'graph_failed', { repoId: repo.id, error: e instanceof Error ? e.message : String(e) }),
+    );
+    return { building: true };
+  });
+
+  // ---------------------------------------------------------------- office tab
+
+  /** Where the pixel office is (if running) and whether office agents will show up in it. */
+  app.get('/api/office', async () => {
+    const bridge = deps.pixel?.();
+    const server = bridge?.server() ?? null;
+    return { running: !!server, url: server ? `http://127.0.0.1:${server.port}/` : null, linked: !!bridge?.workspace(), start: 'npm run pixel' };
   });
 
   // ---------------------------------------------------------------- settings

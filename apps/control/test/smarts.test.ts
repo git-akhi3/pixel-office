@@ -41,9 +41,17 @@ describe('knowledge files', () => {
     expect(proposalFromRetro('- **Knowledge-file edit:** None.')).toBeNull();
   });
 
+  it('leaves a proposal pending with a clear message when the file is full', async () => {
+    const { k, repo } = await setup();
+    k.write(repo.id, Array.from({ length: MAX_KNOWLEDGE_LINES }, (_, i) => `- note ${i}`).join('\n'));
+    const p = k.propose(repo.id, 1, 'one more');
+    expect(() => k.decide(p.id, 'accept')).toThrow(/Trim it on the Knowledge page first/);
+    expect(k.proposals('pending', repo.id)).toHaveLength(1);
+  });
+
   it('caps the file so it stays cheap to load into every agent', async () => {
     const { k, repo } = await setup();
-    expect(() => k.write(repo.id, Array.from({ length: MAX_KNOWLEDGE_LINES + 1 }, (_, i) => `- ${i}`).join('\n'))).toThrow(/keep it under/);
+    expect(() => k.write(repo.id, Array.from({ length: MAX_KNOWLEDGE_LINES + 1 }, (_, i) => `- ${i}`).join('\n'))).toThrow(/the limit is 120 lines/);
   });
 });
 
@@ -70,8 +78,28 @@ describe('custom agents and skills', () => {
   });
 });
 
+describe('custom agent safety', () => {
+  it('falls back to the built-in agent when my custom file is broken, and reports it', () => {
+    const custom = tmp();
+    writeFileSync(join(custom, 'coder.md'), '---\nname: coder\nmodel: x\n---\nno description or tools');
+    const errors: string[] = [];
+    const loaded = loadAgents([custom, join(appDir, 'agents')], join(appDir, 'skills'), (m) => errors.push(m));
+    expect(loaded.coder.model).toBe('claude-sonnet-5-5');
+    expect(errors[0]).toMatch(/coder\.md is invalid, using the built-in coder/);
+  });
+
+  it('rejects skill names that could escape the skills folder', () => {
+    const custom = tmp();
+    writeFileSync(join(custom, 'coder.md'), readFileSync(join(appDir, 'agents', 'coder.md'), 'utf8').replace('skills: [write-pr]', 'skills: [../../etc]'));
+    const errors: string[] = [];
+    loadAgents([custom, join(appDir, 'agents')], join(appDir, 'skills'), (m) => errors.push(m));
+    expect(errors[0]).toMatch(/skill names use lowercase/);
+    expect(() => withRepoSkills(loadAgents(join(appDir, 'agents'), join(appDir, 'skills')).coder, { coder: ['../x'] }, join(appDir, 'skills'))).toThrow(/Invalid skill name/);
+  });
+});
+
 describe('usage pause', () => {
-  const base: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, usagePauseAt: 0.9, rateLimit: null };
+  const base: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, usagePauseAt: 0.9, rateLimit: null, pixelSessionId: null };
   const now = 1_000_000_000_000;
   const at = (fiveHour: number, sevenDay = 0.1, reset = now / 1000 + 3600) => ({ ...base, rateLimit: { fiveHour, sevenDay, fiveHourResetsAt: reset, sevenDayResetsAt: reset + 86400, at: now } });
 
@@ -79,6 +107,14 @@ describe('usage pause', () => {
     expect(usagePause(at(0.5), now).paused).toBe(false);
     expect(usagePause(at(0.92), now)).toMatchObject({ paused: true, window: '5-hour', until: now + 3600_000 });
     expect(usagePause(at(0.2, 0.95), now)).toMatchObject({ paused: true, window: '7-day' });
+  });
+
+  it('never borrows the 7-day reset for the 5-hour window; without a reset time it pauses briefly', () => {
+    const s = { ...base, rateLimit: { fiveHour: 0.95, resetsAt: now / 1000 + 6 * 86400, at: now } };
+    const p = usagePause(s, now);
+    expect(p.paused).toBe(true);
+    expect(p.until).toBe(now + 30 * 60 * 1000);
+    expect(usagePause(s, now + 31 * 60 * 1000).paused).toBe(false);
   });
 
   it('stops pausing once the reset time has passed, or when the threshold is 100%', () => {
