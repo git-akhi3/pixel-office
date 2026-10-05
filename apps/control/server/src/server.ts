@@ -37,11 +37,9 @@ const id = z.coerce.number().int().positive();
 export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   const { db, bus, config, pipeline, docs, knowledge, graphs } = deps;
   const app = Fastify({ logger: { level: process.env.OFFICE_LOG ?? 'warn' }, forceCloseConnections: true });
-  const allowedHosts = new Set([
-    `127.0.0.1:${config.port}`,
-    `localhost:${config.port}`,
-    ...(process.env.OFFICE_ALLOWED_HOSTS?.split(',').map((h) => h.trim()) ?? []),
-  ]);
+  // Local only. Remote hostnames come with phase 2, together with Cloudflare Access verification:
+  // accepting a tunnel hostname without checking Access would expose a machine that runs agents.
+  const allowedHosts = new Set([`127.0.0.1:${config.port}`, `localhost:${config.port}`]);
   const devHosts = new Set(['127.0.0.1:5173', 'localhost:5173']);
   const devOrigins = new Set([...devHosts].map((h) => `http://${h}`));
 
