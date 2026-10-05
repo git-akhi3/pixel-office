@@ -26,10 +26,26 @@ export interface Settings {
   reviewAutoPickup: boolean;
   /** Skip auto-pickup for PRs smaller than this many changed lines. */
   reviewMinLines: number;
-  rateLimit: { fiveHour?: number; sevenDay?: number; resetsAt?: number; at: number } | null;
+  rateLimit: { fiveHour?: number; sevenDay?: number; fiveHourResetsAt?: number; sevenDayResetsAt?: number; resetsAt?: number; at: number } | null;
+  /** Start no new agent steps once the 5-hour or 7-day usage reaches this fraction (1 = never pause). */
+  usagePauseAt: number;
 }
 
-const DEFAULTS: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, rateLimit: null };
+/** Whether new steps should wait for a usage window to reset, and until when (ms). */
+export function usagePause(s: Settings, now: number): { paused: boolean; until: number | null; window: string | null } {
+  const r = s.rateLimit;
+  if (!r || s.usagePauseAt >= 1) return { paused: false, until: null, window: null };
+  const windows: Array<[string, number | undefined, number | undefined]> = [
+    ['5-hour', r.fiveHour, r.fiveHourResetsAt ?? r.resetsAt],
+    ['7-day', r.sevenDay, r.sevenDayResetsAt],
+  ];
+  for (const [window, used, resets] of windows) {
+    if (used !== undefined && used >= s.usagePauseAt && resets && resets * 1000 > now) return { paused: true, until: resets * 1000, window };
+  }
+  return { paused: false, until: null, window: null };
+}
+
+const DEFAULTS: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, rateLimit: null, usagePauseAt: 0.9 };
 
 export function getSettings(db: Db): Settings {
   const rows = db.select().from(schema.settings).all();

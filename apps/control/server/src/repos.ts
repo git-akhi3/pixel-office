@@ -59,6 +59,8 @@ export const repoInput = z.object({
     .regex(/^[^<>]+ <[^<>@\s]+@[^<>\s]+>$/, 'use "Name <email>"')
     .nullish(),
   allowlist: z.array(z.string().trim().min(1)).default([]),
+  skills: z.record(z.string(), z.array(z.string().trim().min(1))).default({}),
+  graphify: z.boolean().default(false),
 });
 export type RepoInput = z.input<typeof repoInput>;
 

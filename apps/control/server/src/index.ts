@@ -3,6 +3,8 @@ import { ensureDirs, loadConfig, loadOauthToken } from './config.js';
 import { openDb, setSetting } from './db/index.js';
 import { EventBus } from './events.js';
 import { GhPublisher } from './github.js';
+import { Graphs } from './graph.js';
+import { Knowledge } from './knowledge.js';
 import { TaskDocs } from './handoffs.js';
 import { Pipeline } from './pipeline.js';
 import { SdkRunner } from './runner.js';
@@ -21,13 +23,23 @@ try {
 
 const db = openDb(config.dbPath);
 const bus = new EventBus(db);
-const agents = loadAgents(config.agentsDir, config.skillsDir);
+// My edited agents and skills (~/.office) override the built-in defaults.
+const agents = loadAgents([config.customAgentsDir, config.agentsDir], [config.customSkillsDir, config.skillsDir]);
+const knowledge = new Knowledge(db, config.knowledgeDir);
+const graphs = new Graphs(config.graphsDir);
 const runner = new SdkRunner(token, (snapshot) =>
-  setSetting(db, 'rateLimit', { fiveHour: snapshot.fiveHour, sevenDay: snapshot.sevenDay, resetsAt: snapshot.resetsAt, at: Date.now() }),
+  setSetting(db, 'rateLimit', {
+    fiveHour: snapshot.fiveHour,
+    sevenDay: snapshot.sevenDay,
+    fiveHourResetsAt: snapshot.fiveHourResetsAt,
+    sevenDayResetsAt: snapshot.sevenDayResetsAt,
+    resetsAt: snapshot.resetsAt,
+    at: Date.now(),
+  }),
 );
 const docs = new TaskDocs(config.tasksDir);
-const pipeline = new Pipeline({ db, bus, config, agents, runner, publisher: new GhPublisher(), docs });
-const app = await buildServer({ db, bus, config, pipeline, docs });
+const pipeline = new Pipeline({ db, bus, config, agents, runner, publisher: new GhPublisher(), docs, knowledge, graphs });
+const app = await buildServer({ db, bus, config, pipeline, docs, knowledge, graphs });
 
 pipeline.start();
 await app.listen({ host: config.host, port: config.port });

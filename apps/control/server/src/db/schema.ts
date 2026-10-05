@@ -19,6 +19,22 @@ export const repos = sqliteTable('repos', {
   ghAccount: text('gh_account'),
   gitAuthor: text('git_author'), // "Name <email>" used for office commits when the repo has none
   allowlist: text('allowlist', { mode: 'json' }).$type<string[]>().notNull().default([]),
+  /** Extra skills per role for this repo only, e.g. { coder: ["fastify-conventions"] }. */
+  skills: text('skills', { mode: 'json' }).$type<Record<string, string[]>>().notNull().default({}),
+  /** Give the architect, reviewer and debugger a Graphify code graph of this repo. */
+  graphify: integer('graphify', { mode: 'boolean' }).notNull().default(false),
+  createdAt: integer('created_at').notNull().$defaultFn(now),
+});
+
+/** Notes for a repo's knowledge file, proposed by retrospectives; applied only when I accept them. */
+export const knowledgeProposals = sqliteTable('knowledge_proposals', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  repoId: integer('repo_id')
+    .notNull()
+    .references(() => repos.id),
+  taskId: integer('task_id'),
+  text: text('text').notNull(),
+  status: text('status').$type<'pending' | 'accepted' | 'rejected'>().notNull().default('pending'),
   createdAt: integer('created_at').notNull().$defaultFn(now),
 });
 
@@ -88,6 +104,8 @@ export const runs = sqliteTable('runs', {
   cacheReadTokens: integer('cache_read_tokens').notNull().default(0),
   cacheWriteTokens: integer('cache_write_tokens').notNull().default(0),
   thinkingTokens: integer('thinking_tokens').notNull().default(0),
+  /** Whether this run had the Graphify code graph (to compare token use with and without). */
+  graphify: integer('graphify', { mode: 'boolean' }).notNull().default(false),
   durationMs: integer('duration_ms'),
   startedAt: integer('started_at').notNull().$defaultFn(now),
   endedAt: integer('ended_at'),
@@ -143,3 +161,4 @@ export type Run = typeof runs.$inferSelect;
 export type Gate = typeof gates.$inferSelect;
 export type OfficeEvent = typeof events.$inferSelect;
 export type ReviewComment = typeof reviewComments.$inferSelect;
+export type KnowledgeProposal = typeof knowledgeProposals.$inferSelect;

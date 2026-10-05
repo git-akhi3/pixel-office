@@ -11,8 +11,14 @@ export interface OfficeConfig {
   tasksDir: string;
   worktreesDir: string;
   envFile: string;
+  /** Built-in agent and skill definitions (the defaults). */
   agentsDir: string;
   skillsDir: string;
+  /** My edits, which override the defaults: ~/.office/agents/<role>.md, ~/.office/skills/<name>/SKILL.md */
+  customAgentsDir: string;
+  customSkillsDir: string;
+  knowledgeDir: string;
+  graphsDir: string;
   webDist: string;
   host: string;
   port: number;
@@ -28,6 +34,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OfficeConfig {
     envFile: join(home, 'env'),
     agentsDir: env.OFFICE_AGENTS_DIR ?? join(appDir, 'agents'),
     skillsDir: env.OFFICE_SKILLS_DIR ?? join(appDir, 'skills'),
+    customAgentsDir: join(home, 'agents'),
+    customSkillsDir: join(home, 'skills'),
+    knowledgeDir: join(home, 'knowledge'),
+    graphsDir: join(home, 'graphs'),
     webDist: join(appDir, 'web', 'dist'),
     host: '127.0.0.1',
     port: Number(env.OFFICE_PORT ?? 4100),

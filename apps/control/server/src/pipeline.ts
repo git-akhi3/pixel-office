@@ -7,9 +7,11 @@
 // A coder blocker goes back to the architect. A task is re-planned at most twice, then it is blocked for me.
 
 import { and, asc, eq, inArray } from 'drizzle-orm';
-import type { AgentDef } from './agents.js';
+import { withRepoSkills, type AgentDef } from './agents.js';
+import type { Graphs } from './graph.js';
+import { proposalFromRetro, type Knowledge } from './knowledge.js';
 import type { OfficeConfig } from './config.js';
-import { getSettings, schema, type Db } from './db/index.js';
+import { getSettings, schema, usagePause, type Db } from './db/index.js';
 import type { Gate, Repo, Task } from './db/schema.js';
 import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, type GateDecision, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
@@ -17,7 +19,7 @@ import type { PrInfo, Publisher } from './github.js';
 import { matchesAnyGlob, realPath } from './guard.js';
 import { CONTRACTS, extractPr, normalizeOutput, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
 import { buildPrompt } from './prompts.js';
-import { addToAllowlist, BASE_ALLOWLIST, effectiveAllowlist, getRepo } from './repos.js';
+import { addToAllowlist, effectiveAllowlist, getRepo } from './repos.js';
 import type { AgentRunner, PermissionAnswer, RunOutcome } from './runner.js';
 import { commentableLines, formatComment, originSlug, parsePrUrl, parseReviewDoc, prSlug, reviewBody, splitComments } from './reviews.js';
 import { changedFiles, commitAll, createReviewWorktree, createWorktree, diff, removeWorktree } from './worktree.js';
@@ -39,6 +41,8 @@ export interface PipelineDeps {
   bus: EventBus;
   config: OfficeConfig;
   agents: Record<Role, AgentDef>;
+  knowledge: Knowledge;
+  graphs: Graphs;
   runner: AgentRunner;
   publisher: Publisher;
   docs: TaskDocs;
@@ -78,8 +82,27 @@ export class Pipeline {
   private inFlight = new Set<Promise<void>>();
   private now: () => number;
 
+  private agents: Record<Role, AgentDef>;
+
   constructor(private deps: PipelineDeps) {
     this.now = deps.now ?? Date.now;
+    this.agents = deps.agents;
+  }
+
+
+  /** Swaps in edited agent definitions; running steps keep the version they started with. */
+  setAgents(agents: Record<Role, AgentDef>): void {
+    this.agents = agents;
+  }
+
+  /** Rebuilds a repo's Graphify graph in the background (no-op when the repo doesn't use it). */
+  refreshGraph(repoId: number): void {
+    const repo = this.deps.db.select().from(schema.repos).where(eq(schema.repos.id, repoId)).get();
+    if (!repo?.graphify) return;
+    void this.deps.graphs.build(repo).then(
+      () => this.deps.bus.emit(null, 'graph_built', { repoId }),
+      (e: unknown) => this.deps.bus.emit(null, 'graph_failed', { repoId, error: e instanceof Error ? e.message : String(e) }),
+    );
   }
 
   private slugOf(repo: Repo): Promise<string | null> {
@@ -205,7 +228,10 @@ export class Pipeline {
         this.update(t.id, { status: t.resumeStatus, resumeAt: null, resumeStatus: null, statusNote: null });
       }
     }
-    const slots = getSettings(db).concurrency - this.running.size;
+    const settings = getSettings(db);
+    // Near the usage limit, start nothing new; running steps finish. Resumes when the window resets.
+    if (usagePause(settings, now).paused) return;
+    const slots = settings.concurrency - this.running.size;
     if (slots <= 0) return;
     const runnable = db
       .select()
@@ -240,11 +266,14 @@ export class Pipeline {
   // ------------------------------------------------------------ running a step
 
   private async execute(initial: Task, abort: AbortController): Promise<void> {
-    const { db, bus, agents, docs, runner, config } = this.deps;
+    const { db, bus, docs, runner, config, knowledge, graphs } = this.deps;
     let task = initial.status === 'queued' ? this.update(initial.id, { status: initial.kind === 'review' ? 'reviewing_pr' : 'intake' }) : initial;
     const step = task.status as ContractStep;
     const role = AGENT_STEPS[step]!;
-    const agent = agents[role];
+    // This repo's extra skills for the role (my custom skills first, then the built-in ones).
+    const roleAgent = withRepoSkills(this.agents[role], getRepo(db, initial.repoId).skills, [config.customSkillsDir, config.skillsDir]);
+    // A PR under review is untrusted code: its reviewer gets no shell at all, only Read/Grep/Glob.
+    const agent = step === 'reviewing_pr' ? { ...roleAgent, tools: roleAgent.tools.filter((t) => t !== 'Bash') } : roleAgent;
     const repo = getRepo(db, task.repoId);
 
     // The retrospective only reads handoff documents; the worktree may already be gone after a merge.
@@ -262,7 +291,10 @@ export class Pipeline {
 
     const feedback = task.feedback ?? undefined;
     if (feedback) task = this.update(task.id, { feedback: null });
+    const mcpServers = graphs.mcpFor(repo, role);
     const prompt = buildPrompt(step, {
+      knowledge: knowledge.read(repo.id),
+      graph: !!mcpServers,
       task,
       repo,
       docs,
@@ -273,7 +305,7 @@ export class Pipeline {
 
     const run = db
       .insert(schema.runs)
-      .values({ taskId: task.id, role, step, model: agent.model, effort: agent.effort ?? null, status: 'running' })
+      .values({ taskId: task.id, role, step, model: agent.model, effort: agent.effort ?? null, status: 'running', graphify: !!mcpServers })
       .returning()
       .get();
     this.currentRun.set(task.id, run.id);
@@ -286,13 +318,9 @@ export class Pipeline {
       agent,
       prompt,
       cwd: worktree,
-      // A PR under review is untrusted code: the reviewer gets read-only commands only, never the repo's build/test commands.
-      guard: {
-        worktree,
-        write: agent.write,
-        testGlobs: repo.testGlobs,
-        allowlist: step === 'reviewing_pr' ? BASE_ALLOWLIST.filter((c) => c !== 'git grep') : effectiveAllowlist(repo),
-      },
+      mcpServers,
+      // No shell for PR reviews (see above); the empty allow-list makes any Bash call that slips through ask me.
+      guard: { worktree, write: agent.write, testGlobs: repo.testGlobs, allowlist: step === 'reviewing_pr' ? [] : effectiveAllowlist(repo) },
       signal: abort.signal,
       onEvent: (type, payload) => bus.emit(task.id, type, payload, run.id),
       askPermission: (subject, unmatched) => this.requestPermission(task.id, subject, unmatched),
@@ -423,9 +451,16 @@ export class Pipeline {
         await this.openPushGate(task);
         return;
       }
-      case 'retro':
+      case 'retro': {
         this.update(task.id, { status: 'done', doneAt: this.now(), statusNote: null });
+        const note = proposalFromRetro(text);
+        if (note) {
+          this.deps.knowledge.propose(task.repoId, task.id, note);
+          this.alert(task, 'knowledge', `Suggested note for the repo's knowledge file: ${note}`);
+        }
+        this.refreshGraph(task.repoId);
         return;
+      }
       case 'reviewing_pr': {
         const { summary, comments } = parseReviewDoc(text);
         const { db } = this.deps;

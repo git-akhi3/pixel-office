@@ -17,6 +17,8 @@ export interface RunRequest {
   onEvent(type: string, payload: Record<string, unknown>): void;
   /** Called for commands not on the allow-list. Resolves when I decide on the board. */
   askPermission(subject: string, unmatched: string[], reason: string): Promise<PermissionAnswer>;
+  /** Extra MCP servers for this session (the Graphify code graph for some roles). */
+  mcpServers?: Record<string, { type: 'stdio'; command: string; args: string[] }>;
   /** Checks the final message against its handoff contract. A returned message is sent back once for a fix. */
   validate?(text: string): string | null;
 }
@@ -42,6 +44,8 @@ export interface RunOutcome {
 export interface RateLimitSnapshot {
   fiveHour?: number;
   sevenDay?: number;
+  fiveHourResetsAt?: number;
+  sevenDayResetsAt?: number;
   resetsAt?: number;
   status?: string;
 }
@@ -153,6 +157,7 @@ export class SdkRunner implements AgentRunner {
         maxTurns: req.agent.maxTurns,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptFor(req.agent) },
         env: agentEnv(this.token),
+        ...(req.mcpServers ? { mcpServers: req.mcpServers } : {}),
         abortController: abort,
         hooks: {
           PreToolUse: [
@@ -211,6 +216,8 @@ export class SdkRunner implements AgentRunner {
               resetsAt: info.resetsAt,
               fiveHour: info.unifiedWindows?.five_hour?.utilization,
               sevenDay: info.unifiedWindows?.seven_day?.utilization,
+              fiveHourResetsAt: info.unifiedWindows?.five_hour?.resetsAt,
+              sevenDayResetsAt: info.unifiedWindows?.seven_day?.resetsAt,
             };
             this.onRateLimit(snapshot);
             if (info.status === 'rejected') {

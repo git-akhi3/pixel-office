@@ -12,6 +12,8 @@ import type { TaskStatus } from '../server/src/domain.js';
 import { EventBus } from '../server/src/events.js';
 import type { PostedReview, PrInfo, Publisher, ReviewRequest } from '../server/src/github.js';
 import { TaskDocs } from '../server/src/handoffs.js';
+import { Graphs } from '../server/src/graph.js';
+import { Knowledge } from '../server/src/knowledge.js';
 import { Pipeline } from '../server/src/pipeline.js';
 import { createRepo, getRepo } from '../server/src/repos.js';
 import { emptyUsage, type AgentRunner, type RunOutcome, type RunRequest } from '../server/src/runner.js';
@@ -172,6 +174,8 @@ function makePipeline(): Pipeline {
     runner,
     publisher,
     docs: new TaskDocs(config.tasksDir),
+    knowledge: new Knowledge(db, config.knowledgeDir),
+    graphs: new Graphs(config.graphsDir),
     slugOf: async () => 'acme/app',
   });
 }
@@ -621,17 +625,18 @@ describe('pr reviews', () => {
     expect(await pipeline.pickUpReviews()).toBe(0);
   });
 
-  it('never runs code from the PR: no setup command, read-only commands for the reviewer', async () => {
+  it('never runs code from the PR: no setup command and no shell for the reviewer', async () => {
     addOriginWithPr();
     const { updateRepo } = await import('../server/src/repos.js');
     await updateRepo(db, repo.id, { ...repo, setupCmd: 'touch .setup-ran' });
-    let allowlist: string[] = [];
-    runner.queue('reviewing_pr', (req) => ((allowlist = req.guard.allowlist), { text: docs.prReview }));
+    let seen: RunRequest | undefined;
+    runner.queue('reviewing_pr', (req) => ((seen = req), { text: docs.prReview }));
     const task = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
     await settle();
     expect(existsSync(join(pipeline.getTask(task.id).worktreePath!, '.setup-ran'))).toBe(false);
-    expect(allowlist).not.toContain('npm test');
-    expect(allowlist).toContain('git diff');
+    expect(seen!.agent.tools).not.toContain('Bash');
+    expect(seen!.agent.tools).toEqual(expect.arrayContaining(['Read', 'Grep', 'Glob']));
+    expect(seen!.guard.allowlist).toEqual([]);
   });
 
   it('returns to the editable draft when GitHub rejects the post', async () => {

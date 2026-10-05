@@ -9,6 +9,8 @@ import { getSettings, schema, setSetting, type Db } from './db/index.js';
 import { boardColumn, TASK_STATUSES } from './domain.js';
 import type { EventBus } from './events.js';
 import type { TaskDocs } from './handoffs.js';
+import type { Graphs } from './graph.js';
+import type { Knowledge } from './knowledge.js';
 import type { Pipeline } from './pipeline.js';
 import { createRepo, deleteRepo, effectiveAllowlist, getRepo, ghAccounts, listRepos, updateRepo } from './repos.js';
 import { run } from './util/exec.js';
@@ -20,12 +22,14 @@ export interface ServerDeps {
   config: OfficeConfig;
   pipeline: Pipeline;
   docs: TaskDocs;
+  knowledge: Knowledge;
+  graphs: Graphs;
 }
 
 const id = z.coerce.number().int().positive();
 
 export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
-  const { db, bus, config, pipeline, docs } = deps;
+  const { db, bus, config, pipeline, docs, knowledge, graphs } = deps;
   const app = Fastify({ logger: { level: process.env.OFFICE_LOG ?? 'warn' }, forceCloseConnections: true });
   const allowedHosts = new Set([
     `127.0.0.1:${config.port}`,

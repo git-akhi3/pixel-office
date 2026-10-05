@@ -138,7 +138,7 @@ const DANGEROUS_LONG: Record<string, string[]> = {
   git: ['--open-files-in-pager', '--output', '--ext-diff', '--exec-path', '--config-env', '--upload-pack', '--receive-pack', '--exec', '--no-index', '--git-dir', '--work-tree', '--textconv'],
   sort: ['--output', '--compress-program'],
   tree: ['--output'],
-  rg: ['--pre', '--pre-glob', '--search-zip'],
+  rg: ['--pre', '--pre-glob', '--search-zip', '--hostname-bin'],
 };
 /** Short flags with the same effect; they can be bundled (-lO) so any cluster containing them counts. */
 const DANGEROUS_SHORT: Record<string, string> = { git: 'O', sort: 'o', tree: 'o', rg: 'z' };
@@ -149,7 +149,9 @@ const DANGEROUS_SHORT: Record<string, string> = { git: 'O', sort: 'o', tree: 'o'
  */
 export function unsafeFlag(segment: string): string | null {
   const tokens = segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
-  const tool = basename(tokens[0] ?? '');
+  const tool = basename((tokens[0] ?? '').replace(/["'\\]/g, ''));
+  // uniq writes its second positional argument as an output file.
+  if (tool === 'uniq') return tokens.slice(1).filter((t) => !t.startsWith('-')).length > 1 ? 'uniq writes its second argument as a file' : null;
   if (!(tool in DANGEROUS_LONG)) return null;
   if (tool === 'git') {
     // Global options before the subcommand: -c (config override) and -C (another directory).
@@ -159,7 +161,9 @@ export function unsafeFlag(segment: string): string | null {
     }
   }
   for (const raw of tokens.slice(1)) {
-    const t = raw.replace(/^["']|["']$/g, '');
+    // The shell removes quotes and backslashes before the program sees an option: '--pre'=x is --pre=x.
+    if (/^["'\\]*-/.test(raw) && /["'\\]/.test(raw.split('=')[0]!)) return `quoted or escaped option names are not allowed: ${raw}`;
+    const t = raw;
     if (t === '--') break;
     if (t.startsWith('--')) {
       const name = t.split('=')[0]!;

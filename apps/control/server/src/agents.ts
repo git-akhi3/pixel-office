@@ -37,15 +37,47 @@ function splitFrontmatter(text: string, file: string): { data: unknown; body: st
   return { data: parseYaml(m[1]!), body: m[2]!.trim() };
 }
 
-export function loadSkill(skillsDir: string, name: string): Skill {
-  const file = join(skillsDir, name, 'SKILL.md');
-  if (!existsSync(file)) throw new Error(`Unknown skill "${name}" (expected ${file})`);
-  const { data, body } = splitFrontmatter(readFileSync(file, 'utf8'), file);
-  const meta = z.object({ name: z.string(), description: z.string() }).parse(data);
-  return { name: meta.name, description: meta.description, body };
+/** Directories to search, highest priority first (my custom skills, then the built-in ones). */
+type Dirs = string | string[];
+const dirList = (d: Dirs) => (Array.isArray(d) ? d : [d]);
+
+export const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,47}$/;
+
+export function parseSkill(text: string, file: string): Skill {
+  const { data, body } = splitFrontmatter(text, file);
+  const meta = z.object({ name: z.string().regex(SKILL_NAME, 'lowercase letters, digits and dashes'), description: z.string().min(1) }).safeParse(data);
+  if (!meta.success) throw new Error(`${file}: ${meta.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
+  if (!body) throw new Error(`${file}: empty skill body`);
+  return { name: meta.data.name, description: meta.data.description, body };
 }
 
-export function parseAgent(text: string, file: string, skillsDir: string): AgentDef {
+export function loadSkill(skillsDirs: Dirs, name: string): Skill {
+  for (const dir of dirList(skillsDirs)) {
+    const file = join(dir, name, 'SKILL.md');
+    if (existsSync(file)) return parseSkill(readFileSync(file, 'utf8'), file);
+  }
+  throw new Error(`Unknown skill "${name}"`);
+}
+
+export function listSkills(skillsDirs: Dirs): Array<Skill & { source: string; text: string }> {
+  const seen = new Map<string, Skill & { source: string; text: string }>();
+  for (const dir of dirList(skillsDirs)) {
+    if (!existsSync(dir)) continue;
+    for (const name of readdirSync(dir)) {
+      const file = join(dir, name, 'SKILL.md');
+      if (seen.has(name) || !existsSync(file)) continue;
+      const text = readFileSync(file, 'utf8');
+      try {
+        seen.set(name, { ...parseSkill(text, file), source: dir, text });
+      } catch {
+        // A broken custom skill is reported when it is saved; skip it in listings.
+      }
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function parseAgent(text: string, file: string, skillsDir: Dirs): AgentDef {
   const { data, body } = splitFrontmatter(text, file);
   const parsed = frontmatter.safeParse(data);
   if (!parsed.success) {
@@ -59,16 +91,29 @@ export function parseAgent(text: string, file: string, skillsDir: string): Agent
   return { ...def, prompt: body, skillDefs: def.skills.map((s) => loadSkill(skillsDir, s)) };
 }
 
-export function loadAgents(agentsDir: string, skillsDir: string): Record<Role, AgentDef> {
+/** Loads every role, taking each from the first directory that has it (my custom version wins). */
+export function loadAgents(agentsDirs: Dirs, skillsDir: Dirs): Record<Role, AgentDef> {
   const out: Partial<Record<Role, AgentDef>> = {};
-  for (const f of readdirSync(agentsDir).filter((f) => f.endsWith('.md'))) {
-    const def = parseAgent(readFileSync(join(agentsDir, f), 'utf8'), f, skillsDir);
-    if (`${def.name}.md` !== f) throw new Error(`${f}: name "${def.name}" does not match the file name`);
-    out[def.name] = def;
+  for (const dir of dirList(agentsDirs)) {
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+      const role = f.slice(0, -3) as Role;
+      if (out[role] || !ROLES.includes(role)) continue;
+      const def = parseAgent(readFileSync(join(dir, f), 'utf8'), f, skillsDir);
+      if (`${def.name}.md` !== f) throw new Error(`${f}: name "${def.name}" does not match the file name`);
+      out[def.name] = def;
+    }
   }
   const missing = ROLES.filter((r) => !out[r]);
   if (missing.length) throw new Error(`Missing agent definitions: ${missing.join(', ')}`);
   return out as Record<Role, AgentDef>;
+}
+
+/** The agent with a repo's extra skills for its role added. */
+export function withRepoSkills(agent: AgentDef, repoSkills: Record<string, string[]>, skillsDirs: Dirs): AgentDef {
+  const extra = (repoSkills[agent.name] ?? []).filter((n) => !agent.skills.includes(n));
+  if (!extra.length) return agent;
+  return { ...agent, skills: [...agent.skills, ...extra], skillDefs: [...agent.skillDefs, ...extra.map((n) => loadSkill(skillsDirs, n))] };
 }
 
 /** The text appended to Claude Code's system prompt for this agent. */

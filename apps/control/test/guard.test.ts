@@ -175,12 +175,20 @@ describe('shell allow-list', () => {
     'sort --outp=f in.txt',
     'sort --compress-program=sh x',
     'cd src && git grep -nO./x.sh foo',
+    // quoting, escaping, newer flags (second review)
+    "rg '--pre'=sh x",
+    'rg "--pre"=sh x',
+    'git diff --out\\put=/tmp/f',
+    'rg --hostname-bin=./x.sh --hyperlink-format=default foo',
+    'uniq in.txt out.txt',
+    "'rg' --pre=sh x",
+    '\\git grep -O./x.sh foo',
   ])('blocks read-only tools used to run or write: %s', (cmd) => {
     expect(decision(checkCommand(ctx(), cmd))).toBe('deny');
   });
 
   it('still allows the ordinary flags of those tools', () => {
-    for (const cmd of ['git grep -n -c foo', 'git log --oneline -5', 'git diff --stat main', 'sort -u -r x', 'git show HEAD:src/a.ts', 'rg -n foo src', 'git log --oneline -- src']) {
+    for (const cmd of ['sort x | uniq -c', "git log --format='%h %s' -3", 'git grep -n -c foo', 'git log --oneline -5', 'git diff --stat main', 'sort -u -r x', 'git show HEAD:src/a.ts', 'rg -n foo src', 'git log --oneline -- src']) {
       expect(decision(checkCommand(ctx(), cmd)), cmd).toBe('allow');
     }
   });

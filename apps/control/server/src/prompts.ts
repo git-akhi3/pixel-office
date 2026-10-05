@@ -16,6 +16,10 @@ export interface PromptContext {
   /** Feedback for this step: my rejection comment, a blocker, review/test reports. */
   feedback?: string;
   diff?: string;
+  /** The repo's knowledge file (owner-approved notes). */
+  knowledge?: string;
+  /** Whether the Graphify code graph tools are available in this session. */
+  graph?: boolean;
 }
 
 const JOBS: Record<ContractStep, string> = {
@@ -33,7 +37,7 @@ const JOBS: Record<ContractStep, string> = {
     "Write tests for the plan's acceptance criteria, then run the full test suite. Only create or change test files.",
   retro: 'The task is finished. Write the retrospective from the documents below.',
   reviewing_pr:
-    "Review this pull request as a strict, constructive senior reviewer. Your current directory is a checkout of the PR's head. Read the code around the changes. Do NOT run anything from the PR (no tests, builds, installs or scripts): its code is untrusted, so judge it by reading. Your draft is edited by the owner before anything is posted.",
+    "Review this pull request as a strict, constructive senior reviewer. Your current directory is a checkout of the PR's head. Read the code around the changes with Read, Grep and Glob. There is no shell in this step: the PR's code is untrusted, so judge it by reading. Your draft is edited by the owner before anything is posted.",
 };
 
 /** Which handoff documents each step reads. */
@@ -73,6 +77,12 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
   );
   const notes = repoNotes(ctx.worktree);
   if (notes) parts.push(`## Repo instructions\n${notes}`);
+  if (ctx.knowledge?.trim()) parts.push(`## Repo knowledge (notes the owner approved from past tasks)\n${ctx.knowledge.trim()}`);
+  if (ctx.graph) {
+    parts.push(
+      '## Code graph\nGraphify tools (mcp__graphify__query_graph, get_node, get_neighbors, shortest_path, …) answer "where is X, what calls Y, what depends on Z" for this repo. Use them before broad grepping; they are cheaper. The graph is built from the main checkout, so confirm details in the files.',
+    );
+  }
   if (task.kind === 'review') {
     parts.push(
       `## Pull request\n${task.prRepo}#${task.prNumber} by ${task.prAuthor}: ${task.title}\n${task.input}`,

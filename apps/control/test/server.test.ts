@@ -9,6 +9,8 @@ import { ensureDirs, loadConfig } from '../server/src/config.js';
 import { openDb } from '../server/src/db/index.js';
 import { EventBus } from '../server/src/events.js';
 import { TaskDocs } from '../server/src/handoffs.js';
+import { Graphs } from '../server/src/graph.js';
+import { Knowledge } from '../server/src/knowledge.js';
 import { Pipeline } from '../server/src/pipeline.js';
 import type { AgentRunner } from '../server/src/runner.js';
 import { buildServer } from '../server/src/server.js';
@@ -32,7 +34,11 @@ beforeEach(async () => {
   const db = openDb(config.dbPath);
   const bus = new EventBus(db);
   const docs = new TaskDocs(config.tasksDir);
+  const knowledge = new Knowledge(db, config.knowledgeDir);
+  const graphs = new Graphs(config.graphsDir);
   pipeline = new Pipeline({
+    knowledge,
+    graphs,
     db,
     bus,
     config,
@@ -49,7 +55,7 @@ beforeEach(async () => {
     },
     docs,
   });
-  app = await buildServer({ db, bus, config, pipeline, docs });
+  app = await buildServer({ db, bus, config, pipeline, docs, knowledge, graphs });
 });
 
 afterEach(async () => {
