@@ -1,6 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { loadAgents } from './agents.js';
 import { ensureDirs, loadConfig, loadOauthToken } from './config.js';
-import { randomUUID } from 'node:crypto';
 import { getSettings, openDb, setSetting } from './db/index.js';
 import { PixelBridge, titleFrom } from './pixelBridge.js';
 import { EventBus } from './events.js';
@@ -52,6 +52,7 @@ if (!pixelSessionId) {
 const bridge = new PixelBridge({
   workspaceFile: config.pixelWorkspaceFile,
   sessionId: pixelSessionId,
+  onRotate: (id) => setSetting(db, 'pixelSessionId', id),
   taskTitle: titleFrom((id) => pipeline.getTask(id)),
 });
 bridge.start(bus);

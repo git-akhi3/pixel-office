@@ -6,11 +6,12 @@
 // Each agent step is an "Agent" tool call with subagent_type = the role, so the matching resident
 // (coder, reviewer, ...) works at its desk, labelled with the task. A gate shows the waiting bubble.
 //
-// The transcript lives in the project folder of the pixel office's workspace (~/.office/pixel by
-// default, see start.sh), so it never appears in the session history of a real repo.
+// Once adopted through hooks, Pixel Agents takes turn ends from the Stop hook, not the transcript,
+// so going idle needs both. The transcript lives in the project folder of the pixel office's
+// workspace (~/.office/pixel by default, see start.sh), so it never appears in a real repo's history.
 
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Task } from './db/schema.js';
@@ -19,17 +20,23 @@ import type { EventBus } from './events.js';
 export interface PixelServer {
   port: number;
   token: string;
+  pid: number;
 }
 
 export interface BridgeOptions {
-  /** ~/.pixel-agents (server.json with port + token, layout.json with residents). */
+  /** ~/.pixel-agents (servers/*.json registry, layout.json with residents). */
   pixelHome?: string;
   /** ~/.claude/projects: where Claude Code (and so Pixel Agents) keeps transcripts. */
   projectsRoot?: string;
   /** File written by start.sh with the pixel office's workspace (the project it watches). */
   workspaceFile: string;
-  /** Stable session id (a UUID) of the office in Pixel Agents. */
+  /** Session id (a UUID) of the office in Pixel Agents. */
   sessionId?: string;
+  /** Called with a new session id when the transcript is rotated, so it can be persisted. */
+  onRotate?: (sessionId: string) => void;
+  /** Rotate the transcript beyond this size. */
+  maxTranscriptBytes?: number;
+  hookTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   taskTitle: (taskId: number) => string | null;
 }
@@ -37,28 +44,46 @@ export interface BridgeOptions {
 /** Claude Code's project-folder naming (same as Pixel Agents' normalizeProjectPath). */
 export const projectDirName = (absPath: string) => absPath.replace(/[^a-zA-Z0-9-]/g, '-');
 
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM'; // exists, just not ours to signal
+  }
+}
+
 export class PixelBridge {
   private pixelHome: string;
   private projectsRoot: string;
-  readonly sessionId: string;
+  private _sessionId: string;
   private fetchImpl: typeof fetch;
-  private announced = false;
+  /** "pid:port" of the pixel server the office was announced to; a new server means announce again. */
+  private announcedTo: string | null = null;
+  /** A previous run of the control server may have left a turn open (crash mid-step). */
+  private staleTurn = true;
   /** runId → tool_use id of steps currently shown as working. */
   private active = new Map<number, string>();
+  /** Events are handled one at a time, in order (announce, then tool_use before tool_result). */
+  private queue: Promise<void> = Promise.resolve();
   private unsubscribe?: () => void;
 
   constructor(private opts: BridgeOptions) {
     this.pixelHome = opts.pixelHome ?? join(homedir(), '.pixel-agents');
     this.projectsRoot = opts.projectsRoot ?? join(homedir(), '.claude', 'projects');
-    this.sessionId = opts.sessionId ?? randomUUID();
+    this._sessionId = opts.sessionId ?? randomUUID();
     this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
+  get sessionId(): string {
+    return this._sessionId;
   }
 
   start(bus: EventBus): void {
     this.unsubscribe = bus.subscribe((msg) => {
       if (msg.type !== 'event' || msg.event.taskId === null) return;
       const { type, payload, runId, taskId } = msg.event;
-      void this.onEvent(type, payload, taskId, runId).catch(() => {});
+      void this.enqueue(type, payload, taskId, runId);
     });
   }
 
@@ -66,16 +91,34 @@ export class PixelBridge {
     this.unsubscribe?.();
   }
 
-  /** The pixel server's port and hook token, or null when it isn't running. */
+  /** Queues an event behind earlier ones. Never rejects. */
+  enqueue(type: string, payload: Record<string, unknown>, taskId: number, runId: number | null): Promise<void> {
+    this.queue = this.queue.then(() => this.onEvent(type, payload, taskId, runId)).catch(() => {});
+    return this.queue;
+  }
+
+  /**
+   * The running pixel server that serves the office scene: the newest live entry in Pixel Agents'
+   * registry (~/.pixel-agents/servers/*.json) with servesSpa. server.json is only a last-writer-wins
+   * pointer and may name a VS Code extension's embedded server instead.
+   */
   server(): PixelServer | null {
+    const dir = join(this.pixelHome, 'servers');
+    let best: (PixelServer & { startedAt: number }) | null = null;
     try {
-      const j = JSON.parse(readFileSync(join(this.pixelHome, 'server.json'), 'utf8')) as { port?: number; token?: string; pid?: number };
-      if (!j.port || !j.token) return null;
-      if (j.pid) process.kill(j.pid, 0); // throws if the process is gone
-      return { port: j.port, token: j.token };
+      for (const f of readdirSync(dir).filter((n) => n.endsWith('.json'))) {
+        try {
+          const j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as { port?: number; token?: string; pid?: number; servesSpa?: boolean; startedAt?: number };
+          if (!j.port || !j.token || !j.pid || !j.servesSpa || !alive(j.pid)) continue;
+          if (!best || (j.startedAt ?? 0) > best.startedAt) best = { port: j.port, token: j.token, pid: j.pid, startedAt: j.startedAt ?? 0 };
+        } catch {
+          // unreadable entry: skip
+        }
+      }
     } catch {
       return null;
     }
+    return best && { port: best.port, token: best.token, pid: best.pid };
   }
 
   /** The pixel office's workspace, from the file start.sh writes. */
@@ -85,9 +128,9 @@ export class PixelBridge {
   }
 
   /** Where the office's transcript goes: the workspace's Claude project folder, which Pixel Agents tracks. */
-  transcriptPath(): string | null {
+  transcriptPath(sessionId = this._sessionId): string | null {
     const workspace = this.workspace();
-    return workspace ? join(this.projectsRoot, projectDirName(workspace), `${this.sessionId}.jsonl`) : null;
+    return workspace ? join(this.projectsRoot, projectDirName(workspace), `${sessionId}.jsonl`) : null;
   }
 
   /** Resident character for a role: same name, or the architect at the designer's desk in older layouts. */
@@ -104,44 +147,85 @@ export class PixelBridge {
     return role;
   }
 
-  private async hook(body: Record<string, unknown>): Promise<boolean> {
-    const server = this.server();
-    if (!server) {
-      this.announced = false; // announce again when the pixel office comes back
+  private async hook(server: PixelServer, body: Record<string, unknown>, sessionId = this._sessionId): Promise<boolean> {
+    try {
+      const res = await this.fetchImpl(`http://127.0.0.1:${server.port}/api/hooks/claude`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${server.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, ...body }),
+        signal: AbortSignal.timeout(this.opts.hookTimeoutMs ?? 2000),
+      });
+      if (!res.ok) this.announcedTo = null;
+      return res.ok;
+    } catch {
+      this.announcedTo = null; // unreachable or hung: announce again next time
       return false;
     }
-    const res = await this.fetchImpl(`http://127.0.0.1:${server.port}/api/hooks/claude`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${server.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ session_id: this.sessionId, ...body }),
-    });
-    if (!res.ok) this.announced = false;
-    return res.ok;
   }
 
   private append(record: Record<string, unknown>): void {
     const path = this.transcriptPath();
     if (!path) return;
-    appendFileSync(path, JSON.stringify({ sessionId: this.sessionId, uuid: randomUUID(), timestamp: new Date().toISOString(), ...record }) + '\n');
+    appendFileSync(path, JSON.stringify({ sessionId: this._sessionId, uuid: randomUUID(), timestamp: new Date().toISOString(), ...record }) + '\n');
   }
 
-  /** Creates the transcript and announces the session (SessionStart, confirmed by a turn end). */
-  private async announce(): Promise<boolean> {
-    if (this.announced) return true;
+  /** Ends the current turn in both places Pixel Agents may look: transcript and Stop hook. */
+  private async endTurn(server: PixelServer): Promise<void> {
+    this.append({ type: 'system', subtype: 'turn_duration', durationMs: 0 });
+    await this.hook(server, { hook_event_name: 'Stop' });
+  }
+
+  /** Starts a fresh transcript under a new session id once the current one is too big. */
+  private async rotateIfLarge(server: PixelServer): Promise<void> {
+    const path = this.transcriptPath();
+    if (!path || !existsSync(path) || this.active.size) return;
+    if (statSync(path).size < (this.opts.maxTranscriptBytes ?? 2_000_000)) return;
+    const old = this._sessionId;
+    await this.hook(server, { hook_event_name: 'SessionEnd', reason: 'other' }, old);
+    this._sessionId = randomUUID();
+    this.opts.onRotate?.(this._sessionId);
+    this.announcedTo = null;
+    try {
+      unlinkSync(path);
+    } catch {
+      // already gone
+    }
+  }
+
+  /**
+   * Creates the transcript and announces the session to the current pixel server (again whenever
+   * that server changes). Confirmed with PostToolUse, which adopts the session without the "done"
+   * chime a Stop would play.
+   */
+  private async announce(server: PixelServer): Promise<boolean> {
+    const key = `${server.pid}:${server.port}`;
+    if (this.announcedTo === key) return true;
     const workspace = this.workspace();
     const path = this.transcriptPath();
-    if (!workspace || !path || !this.server()) return false;
+    if (!workspace || !path) return false;
     mkdirSync(join(path, '..'), { recursive: true });
     if (!existsSync(path)) writeFileSync(path, '');
     const base = { cwd: workspace, transcript_path: path };
-    if (!(await this.hook({ hook_event_name: 'SessionStart', source: 'startup', ...base }))) return false;
-    this.announced = await this.hook({ hook_event_name: 'Stop', ...base });
-    return this.announced;
+    if (!(await this.hook(server, { hook_event_name: 'SessionStart', source: 'startup', ...base }))) return false;
+    if (!(await this.hook(server, { hook_event_name: 'PostToolUse', tool_name: 'Agent', ...base }))) return false;
+    this.announcedTo = key;
+    // Close anything a crashed run of the control server left "working".
+    if (this.staleTurn) {
+      this.staleTurn = false;
+      if (!this.active.size) await this.endTurn(server);
+    }
+    return true;
   }
 
   async onEvent(type: string, payload: Record<string, unknown>, taskId: number, runId: number | null): Promise<void> {
     if (!['step_start', 'step_end', 'gate', 'gate_decided'].includes(type)) return;
-    if (!(await this.announce())) return;
+    const server = this.server();
+    if (!server) {
+      this.announcedTo = null;
+      return;
+    }
+    if (type === 'step_start') await this.rotateIfLarge(server);
+    if (!(await this.announce(server))) return;
     switch (type) {
       case 'step_start': {
         if (runId === null) return;
@@ -173,17 +257,16 @@ export class PixelBridge {
             message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolId, content: String(payload.status ?? 'done') }] },
           });
         }
-        // Nothing else running: end the turn so the office goes idle.
-        if (!this.active.size) this.append({ type: 'system', subtype: 'turn_duration', durationMs: 0 });
+        if (!this.active.size) await this.endTurn(server); // nothing else running: everyone idles
         return;
       }
       case 'gate':
         if (payload.status === 'pending') {
-          await this.hook({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: `#${taskId} needs you` });
+          await this.hook(server, { hook_event_name: 'Notification', notification_type: 'permission_prompt', message: `#${taskId} needs you` });
         }
         return;
       case 'gate_decided':
-        if (!this.active.size) await this.hook({ hook_event_name: 'Stop' });
+        if (!this.active.size) await this.hook(server, { hook_event_name: 'Stop' });
         return;
     }
   }
