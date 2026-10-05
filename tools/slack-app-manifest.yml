@@ -1,0 +1,30 @@
+# Slack app for Pixel Office. Create it at https://api.slack.com/apps → Create New App → From a manifest.
+# Socket Mode: the office connects out to Slack, so no public URL is needed.
+display_information:
+  name: Pixel Office
+  description: Your agent team's task threads, approvals and live status.
+  background_color: "#1b2a45"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Pixel Office
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write # post and edit task threads
+      - im:history # read your DMs to the bot (new tasks, thread commands)
+      - im:read
+      - im:write # open the DM with you
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.im
+  interactivity:
+    is_enabled: true # approve / reject / allow buttons
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

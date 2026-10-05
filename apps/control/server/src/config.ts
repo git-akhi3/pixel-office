@@ -41,10 +41,10 @@ export function ensureDirs(config: OfficeConfig): void {
 }
 
 /**
- * The subscription token from `claude setup-token`, kept in ~/.office/env as
- * CLAUDE_CODE_OAUTH_TOKEN=... (mode 600). Never logged.
+ * Reads ~/.office/env (KEY=value lines, mode 600): the Claude token, Slack tokens and remote-access
+ * settings. Values are never logged.
  */
-export function loadOauthToken(envFile: string): string {
+export function loadEnvFile(envFile: string): Record<string, string> {
   if (!existsSync(envFile)) {
     throw new Error(
       `No ${envFile}. Create a token with \`claude setup-token\` and save it there as CLAUDE_CODE_OAUTH_TOKEN=<token> (chmod 600).`,
@@ -54,9 +54,53 @@ export function loadOauthToken(envFile: string): string {
   if (mode & 0o077) {
     throw new Error(`${envFile} is readable by other users (mode ${mode.toString(8)}). Run: chmod 600 ${envFile}`);
   }
+  const out: Record<string, string> = {};
   for (const line of readFileSync(envFile, 'utf8').split('\n')) {
-    const m = line.match(/^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=\s*"?([^"\s]+)"?\s*$/);
-    if (m?.[1]) return m[1];
+    const m = line.match(/^\s*([A-Z][A-Z0-9_]*)\s*=\s*"?([^"]*?)"?\s*$/);
+    if (m?.[1] && m[2]) out[m[1]] = m[2];
   }
-  throw new Error(`${envFile} has no CLAUDE_CODE_OAUTH_TOKEN line.`);
+  return out;
+}
+
+/** The subscription token from `claude setup-token`. */
+export function loadOauthToken(envFile: string): string {
+  const token = loadEnvFile(envFile).CLAUDE_CODE_OAUTH_TOKEN;
+  if (!token) throw new Error(`${envFile} has no CLAUDE_CODE_OAUTH_TOKEN line.`);
+  return token;
+}
+
+export interface RemoteConfig {
+  /** Where links in Slack point, e.g. https://office.example.dev. Defaults to the local address. */
+  publicUrl: string;
+  /** Extra Host headers accepted (the tunnel hostname). Each must be protected by Cloudflare Access. */
+  allowedHosts: string[];
+  /** Cloudflare Access: team domain (e.g. myteam.cloudflareaccess.com) and the application's AUD tag. */
+  accessTeamDomain?: string;
+  accessAud?: string;
+}
+
+export interface SlackConfig {
+  botToken: string;
+  appToken: string;
+  ownerId: string;
+}
+
+export function remoteConfig(config: OfficeConfig, env: Record<string, string>): RemoteConfig {
+  const allowedHosts = (env.OFFICE_ALLOWED_HOSTS ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  return {
+    publicUrl: (env.OFFICE_PUBLIC_URL ?? `http://${config.host}:${config.port}`).replace(/\/$/, ''),
+    allowedHosts,
+    accessTeamDomain: env.CF_ACCESS_TEAM_DOMAIN?.replace(/^https?:\/\//, '').replace(/\/$/, ''),
+    accessAud: env.CF_ACCESS_AUD,
+  };
+}
+
+/** Slack is optional: all three values or nothing. */
+export function slackConfig(env: Record<string, string>): SlackConfig | null {
+  const { SLACK_BOT_TOKEN: botToken, SLACK_APP_TOKEN: appToken, SLACK_OWNER_ID: ownerId } = env;
+  if (!botToken && !appToken && !ownerId) return null;
+  if (!botToken?.startsWith('xoxb-')) throw new Error('SLACK_BOT_TOKEN must be the xoxb- bot token.');
+  if (!appToken?.startsWith('xapp-')) throw new Error('SLACK_APP_TOKEN must be the xapp- app-level token (connections:write).');
+  if (!ownerId?.match(/^[UW][A-Z0-9]+$/)) throw new Error('SLACK_OWNER_ID must be your Slack member ID (starts with U).');
+  return { botToken, appToken, ownerId };
 }

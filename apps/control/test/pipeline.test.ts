@@ -47,7 +47,7 @@ class FakeRunner implements AgentRunner {
     this.overrides[step] = [...(this.overrides[step] ?? []), ...scripts];
   }
 
-  steer(): boolean {
+  steer(_runId: number, _text: string): boolean {
     return false;
   }
 
@@ -218,6 +218,37 @@ describe('pipeline', () => {
     expect(pipeline.pendingGates(b.id)).toHaveLength(0);
     await settle();
     expect(statusOf(b)).toBe('done');
+  });
+
+  it('steers a running agent live, or saves the note for the next step', async () => {
+    const steered: string[] = [];
+    runner.steer = (_runId: number, text: string) => (steered.push(text), true);
+    runner.queue('planning', hang);
+    const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
+    await until(() => statusOf(task) === 'planning' && pipeline.isRunning(task.id));
+    expect(pipeline.steer(task.id, 'use the existing helper')).toBe('live');
+    expect(steered[0]).toContain('use the existing helper');
+    await pipeline.action(task.id, 'stop');
+    await settle();
+
+    runner.steer = () => false;
+    expect(pipeline.steer(task.id, 'keep it small')).toBe('next_step');
+    await pipeline.action(task.id, 'resume');
+    await settle();
+    expect(runner.calls.at(-1)!.prompt).toContain('keep it small');
+  });
+
+  it('re-plans on request, stopping the running step, without counting toward the limit', async () => {
+    runner.queue('coding', hang);
+    const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
+    await settle();
+    await pipeline.decideGate(planGate(task).id, 'approve');
+    await until(() => statusOf(task) === 'coding' && pipeline.isRunning(task.id));
+    pipeline.replanNow(task.id, 'split it into two steps');
+    await settle();
+    expect(statusOf(task)).toBe('awaiting_plan_approval');
+    expect(runner.calls.at(-1)!.prompt).toContain('split it into two steps');
+    expect(pipeline.getTask(task.id).replanCount).toBe(0);
   });
 
   it('records token usage per run', async () => {

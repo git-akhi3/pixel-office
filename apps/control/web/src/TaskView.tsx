@@ -4,6 +4,49 @@ import { DiffView, Doc, duration, formatTokens, StatusBadge, timeAgo } from './u
 
 type Tab = 'docs' | 'diff' | 'activity' | 'runs';
 
+const TERMINAL = ['done', 'discarded', 'failed', 'pushing', 'pr_open', 'retro'];
+
+function Steer({ taskId, running, onError, onReplanned }: { taskId: number; running: boolean; onError: (e: unknown) => void; onReplanned: () => void }) {
+  const [text, setText] = useState('');
+  const [sent, setSent] = useState<string | null>(null);
+  const send = async (kind: 'steer' | 'replan') => {
+    if (!text.trim()) return;
+    try {
+      if (kind === 'steer') {
+        const r = await api.steer(taskId, text);
+        setSent(r.delivered === 'live' ? 'Sent to the running agent.' : 'Saved: the next agent step will get it.');
+      } else {
+        await api.replan(taskId, text);
+        setSent('Sent back to the architect for a new plan.');
+        onReplanned();
+      }
+      setText('');
+    } catch (e) {
+      onError(e);
+    }
+  };
+  return (
+    <div className="steer">
+      <input
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          setSent(null);
+        }}
+        onKeyDown={(e) => e.key === 'Enter' && void send('steer')}
+        placeholder={running ? 'Message the agent that is working now…' : 'Note for the next agent step…'}
+      />
+      <button disabled={!text.trim()} onClick={() => send('steer')}>
+        Send
+      </button>
+      <button disabled={!text.trim()} onClick={() => send('replan')} title="Stop and ask the architect for a new plan, with this as the reason">
+        New plan
+      </button>
+      {sent && <span className="hint">{sent}</span>}
+    </div>
+  );
+}
+
 const REFRESH_ON = new Set(['step_start', 'step_end', 'gate', 'gate_decided', 'alert', 'pr_opened', 'stopped', 'resumed', 'worktree', 'paused']);
 
 export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: OfficeEvent | null; onError: (e: unknown) => void }) {
@@ -114,6 +157,8 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
           </button>
         )}
       </div>
+
+      {!TERMINAL.includes(task.status) && <Steer taskId={id} running={task.running} onError={onError} onReplanned={load} />}
 
       {alerts.length > 0 && (
         <ul className="alerts">

@@ -123,6 +123,8 @@ export const api = {
   decide: (gateId: number, decision: string, comment?: string) => request('POST', `/api/gates/${gateId}`, { decision, comment }),
   action: (id: number, action: 'stop' | 'resume' | 'discard' | 'done' | 'takeover') =>
     request('POST', `/api/tasks/${id}/actions`, { action }),
+  steer: (id: number, text: string) => request<{ delivered: 'live' | 'next_step' }>('POST', `/api/tasks/${id}/steer`, { text }),
+  replan: (id: number, reason: string) => request<Task>('POST', `/api/tasks/${id}/replan`, { reason }),
   repos: () => request<Repo[]>('GET', '/api/repos'),
   saveRepo: (repo: Partial<Repo>, id?: number) => request<Repo>(id ? 'PUT' : 'POST', id ? `/api/repos/${id}` : '/api/repos', repo),
   deleteRepo: (id: number) => request('DELETE', `/api/repos/${id}`),

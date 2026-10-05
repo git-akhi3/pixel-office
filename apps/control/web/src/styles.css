@@ -395,6 +395,21 @@ main {
   margin: 14px 0;
 }
 
+.steer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 14px;
+}
+.steer input {
+  flex: 1 1 260px;
+  margin: 0;
+}
+.steer .hint {
+  flex-basis: 100%;
+}
+
 .alerts {
   list-style: none;
   padding: 0;

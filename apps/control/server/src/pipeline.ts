@@ -54,6 +54,7 @@ interface PendingPermission {
 
 export class Pipeline {
   private running = new Map<number, AbortController>();
+  private currentRun = new Map<number, number>();
   private pending = new Map<number, PendingPermission>();
   private timers: NodeJS.Timeout[] = [];
   private ticking = false;
@@ -210,6 +211,7 @@ export class Pipeline {
       })
       .finally(() => {
         this.running.delete(task.id);
+        this.currentRun.delete(task.id);
         this.inFlight.delete(p);
         void this.tick();
       });
@@ -251,6 +253,7 @@ export class Pipeline {
       .values({ taskId: task.id, role, step, model: agent.model, effort: agent.effort ?? null, status: 'running' })
       .returning()
       .get();
+    this.currentRun.set(task.id, run.id);
     bus.emit(task.id, 'step_start', { step, role, model: agent.model, effort: agent.effort }, run.id);
 
     const outcome = await runner.run({
@@ -545,6 +548,43 @@ export class Pipeline {
     } catch (e) {
       this.block(task, `Push failed: ${e instanceof Error ? e.message : String(e)}`, 'pushing');
     }
+  }
+
+  // ------------------------------------------------------------ steering
+
+  /** Sends my instruction to the running agent, or keeps it for the next step. */
+  steer(taskId: number, text: string): 'live' | 'next_step' {
+    const task = this.getTask(taskId);
+    if (TERMINAL_STATUSES.includes(task.status)) throw new Error(`The task is ${task.status}.`);
+    const runId = this.currentRun.get(taskId);
+    const message = `Message from the owner, follow it: ${text}`;
+    if (runId !== undefined && this.deps.runner.steer(runId, message)) {
+      this.deps.bus.emit(taskId, 'steered', { text, live: true }, runId);
+      return 'live';
+    }
+    this.update(taskId, { feedback: [task.feedback, `The owner says: ${text}`].filter(Boolean).join('\n\n') });
+    this.deps.bus.emit(taskId, 'steered', { text, live: false });
+    return 'next_step';
+  }
+
+  /** I ask for a new plan: stop whatever runs and send the task back to the architect. Doesn't count toward the re-plan limit. */
+  replanNow(taskId: number, reason: string): Task {
+    const task = this.getTask(taskId);
+    if ([...TERMINAL_STATUSES, 'pushing', 'pr_open', 'retro'].includes(task.status)) throw new Error(`The task is ${task.status}; it can't be re-planned.`);
+    this.cancelGates(taskId);
+    const previous = this.deps.docs.latest(taskId, 'plan');
+    const updated = this.update(taskId, {
+      status: 'planning',
+      resumeStatus: null,
+      resumeAt: null,
+      statusNote: null,
+      loopCount: 0,
+      feedback: `The owner asked for a new plan: ${reason}${previous ? `\n\n### Previous plan (revise it)\n${previous}` : ''}`,
+    });
+    this.running.get(taskId)?.abort();
+    this.deps.bus.emit(taskId, 'replan_requested', { reason });
+    void this.tick();
+    return updated;
   }
 
   // ------------------------------------------------------------ actions

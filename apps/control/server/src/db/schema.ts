@@ -49,6 +49,10 @@ export const tasks = sqliteTable('tasks', {
   baseSha: text('base_sha'),
   worktreePath: text('worktree_path'),
   prUrl: text('pr_url'),
+  /** Slack thread for this task (DM with the owner) and the live status message in it. */
+  slackChannel: text('slack_channel'),
+  slackThreadTs: text('slack_thread_ts'),
+  slackStatusTs: text('slack_status_ts'),
   resumeAt: integer('resume_at'),
   doneAt: integer('done_at'),
   createdAt: integer('created_at').notNull().$defaultFn(now),
@@ -90,6 +94,8 @@ export const gates = sqliteTable('gates', {
   decision: text('decision'),
   comment: text('comment'),
   auto: integer('auto', { mode: 'boolean' }).notNull().default(false),
+  /** The Slack message showing this gate's buttons, updated once decided. */
+  slackTs: text('slack_ts'),
   createdAt: integer('created_at').notNull().$defaultFn(now),
   decidedAt: integer('decided_at'),
 });

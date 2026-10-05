@@ -150,6 +150,16 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     return summary(await pipeline.action(taskId, action));
   });
 
+  app.post('/api/tasks/:id/steer', async (req) => {
+    const { text } = z.object({ text: z.string().trim().min(1).max(4000) }).parse(req.body);
+    return { delivered: pipeline.steer(id.parse((req.params as { id: string }).id), text) };
+  });
+
+  app.post('/api/tasks/:id/replan', async (req) => {
+    const { reason } = z.object({ reason: z.string().trim().min(1).max(4000) }).parse(req.body);
+    return summary(pipeline.replanNow(id.parse((req.params as { id: string }).id), reason));
+  });
+
   // ---------------------------------------------------------------- settings
 
   app.get('/api/settings', async () => ({ ...getSettings(db), statuses: TASK_STATUSES }));
