@@ -147,6 +147,13 @@ describe('shell allow-list', () => {
     }
   });
 
+  it('allows read-only text pipelines', () => {
+    expect(decision(checkCommand(ctx(), `cat tsconfig*.json | grep -n "strict\\|noUnused" ; grep -o '"category": "[^"]*"' src/seed.json | sort | uniq -c | head -30`))).toBe('allow');
+    expect(decision(checkCommand(ctx(), 'find . -name x -delete'))).toBe('ask');
+    expect(decision(checkCommand(ctx(), "sed -i 's/a/b/' src/a.ts"))).toBe('ask');
+    expect(decision(checkCommand(ctx(), 'echo hi > /tmp/x'))).toBe('deny');
+  });
+
   it('allows cd inside the worktree but not outside', () => {
     expect(decision(checkCommand(ctx(), 'cd src && ls'))).toBe('allow');
     expect(decision(checkCommand(ctx(), 'cd / && ls'))).toBe('deny');
@@ -176,8 +183,16 @@ describe('shell allow-list', () => {
     expect(decision(checkCommand(ctx('none'), 'npm test > out.txt'))).toBe('deny');
   });
 
-  it('splits command lines', () => {
+  it('splits command lines, respecting quotes and escapes', () => {
     expect(splitCommand('a && b || c; d | e')).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(splitCommand(`grep -rn "/add\\|AddItem" src | head -5`)).toEqual([`grep -rn "/add\\|AddItem" src`, 'head -5']);
+    expect(splitCommand(`git log --format='%h|%s' && ls`)).toEqual([`git log --format='%h|%s'`, 'ls']);
+    expect(splitCommand('grep a\\|b src')).toEqual(['grep a\\|b src']);
+  });
+
+  it('allows the read-only exploration command an architect actually ran', () => {
+    const cmd = `cd ${wt}/src && grep -rn "/add\\|\\"/add\\|AddItemScreen\\|categor" . --include=*.tsx | grep -v "^src/components/CreateItemSheet" | head -50; cat ui.tsx; git log --oneline -12; ls tests`;
+    expect(decision(checkCommand(ctx(), cmd))).toBe('allow');
   });
 });
 

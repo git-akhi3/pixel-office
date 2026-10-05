@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Repo } from './db/schema.js';
 import { git, run } from './util/exec.js';
@@ -43,8 +43,22 @@ export async function createWorktree(
     // Configured by me, run by the office: not subject to the agent guard.
     const setup = await run('/bin/sh', ['-c', repo.setupCmd], { cwd: path, env: { ...process.env, REPO_PATH: repo.path }, timeoutMs: 15 * 60_000 });
     if (setup.code !== 0) throw new Error(`Setup command failed (${setup.code}): ${(setup.stderr || setup.stdout).trim().slice(-500)}`);
+    // Symlinked venvs/node_modules are not matched by "dir/" ignore patterns: remember them so they are never committed.
+    const created = (await git(path, ['ls-files', '--others', '--exclude-standard', '--directory'])).split('\n').map((l) => l.trim().replace(/\/$/, '')).filter(Boolean);
+    if (created.length) writeFileSync(await artifactsFile(path), created.join('\n') + '\n');
   }
   return { path: realpathSync(path), branch, baseSha };
+}
+
+/** Per-worktree list of paths made by the setup command, kept in the worktree's private git dir. */
+async function artifactsFile(worktree: string): Promise<string> {
+  const gitDir = (await git(worktree, ['rev-parse', '--absolute-git-dir'])).trim();
+  return join(gitDir, 'office-setup-artifacts');
+}
+
+export async function setupArtifacts(worktree: string): Promise<string[]> {
+  const f = await artifactsFile(worktree);
+  return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean) : [];
 }
 
 function parseAuthor(author: string | null): { name: string; email: string } | null {
@@ -54,7 +68,8 @@ function parseAuthor(author: string | null): { name: string; email: string } | n
 
 /** Commits everything in the worktree. Returns false when there was nothing to commit. */
 export async function commitAll(worktree: string, message: string, fallbackAuthor: string | null): Promise<boolean> {
-  await git(worktree, ['add', '-A']);
+  const excluded = (await setupArtifacts(worktree)).map((p) => `:(exclude)${p}`);
+  await git(worktree, ['add', '-A', '--', '.', ...excluded]);
   const staged = await run('git', ['diff', '--cached', '--quiet'], { cwd: worktree });
   if (staged.code === 0) return false;
   const identity: string[] = [];
@@ -73,7 +88,10 @@ export async function commitAll(worktree: string, message: string, fallbackAutho
 export async function changedFiles(worktree: string, baseSha: string): Promise<string[]> {
   const committed = await git(worktree, ['diff', '--name-only', baseSha]);
   const untracked = await git(worktree, ['ls-files', '--others', '--exclude-standard']);
-  return [...new Set([...committed.split('\n'), ...untracked.split('\n')].map((s) => s.trim()).filter(Boolean))];
+  const artifacts = await setupArtifacts(worktree);
+  return [...new Set([...committed.split('\n'), ...untracked.split('\n')].map((s) => s.trim()).filter(Boolean))].filter(
+    (f) => !artifacts.some((a) => f === a || f.startsWith(`${a}/`)),
+  );
 }
 
 export async function diff(worktree: string, baseSha: string, maxChars = 400_000): Promise<string> {

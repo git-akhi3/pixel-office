@@ -130,12 +130,47 @@ const DENIED_COMMANDS: Array<[RegExp, string]> = [
   [/\.office(?!\/worktrees\/)(\/|\b)/, 'secrets are off-limits: ~/.office'],
 ];
 
-/** Splits a command line into simple commands on && || ; | and newlines. Quote-naive on purpose: over-splitting only causes an "ask". */
+/**
+ * Splits a command line into simple commands on && || ; | and newlines, outside quotes.
+ * Anything it gets wrong only over-splits, which causes an "ask", never an "allow".
+ */
 export function splitCommand(command: string): string[] {
-  return command
-    .split(/&&|\|\||[;|\n]/)
-    .map((s) => s.trim().replace(/\s+/g, ' '))
-    .filter(Boolean);
+  const parts: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (quote) {
+      current += c;
+      if (c === '\\' && quote === '"' && i + 1 < command.length) current += command[++i];
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '\\' && i + 1 < command.length) {
+      current += c + command[++i];
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      current += c;
+      continue;
+    }
+    const two = command.slice(i, i + 2);
+    if (two === '&&' || two === '||') {
+      parts.push(current);
+      current = '';
+      i++;
+      continue;
+    }
+    if (c === ';' || c === '|' || c === '\n') {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += c;
+  }
+  parts.push(current);
+  return parts.map((p) => p.trim().replace(/\s+/g, ' ')).filter(Boolean);
 }
 
 export function matchesAllowlist(segment: string, allowlist: string[]): boolean {

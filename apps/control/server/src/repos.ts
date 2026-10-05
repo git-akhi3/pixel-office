@@ -27,6 +27,19 @@ export const BASE_ALLOWLIST = [
   'rg',
   'grep',
   'which',
+  // Text tools that only read input. Not find (-delete, -exec) or sed (-i).
+  'sort',
+  'uniq',
+  'cut',
+  'tr',
+  'diff',
+  'stat',
+  'du',
+  'echo',
+  'printf',
+  'basename',
+  'dirname',
+  'tree',
 ];
 
 export const repoInput = z.object({

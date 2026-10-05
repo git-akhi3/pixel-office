@@ -419,6 +419,19 @@ describe('pipeline', () => {
     expect(execSync(`cat "${wt}/.setup-ran"`).toString().trim()).toBe(repo.path);
   });
 
+  it('never commits what the setup command created (e.g. a symlinked node_modules)', async () => {
+    const { updateRepo } = await import('../server/src/repos.js');
+    await updateRepo(db, repo.id, { ...repo, setupCmd: 'mkdir -p /tmp/office-nm && ln -s /tmp/office-nm node_modules' });
+    const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
+    await settle();
+    await pipeline.decideGate(planGate(task).id, 'approve');
+    await settle();
+    const t = pipeline.getTask(task.id);
+    const files = execSync(`git -C "${t.worktreePath}" diff --name-only ${t.baseSha} HEAD`).toString();
+    expect(files).toContain('src/greet.ts');
+    expect(files).not.toContain('node_modules');
+  });
+
   it('moves a merged PR to retro and removes the worktree', async () => {
     setSetting(db, 'autoApprovePush', true);
     const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
