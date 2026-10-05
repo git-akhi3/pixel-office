@@ -17,6 +17,10 @@ export const TASK_STATUSES = [
   'pushing',
   'pr_open',
   'retro', // manager writes retro.md after done
+  // PR review tasks
+  'reviewing_pr', // reviewer drafts a review of someone's PR
+  'awaiting_review_post', // I edit the draft comments, then post
+  'posting_review',
   'done',
   'blocked', // needs me: loops exhausted or an agent is stuck
   'paused', // rate limit or server restart; resume restarts resume_status
@@ -37,6 +41,7 @@ export const AGENT_STEPS: Record<string, Role> = {
   reviewing: 'reviewer',
   testing: 'tester',
   retro: 'manager',
+  reviewing_pr: 'reviewer',
 };
 
 export function isAgentStep(status: TaskStatus): boolean {
@@ -45,10 +50,10 @@ export function isAgentStep(status: TaskStatus): boolean {
 
 export const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'discarded'];
 
-export type TaskKind = 'feature' | 'bug';
+export type TaskKind = 'feature' | 'bug' | 'review';
 export type TaskSize = 'S' | 'M' | 'L';
 
-export type GateKind = 'plan' | 'push' | 'command';
+export type GateKind = 'plan' | 'push' | 'command' | 'review_post';
 export type GateStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 export type GateDecision = 'approve' | 'reject' | 'allow_once' | 'allow_always' | 'deny';
 
@@ -64,6 +69,7 @@ export function boardColumn(status: TaskStatus): string {
       return 'Planning';
     case 'awaiting_plan_approval':
     case 'awaiting_push_approval':
+    case 'awaiting_review_post':
     case 'blocked':
     case 'paused':
     case 'stopped':
@@ -73,6 +79,8 @@ export function boardColumn(status: TaskStatus): string {
     case 'reviewing':
     case 'testing':
     case 'pushing':
+    case 'reviewing_pr':
+    case 'posting_review':
       return 'Review/Test';
     default:
       return 'Done';

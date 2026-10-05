@@ -395,6 +395,79 @@ main {
   margin: 14px 0;
 }
 
+.review {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.review label {
+  display: block;
+  font-weight: 550;
+  margin: 10px 0;
+}
+.review-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.review-head button {
+  margin-left: auto;
+}
+.comments {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.comment {
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.comment-deleted {
+  opacity: 0.5;
+}
+.comment-deleted textarea {
+  text-decoration: line-through;
+}
+.comment-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12.5px;
+}
+.sev {
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.sev-blocking {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.sev-suggestion {
+  background: var(--active-bg);
+  color: var(--active);
+}
+.sev-nit {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+button.link {
+  border: none;
+  background: none;
+  padding: 0;
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 12.5px;
+}
+.kind-review {
+  background: var(--active-bg);
+  color: var(--active);
+}
+
 .steer {
   display: flex;
   flex-wrap: wrap;

@@ -9,7 +9,7 @@ import { openDb, setSetting, type Db } from '../server/src/db/index.js';
 import type { Repo, Task } from '../server/src/db/schema.js';
 import type { TaskStatus } from '../server/src/domain.js';
 import { EventBus } from '../server/src/events.js';
-import type { Publisher } from '../server/src/github.js';
+import type { PostedReview, PrInfo, Publisher, ReviewRequest } from '../server/src/github.js';
 import { TaskDocs } from '../server/src/handoffs.js';
 import { Pipeline } from '../server/src/pipeline.js';
 import { createRepo, getRepo } from '../server/src/repos.js';
@@ -31,6 +31,8 @@ const docs = {
   testPass: '---\nresult: pass\ntests_added: 1\n---\n## Suite\nnpm test: 1 passed',
   testFail: '---\nresult: fail\ntests_added: 1\n---\n## Suite\nnpm test: 1 failed',
   retro: '---\n---\n- **Went well:** fast\n- **Went wrong:** none\n- **Knowledge-file edit:** none',
+  prReview:
+    '---\nverdict: request_changes\n---\n## Summary\nAdds a feature; one bug.\n\n## Comments\n- [blocking] src/feature.ts:2 — returns the wrong value\n- [nit] README.md:1 — unrelated line\n- [suggestion] src/feature.ts:1 — rename',
 };
 
 type Script = (req: RunRequest) => Promise<Partial<RunOutcome> & { text?: string }> | (Partial<RunOutcome> & { text?: string });
@@ -83,6 +85,8 @@ class FakeRunner implements AgentRunner {
         return docs.testPass;
       case 'retro':
         return docs.retro;
+      case 'reviewing_pr':
+        return docs.prReview;
       default:
         throw new Error(`no default for ${step}`);
     }
@@ -107,13 +111,31 @@ async function until(check: () => boolean, ms = 3000): Promise<void> {
 
 class FakePublisher implements Publisher {
   pushed: string[] = [];
+  bases: string[] = [];
   state: 'OPEN' | 'MERGED' = 'OPEN';
-  async pushAndOpenDraftPr(_repo: Repo, _wt: string, branch: string): Promise<string> {
+  posted: PostedReview[] = [];
+  me = 'octo';
+  requests: ReviewRequest[] = [];
+  async pushAndOpenDraftPr(_repo: Repo, _wt: string, branch: string, pr: { base: string }): Promise<string> {
     this.pushed.push(branch);
-    return `https://github.com/acme/app/pull/${this.pushed.length}`;
+    this.bases.push(pr.base);
+    return `https://github.com/acme/app/pull/${100 + this.pushed.length}`;
   }
   async prState(): Promise<'OPEN' | 'MERGED'> {
     return this.state;
+  }
+  async prInfo(): Promise<PrInfo> {
+    return { title: 'Add feature', body: 'Adds a feature.', author: 'octo', headSha: '', headRef: 'feature', baseRef: 'main', changedLines: 2, state: 'open' };
+  }
+  async postReview(_repo: Repo, _slug: string, _n: number, review: PostedReview): Promise<string> {
+    this.posted.push(review);
+    return 'https://github.com/acme/app/pull/1#pullrequestreview-1';
+  }
+  async reviewRequests(): Promise<ReviewRequest[]> {
+    return this.requests;
+  }
+  async login(): Promise<string> {
+    return this.me;
   }
 }
 
@@ -126,6 +148,7 @@ let runner: FakeRunner;
 let publisher: FakePublisher;
 let pipeline: Pipeline;
 let bus: EventBus;
+let home: string;
 
 function makePipeline(): Pipeline {
   return new Pipeline({
@@ -136,11 +159,12 @@ function makePipeline(): Pipeline {
     runner,
     publisher,
     docs: new TaskDocs(config.tasksDir),
+    slugOf: async () => 'acme/app',
   });
 }
 
 beforeEach(async () => {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'office-test-')));
+  home = realpathSync(mkdtempSync(join(tmpdir(), 'office-test-')));
   config = loadConfig({ OFFICE_HOME: join(home, 'office') });
   ensureDirs(config);
   const repoPath = join(home, 'app');
@@ -475,5 +499,103 @@ describe('pipeline', () => {
     const t = pipeline.getTask(task.id);
     expect(t.status).toBe('done');
     expect(t.worktreePath).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------- PR reviews
+
+/** A bare "GitHub" with main and refs/pull/1/head (branch feature adds src/feature.ts). */
+function addOriginWithPr(): void {
+  const origin = join(home, 'origin.git');
+  const g = (cmd: string) => execSync(cmd, { cwd: repo.path, stdio: 'pipe' });
+  execSync(`git clone -q --bare "${repo.path}" "${origin}"`);
+  g(`git remote add origin "${origin}"`);
+  g('git checkout -q -b feature');
+  writeFileSync(join(repo.path, 'src', 'feature.ts'), 'export const a = 1;\nexport const b = 2;\n');
+  g('git add . && git -c user.name=o -c user.email=o@o commit -qm feature');
+  g('git push -q origin feature feature:refs/pull/1/head');
+  g('git checkout -q main');
+}
+
+describe('pr reviews', () => {
+  it('drafts a review, lets me edit it, and posts inline comments only on diff lines', async () => {
+    addOriginWithPr();
+    const task = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    expect(statusOf(task)).toBe('awaiting_review_post');
+    expect(runner.calls.map((c) => c.step)).toEqual(['reviewing_pr']);
+    expect(runner.calls[0]!.prompt).toContain('src/feature.ts'); // the PR diff is in the prompt
+
+    const comments = pipeline.reviewComments(task.id);
+    expect(comments.map((c) => c.severity)).toEqual(['blocking', 'nit', 'suggestion']);
+    pipeline.editReviewComment(comments[0]!.id, { body: 'returns 2 but should return 3' });
+    pipeline.editReviewComment(comments[2]!.id, { deleted: true });
+    pipeline.editReviewSummary(task.id, 'Nice feature, one bug.');
+
+    const gate = pipeline.pendingGates(task.id).find((g) => g.kind === 'review_post')!;
+    await pipeline.decideGate(gate.id, 'approve');
+    const t = pipeline.getTask(task.id);
+    expect(t.status).toBe('done');
+    expect(t.reviewPostedUrl).toContain('pullrequestreview');
+    expect(t.worktreePath).toBeNull();
+
+    const posted = publisher.posted[0]!;
+    expect(posted.comments).toEqual([{ path: 'src/feature.ts', line: 2, body: '**Blocking:** returns 2 but should return 3' }]);
+    expect(posted.body).toContain('Nice feature, one bug.');
+    expect(posted.body).toContain('README.md:1'); // outside the diff: moved into the body, not dropped
+    expect(posted.commitId).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('sends a rejected draft back to the reviewer with my comment', async () => {
+    addOriginWithPr();
+    const task = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    const gate = pipeline.pendingGates(task.id).find((g) => g.kind === 'review_post')!;
+    await pipeline.decideGate(gate.id, 'reject', 'focus on the API change');
+    await settle();
+    expect(runner.calls.map((c) => c.step)).toEqual(['reviewing_pr', 'reviewing_pr']);
+    expect(runner.calls[1]!.prompt).toContain('focus on the API change');
+    expect(publisher.posted).toHaveLength(0);
+  });
+
+  it('turns blocking findings on my own PR into a task targeting its branch', async () => {
+    addOriginWithPr();
+    const review = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    const fix = await pipeline.fixIt(review.id);
+    expect(fix.baseBranch).toBe('feature');
+    expect(fix.input).toContain('src/feature.ts:2');
+    await settle();
+    await pipeline.decideGate(planGate(fix).id, 'approve');
+    await settle();
+    await pipeline.decideGate(pushGate(fix).id, 'approve');
+    expect(publisher.bases).toEqual(['feature']);
+    const wt = pipeline.getTask(fix.id).worktreePath!;
+    expect(execSync(`git -C "${wt}" log --format=%s -1 ${pipeline.getTask(fix.id).baseSha}`).toString()).toContain('feature');
+  });
+
+  it('refuses "fix it" on a PR by someone else', async () => {
+    addOriginWithPr();
+    publisher.me = 'someone-else';
+    const review = await pipeline.createReviewTask('https://github.com/acme/app/pull/1');
+    await settle();
+    await expect(pipeline.fixIt(review.id)).rejects.toThrow(/your own PRs/);
+  });
+
+  it('picks up requested reviews once, only for registered repos', async () => {
+    addOriginWithPr();
+    publisher.requests = [
+      { url: 'https://github.com/acme/app/pull/1', repo: 'acme/app', number: 1, title: 'Add feature', changedLines: -1 },
+      { url: 'https://github.com/other/thing/pull/9', repo: 'other/thing', number: 9, title: 'x', changedLines: -1 },
+    ];
+    expect(await pipeline.pickUpReviews()).toBe(1);
+    expect(await pipeline.pickUpReviews()).toBe(0);
+    setSetting(db, 'reviewAutoPickup', false);
+    publisher.requests = [{ url: 'https://github.com/acme/app/pull/2', repo: 'acme/app', number: 2, title: 'y', changedLines: -1 }];
+    expect(await pipeline.pickUpReviews()).toBe(0);
+  });
+
+  it('rejects PRs from repos that are not registered', async () => {
+    await expect(pipeline.createReviewTask('https://github.com/other/thing/pull/9')).rejects.toThrow(/isn't a registered repo/);
   });
 });

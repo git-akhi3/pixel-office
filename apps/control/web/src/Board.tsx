@@ -18,6 +18,7 @@ export function Board({ tasks, repoName }: { tasks: Task[]; repoName: (id: numbe
                 <div className="card-top">
                   <span className="task-id">#{t.id}</span>
                   <span className="repo-chip">{repoName(t.repoId)}</span>
+                  {t.kind === 'review' && <span className="kind kind-review">review</span>}
                   {t.size && <span className="size">{t.size}</span>}
                 </div>
                 <div className="card-title">{t.title}</div>

@@ -96,6 +96,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       runs: db.select().from(schema.runs).where(eq(schema.runs.taskId, taskId)).all(),
       gates: db.select().from(schema.gates).where(eq(schema.gates.taskId, taskId)).all(),
       docs: docs.list(taskId),
+      reviewComments: task.kind === 'review' ? pipeline.reviewComments(taskId) : [],
       alerts: db
         .select()
         .from(schema.events)
@@ -160,13 +161,43 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     return summary(pipeline.replanNow(id.parse((req.params as { id: string }).id), reason));
   });
 
+  // ---------------------------------------------------------------- reviews
+
+  app.post('/api/reviews', async (req) => {
+    const { prUrl } = z.object({ prUrl: z.string().trim().url() }).parse(req.body);
+    return summary(await pipeline.createReviewTask(prUrl));
+  });
+
+  app.post('/api/reviews/pickup', async () => ({ created: await pipeline.pickUpReviews() }));
+
+  app.put('/api/review-comments/:id', async (req) => {
+    const patch = z.object({ body: z.string().trim().min(1).max(10_000).optional(), deleted: z.boolean().optional() }).parse(req.body);
+    return pipeline.editReviewComment(id.parse((req.params as { id: string }).id), patch);
+  });
+
+  app.put('/api/tasks/:id/review-summary', async (req) => {
+    const { summary: text } = z.object({ summary: z.string().max(20_000) }).parse(req.body);
+    return summary(pipeline.editReviewSummary(id.parse((req.params as { id: string }).id), text));
+  });
+
+  app.post('/api/tasks/:id/fix-it', async (req) => summary(await pipeline.fixIt(id.parse((req.params as { id: string }).id))));
+
   // ---------------------------------------------------------------- settings
 
   app.get('/api/settings', async () => ({ ...getSettings(db), statuses: TASK_STATUSES }));
   app.put('/api/settings', async (req) => {
-    const body = z.object({ autoApprovePush: z.boolean().optional(), concurrency: z.number().int().min(1).max(6).optional() }).parse(req.body);
+    const body = z
+      .object({
+        autoApprovePush: z.boolean().optional(),
+        concurrency: z.number().int().min(1).max(6).optional(),
+        reviewAutoPickup: z.boolean().optional(),
+        reviewMinLines: z.number().int().min(0).max(100_000).optional(),
+      })
+      .parse(req.body);
     if (body.autoApprovePush !== undefined) setSetting(db, 'autoApprovePush', body.autoApprovePush);
     if (body.concurrency !== undefined) setSetting(db, 'concurrency', body.concurrency);
+    if (body.reviewAutoPickup !== undefined) setSetting(db, 'reviewAutoPickup', body.reviewAutoPickup);
+    if (body.reviewMinLines !== undefined) setSetting(db, 'reviewMinLines', body.reviewMinLines);
     void pipeline.tick();
     return getSettings(db);
   });

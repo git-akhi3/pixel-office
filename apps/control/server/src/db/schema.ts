@@ -49,6 +49,17 @@ export const tasks = sqliteTable('tasks', {
   baseSha: text('base_sha'),
   worktreePath: text('worktree_path'),
   prUrl: text('pr_url'),
+  /** Branch the work starts from and the PR targets; null means the repo's default branch ("fix it" tasks target a PR's branch). */
+  baseBranch: text('base_branch'),
+  /** Review tasks: the PR under review. */
+  prNumber: integer('pr_number'),
+  prRepo: text('pr_repo'), // owner/name
+  prAuthor: text('pr_author'),
+  prHeadSha: text('pr_head_sha'),
+  prHeadRef: text('pr_head_ref'),
+  prBaseRef: text('pr_base_ref'),
+  reviewSummary: text('review_summary'),
+  reviewPostedUrl: text('review_posted_url'),
   /** Slack thread for this task (DM with the owner) and the live status message in it. */
   slackChannel: text('slack_channel'),
   slackThreadTs: text('slack_thread_ts'),
@@ -109,6 +120,18 @@ export const events = sqliteTable('events', {
   at: integer('at').notNull().$defaultFn(now),
 });
 
+export const reviewComments = sqliteTable('review_comments', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  taskId: integer('task_id')
+    .notNull()
+    .references(() => tasks.id),
+  path: text('path').notNull(),
+  line: integer('line').notNull(),
+  severity: text('severity').$type<'blocking' | 'suggestion' | 'nit'>().notNull(),
+  body: text('body').notNull(),
+  deleted: integer('deleted', { mode: 'boolean' }).notNull().default(false),
+});
+
 export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
   value: text('value', { mode: 'json' }).$type<unknown>().notNull(),
@@ -119,3 +142,4 @@ export type Task = typeof tasks.$inferSelect;
 export type Run = typeof runs.$inferSelect;
 export type Gate = typeof gates.$inferSelect;
 export type OfficeEvent = typeof events.$inferSelect;
+export type ReviewComment = typeof reviewComments.$inferSelect;

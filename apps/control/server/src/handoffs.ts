@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 
-export type DocName = 'task' | 'diagnosis' | 'research' | 'plan' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro';
+export type DocName = 'task' | 'diagnosis' | 'research' | 'plan' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro' | 'pr-review';
 
 export interface Contract {
   doc: DocName;
@@ -179,6 +179,24 @@ tests_added: <number>
 
 ## Failing output
 <only when failing: the relevant failure output, trimmed to 40 lines>`,
+  },
+  reviewing_pr: {
+    doc: 'pr-review',
+    maxLines: 80,
+    schema: z.object({ verdict: z.enum(['approve', 'comment', 'request_changes']) }),
+    format: `---
+verdict: approve | comment | request_changes   # your recommendation; the owner posts it as a comment review
+---
+## Summary
+<2-5 lines for the PR author: what the PR does, overall assessment, the most important issue>
+
+## Comments
+- [blocking] path/to/file.ts:42 — <one or two sentences: what is wrong, why it matters, what to do>
+- [suggestion] path/to/file.ts:57 — <...>
+- [nit] path/to/file.ts:60 — <...>
+
+Rules: use paths and NEW-side line numbers from the diff. Comment only on lines the PR adds or changes,
+or on context lines inside its hunks. No praise-only comments. No findings? Write "- none".`,
   },
   retro: {
     doc: 'retro',

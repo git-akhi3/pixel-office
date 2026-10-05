@@ -5,7 +5,7 @@ export type TaskStatus = string;
 export interface Gate {
   id: number;
   taskId: number;
-  kind: 'plan' | 'push' | 'command';
+  kind: 'plan' | 'push' | 'command' | 'review_post';
   status: 'pending' | 'approved' | 'rejected' | 'cancelled';
   subject: string | null;
   decision: string | null;
@@ -15,12 +15,28 @@ export interface Gate {
   decidedAt: number | null;
 }
 
+export interface ReviewComment {
+  id: number;
+  taskId: number;
+  path: string;
+  line: number;
+  severity: 'blocking' | 'suggestion' | 'nit';
+  body: string;
+  deleted: boolean;
+}
+
 export interface Task {
   id: number;
   repoId: number;
   title: string;
   input: string;
-  kind: 'feature' | 'bug';
+  kind: 'feature' | 'bug' | 'review';
+  baseBranch: string | null;
+  prNumber: number | null;
+  prRepo: string | null;
+  prAuthor: string | null;
+  reviewSummary: string | null;
+  reviewPostedUrl: string | null;
   size: 'S' | 'M' | 'L' | null;
   status: TaskStatus;
   resumeStatus: TaskStatus | null;
@@ -76,6 +92,7 @@ export interface TaskDetail {
   gates: Gate[];
   docs: Array<{ file: string; name: string; version: number }>;
   alerts: OfficeEvent[];
+  reviewComments: ReviewComment[];
 }
 
 export interface Repo {
@@ -98,6 +115,8 @@ export interface Repo {
 export interface Settings {
   autoApprovePush: boolean;
   concurrency: number;
+  reviewAutoPickup: boolean;
+  reviewMinLines: number;
   rateLimit: { fiveHour?: number; sevenDay?: number; resetsAt?: number; at: number } | null;
 }
 
@@ -125,6 +144,11 @@ export const api = {
     request('POST', `/api/tasks/${id}/actions`, { action }),
   steer: (id: number, text: string) => request<{ delivered: 'live' | 'next_step' }>('POST', `/api/tasks/${id}/steer`, { text }),
   replan: (id: number, reason: string) => request<Task>('POST', `/api/tasks/${id}/replan`, { reason }),
+  createReview: (prUrl: string) => request<Task>('POST', '/api/reviews', { prUrl }),
+  pickupReviews: () => request<{ created: number }>('POST', '/api/reviews/pickup', {}),
+  editComment: (id: number, patch: { body?: string; deleted?: boolean }) => request<ReviewComment>('PUT', `/api/review-comments/${id}`, patch),
+  editSummary: (id: number, summary: string) => request<Task>('PUT', `/api/tasks/${id}/review-summary`, { summary }),
+  fixIt: (id: number) => request<Task>('POST', `/api/tasks/${id}/fix-it`, {}),
   repos: () => request<Repo[]>('GET', '/api/repos'),
   saveRepo: (repo: Partial<Repo>, id?: number) => request<Repo>(id ? 'PUT' : 'POST', id ? `/api/repos/${id}` : '/api/repos', repo),
   deleteRepo: (id: number) => request('DELETE', `/api/repos/${id}`),

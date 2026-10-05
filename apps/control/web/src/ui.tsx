@@ -15,6 +15,9 @@ export const STATUS_LABELS: Record<string, string> = {
   pushing: 'Pushing',
   pr_open: 'Draft PR open',
   retro: 'Writing retrospective',
+  reviewing_pr: 'Reviewer reading the PR',
+  awaiting_review_post: 'Draft review ready',
+  posting_review: 'Posting review',
   done: 'Done',
   blocked: 'Blocked',
   paused: 'Paused',
@@ -26,7 +29,7 @@ export const STATUS_LABELS: Record<string, string> = {
 export const COLUMNS = ['Queued', 'Planning', 'Awaiting you', 'Building', 'Review/Test', 'Done'];
 
 export function statusTone(status: string): 'attention' | 'active' | 'done' | 'muted' | 'danger' {
-  if (['awaiting_plan_approval', 'awaiting_push_approval'].includes(status)) return 'attention';
+  if (['awaiting_plan_approval', 'awaiting_push_approval', 'awaiting_review_post'].includes(status)) return 'attention';
   if (['blocked', 'failed'].includes(status)) return 'danger';
   if (['paused', 'stopped', 'discarded', 'queued'].includes(status)) return 'muted';
   if (['done', 'pr_open'].includes(status)) return 'done';

@@ -19,7 +19,8 @@ import { CONTRACTS, extractPr, normalizeOutput, readMeta, validateDoc, type Cont
 import { buildPrompt } from './prompts.js';
 import { addToAllowlist, effectiveAllowlist, getRepo } from './repos.js';
 import type { AgentRunner, PermissionAnswer, RunOutcome } from './runner.js';
-import { changedFiles, commitAll, createWorktree, diff, removeWorktree } from './worktree.js';
+import { commentableLines, formatComment, originSlug, parsePrUrl, parseReviewDoc, prSlug, reviewBody, splitComments } from './reviews.js';
+import { changedFiles, commitAll, createReviewWorktree, createWorktree, diff, removeWorktree } from './worktree.js';
 
 export const MAX_CODER_LOOPS = 2;
 export const MAX_REPLANS = 2;
@@ -35,6 +36,8 @@ export interface PipelineDeps {
   publisher: Publisher;
   docs: TaskDocs;
   now?: () => number;
+  /** owner/name of a repo on GitHub (from its origin remote). Injectable for tests. */
+  slugOf?: (repo: Repo) => Promise<string | null>;
 }
 
 export interface NewTask {
@@ -42,6 +45,8 @@ export interface NewTask {
   input: string;
   kind?: TaskKind;
   title?: string;
+  /** Start from and target this branch instead of the default branch. */
+  baseBranch?: string;
 }
 
 export type TaskAction = 'stop' | 'resume' | 'discard' | 'done';
@@ -65,6 +70,10 @@ export class Pipeline {
 
   constructor(private deps: PipelineDeps) {
     this.now = deps.now ?? Date.now;
+  }
+
+  private slugOf(repo: Repo): Promise<string | null> {
+    return this.deps.slugOf ? this.deps.slugOf(repo) : originSlug(repo.path);
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -103,7 +112,7 @@ export class Pipeline {
       .select()
       .from(schema.tasks)
       .all()
-      .filter((t) => (isAgentStep(t.status) && t.status !== 'queued') || t.status === 'pushing');
+      .filter((t) => (isAgentStep(t.status) && t.status !== 'queued') || t.status === 'pushing' || t.status === 'posting_review');
     for (const t of active) {
       this.update(t.id, { status: 'paused', resumeStatus: t.status, statusNote: 'The server restarted during this step. Resume to run it again.' });
       this.deps.bus.emit(t.id, 'paused', { reason: 'server restart', step: t.status });
@@ -123,7 +132,7 @@ export class Pipeline {
     const title = (input.title?.trim() || text.split('\n')[0]!).slice(0, 80);
     const task = this.deps.db
       .insert(schema.tasks)
-      .values({ repoId: input.repoId, input: text, title, kind: input.kind ?? 'feature' })
+      .values({ repoId: input.repoId, input: text, title, kind: input.kind ?? 'feature', baseBranch: input.baseBranch ?? null })
       .returning()
       .get();
     this.deps.bus.emit(task.id, 'created', { title });
@@ -222,15 +231,19 @@ export class Pipeline {
 
   private async execute(initial: Task, abort: AbortController): Promise<void> {
     const { db, bus, agents, docs, runner, config } = this.deps;
-    let task = initial.status === 'queued' ? this.update(initial.id, { status: 'intake' }) : initial;
+    let task = initial.status === 'queued' ? this.update(initial.id, { status: initial.kind === 'review' ? 'reviewing_pr' : 'intake' }) : initial;
     const step = task.status as ContractStep;
     const role = AGENT_STEPS[step]!;
     const agent = agents[role];
     const repo = getRepo(db, task.repoId);
 
     // The retrospective only reads handoff documents; the worktree may already be gone after a merge.
-    if (!task.worktreePath && step !== 'retro') {
-      const wt = await createWorktree(repo, config.worktreesDir, task.id, task.title);
+    if (!task.worktreePath && step === 'reviewing_pr') {
+      const wt = await createReviewWorktree(repo, config.worktreesDir, task.id, task.prNumber!, task.prBaseRef!);
+      task = this.update(task.id, { worktreePath: wt.path, baseSha: wt.baseSha, prHeadSha: wt.headSha });
+      bus.emit(task.id, 'worktree', { path: wt.path, head: wt.headSha });
+    } else if (!task.worktreePath && step !== 'retro') {
+      const wt = await createWorktree(repo, config.worktreesDir, task.id, task.title, task.baseBranch ?? repo.defaultBranch);
       task = this.update(task.id, { worktreePath: wt.path, branch: wt.branch, baseSha: wt.baseSha });
       bus.emit(task.id, 'worktree', { path: wt.path, branch: wt.branch });
     }
@@ -245,7 +258,7 @@ export class Pipeline {
       docs,
       worktree,
       feedback,
-      diff: step === 'reviewing' && task.baseSha ? await diff(worktree, task.baseSha) : undefined,
+      diff: (step === 'reviewing' || step === 'reviewing_pr') && task.baseSha ? await diff(worktree, task.baseSha) : undefined,
     });
 
     const run = db
@@ -397,6 +410,15 @@ export class Pipeline {
       case 'retro':
         this.update(task.id, { status: 'done', doneAt: this.now(), statusNote: null });
         return;
+      case 'reviewing_pr': {
+        const { summary, comments } = parseReviewDoc(text);
+        const { db } = this.deps;
+        db.delete(schema.reviewComments).where(eq(schema.reviewComments.taskId, task.id)).run();
+        if (comments.length) db.insert(schema.reviewComments).values(comments.map((c) => ({ taskId: task.id, ...c }))).run();
+        this.update(task.id, { reviewSummary: summary, status: 'awaiting_review_post' });
+        this.openGate(task.id, 'review_post');
+        return;
+      }
     }
   }
 
@@ -520,12 +542,15 @@ export class Pipeline {
 
     if (!['approve', 'reject'].includes(decision)) throw new Error('Use approve or reject.');
     if (decision === 'reject' && !comment?.trim()) throw new Error('Say what to change when rejecting.');
-    const expected = gate.kind === 'plan' ? 'awaiting_plan_approval' : 'awaiting_push_approval';
+    const expected = gate.kind === 'plan' ? 'awaiting_plan_approval' : gate.kind === 'push' ? 'awaiting_push_approval' : 'awaiting_review_post';
     if (task.status !== expected) throw new Error(`The task is ${task.status}, not ${expected}.`);
     close(decision === 'approve' ? 'approved' : 'rejected');
     this.deps.bus.emit(task.id, 'gate_decided', { gateId, kind: gate.kind, decision, comment });
 
-    if (gate.kind === 'plan') {
+    if (gate.kind === 'review_post') {
+      if (decision === 'approve') await this.postReview(task);
+      else this.update(task.id, { status: 'reviewing_pr', feedback: `The owner wants the draft review redone:\n\n${comment}\n\n### Previous draft\n${this.deps.docs.latest(task.id, 'pr-review') ?? ''}` });
+    } else if (gate.kind === 'plan') {
       task = this.update(task.id, decision === 'approve' ? { status: 'coding' } : { status: 'planning', feedback: `The owner rejected the plan:\n\n${comment}\n\n### Rejected plan\n${this.deps.docs.latest(task.id, 'plan') ?? ''}` });
     } else if (decision === 'approve') {
       await this.push(task);
@@ -542,7 +567,7 @@ export class Pipeline {
       const prDoc = this.deps.docs.latest(task.id, 'pr');
       const title = prDoc?.match(/^# (.+)$/m)?.[1] ?? task.title;
       const body = `${prDoc?.replace(/^# .+\n+/, '') ?? ''}\n\n---\nOpened by Pixel Office (task #${task.id}).`.trim();
-      const url = await this.deps.publisher.pushAndOpenDraftPr(repo, task.worktreePath!, task.branch!, { title, body });
+      const url = await this.deps.publisher.pushAndOpenDraftPr(repo, task.worktreePath!, task.branch!, { title, body, base: task.baseBranch ?? repo.defaultBranch });
       this.update(task.id, { status: 'pr_open', prUrl: url });
       this.deps.bus.emit(task.id, 'pr_opened', { url });
     } catch (e) {
@@ -605,6 +630,10 @@ export class Pipeline {
         if (!['stopped', 'paused', 'blocked'].includes(task.status)) throw new Error(`The task is ${task.status}; nothing to resume.`);
         const target = task.resumeStatus ?? 'queued';
         this.deps.bus.emit(taskId, 'resumed', { status: target });
+        if (target === 'posting_review') {
+          await this.postReview(task);
+          return this.getTask(taskId);
+        }
         if (target === 'pushing') {
           await this.push(task);
           return this.getTask(taskId);
@@ -626,11 +655,15 @@ export class Pipeline {
         return discarded;
       }
       case 'done': {
-        if (!['pr_open', 'blocked', 'stopped', 'awaiting_push_approval'].includes(task.status)) {
+        if (!['pr_open', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status)) {
           throw new Error(`The task is ${task.status}; it cannot be marked done.`);
         }
         this.cancelGates(taskId);
-        const done = this.update(taskId, { status: 'retro', statusNote: null, resumeStatus: null });
+        // Reviews have no retrospective: done means done.
+        const done =
+          task.kind === 'review'
+            ? this.update(taskId, { status: 'done', doneAt: this.now(), statusNote: null, resumeStatus: null })
+            : this.update(taskId, { status: 'retro', statusNote: null, resumeStatus: null });
         void this.tick();
         return done;
       }
@@ -656,11 +689,139 @@ export class Pipeline {
     }
   }
 
+  // ------------------------------------------------------------ PR reviews
+
+  /** Finds the registered repo for a PR. Reviews need a local checkout to read the code around the diff. */
+  private async repoForSlug(slug: string): Promise<Repo | null> {
+    for (const repo of this.deps.db.select().from(schema.repos).all()) {
+      if ((await this.slugOf(repo)) === slug) return repo;
+    }
+    return null;
+  }
+
+  async createReviewTask(prUrl: string, source: 'manual' | 'auto' = 'manual'): Promise<Task> {
+    const ref = parsePrUrl(prUrl);
+    const slug = prSlug(ref);
+    const repo = await this.repoForSlug(slug);
+    if (!repo) throw new Error(`${slug} isn't a registered repo. Add its local checkout under Repos first.`);
+    const pr = await this.deps.publisher.prInfo(repo, slug, ref.number);
+    if (pr.state !== 'open') throw new Error(`PR #${ref.number} is ${pr.state}.`);
+    const url = `https://github.com/${ref.owner}/${ref.name}/pull/${ref.number}`;
+    const task = this.deps.db
+      .insert(schema.tasks)
+      .values({
+        repoId: repo.id,
+        kind: 'review',
+        title: `Review #${ref.number}: ${pr.title}`.slice(0, 80),
+        input: `${url}\n\n${pr.body}`.trim(),
+        prUrl: url,
+        prNumber: ref.number,
+        prRepo: slug,
+        prAuthor: pr.author,
+        prHeadSha: pr.headSha,
+        prHeadRef: pr.headRef,
+        prBaseRef: pr.baseRef,
+      })
+      .returning()
+      .get();
+    this.deps.bus.emit(task.id, 'created', { title: task.title, review: true, source });
+    this.deps.bus.taskChanged(task);
+    void this.tick();
+    return task;
+  }
+
+  reviewComments(taskId: number) {
+    return this.deps.db.select().from(schema.reviewComments).where(eq(schema.reviewComments.taskId, taskId)).all();
+  }
+
+  editReviewComment(commentId: number, patch: { body?: string; deleted?: boolean }) {
+    const c = this.deps.db.select().from(schema.reviewComments).where(eq(schema.reviewComments.id, commentId)).get();
+    if (!c) throw new Error(`No comment ${commentId}`);
+    if (this.getTask(c.taskId).status !== 'awaiting_review_post') throw new Error('This review is no longer a draft.');
+    return this.deps.db.update(schema.reviewComments).set(patch).where(eq(schema.reviewComments.id, commentId)).returning().get();
+  }
+
+  editReviewSummary(taskId: number, summary: string): Task {
+    if (this.getTask(taskId).status !== 'awaiting_review_post') throw new Error('This review is no longer a draft.');
+    return this.update(taskId, { reviewSummary: summary });
+  }
+
+  private async postReview(task: Task): Promise<void> {
+    task = this.update(task.id, { status: 'posting_review', statusNote: null });
+    try {
+      const repo = getRepo(this.deps.db, task.repoId);
+      const kept = this.reviewComments(task.id).filter((c) => !c.deleted);
+      const prDiff = task.worktreePath && task.baseSha ? await diff(task.worktreePath, task.baseSha, Number.MAX_SAFE_INTEGER) : '';
+      const { inline, general } = splitComments(kept, commentableLines(prDiff));
+      const url = await this.deps.publisher.postReview(repo, task.prRepo!, task.prNumber!, {
+        commitId: task.prHeadSha!,
+        body: reviewBody(task.reviewSummary ?? '', general),
+        comments: inline.map((c) => ({ path: c.path, line: c.line, body: formatComment(c) })),
+      });
+      this.update(task.id, { status: 'done', doneAt: this.now(), reviewPostedUrl: url });
+      this.deps.bus.emit(task.id, 'review_posted', { url, inline: inline.length, general: general.length });
+      await this.dropWorktree(this.getTask(task.id));
+    } catch (e) {
+      this.block(task, `Posting the review failed: ${e instanceof Error ? e.message : String(e)}`, 'posting_review');
+    }
+  }
+
+  /** On my own PR: turn the review's blocking findings into a coder task whose draft PR targets my PR's branch. */
+  async fixIt(reviewTaskId: number): Promise<Task> {
+    const review = this.getTask(reviewTaskId);
+    if (review.kind !== 'review' || !review.prHeadRef) throw new Error('Only review tasks can be fixed.');
+    const repo = getRepo(this.deps.db, review.repoId);
+    const me = await this.deps.publisher.login(repo.ghAccount);
+    if (me.toLowerCase() !== (review.prAuthor ?? '').toLowerCase()) throw new Error(`"Fix it" is for your own PRs; #${review.prNumber} is by ${review.prAuthor}.`);
+    const findings = this.reviewComments(reviewTaskId).filter((c) => !c.deleted && c.severity === 'blocking');
+    if (!findings.length) throw new Error('The review has no blocking findings to fix.');
+    return this.createTask({
+      repoId: review.repoId,
+      kind: 'bug',
+      title: `Fix review findings on #${review.prNumber}`,
+      baseBranch: review.prHeadRef,
+      input: [
+        `Fix these blocking review findings on PR ${review.prUrl} (branch ${review.prHeadRef}). The work lands as a draft PR into that branch.`,
+        ...findings.map((c) => `- ${c.path}:${c.line} — ${c.body}`),
+      ].join('\n'),
+    });
+  }
+
+  /** Queues reviews for open PRs that request my review, in registered repos, once per PR. */
+  async pickUpReviews(): Promise<number> {
+    const { db, publisher } = this.deps;
+    const settings = getSettings(db);
+    if (!settings.reviewAutoPickup) return 0;
+    const repos = db.select().from(schema.repos).all();
+    const slugs = new Map<string, Repo>();
+    for (const r of repos) {
+      const slug = await this.slugOf(r);
+      if (slug) slugs.set(slug, r);
+    }
+    const seen = new Set(db.select().from(schema.tasks).where(eq(schema.tasks.kind, 'review')).all().map((t) => t.prUrl));
+    let created = 0;
+    for (const account of new Set(repos.map((r) => r.ghAccount))) {
+      const requests = await publisher.reviewRequests(account).catch(() => []);
+      for (const pr of requests) {
+        const repo = slugs.get(pr.repo);
+        if (!repo || (repo.ghAccount ?? null) !== account || seen.has(pr.url)) continue;
+        seen.add(pr.url);
+        if (settings.reviewMinLines > 0) {
+          const info = await publisher.prInfo(repo, pr.repo, pr.number).catch(() => null);
+          if (!info || info.changedLines < settings.reviewMinLines) continue;
+        }
+        await this.createReviewTask(pr.url, 'auto').then(() => created++).catch(() => {});
+      }
+    }
+    return created;
+  }
+
   // ------------------------------------------------------------ housekeeping
 
   /** Detects merged PRs and removes old worktrees. */
   async sweep(): Promise<void> {
     const { db, publisher } = this.deps;
+    await this.pickUpReviews().catch(() => 0);
     for (const t of db.select().from(schema.tasks).where(eq(schema.tasks.status, 'pr_open')).all()) {
       if (!t.prUrl) continue;
       const state = await publisher.prState(getRepo(db, t.repoId), t.prUrl).catch(() => 'UNKNOWN' as const);

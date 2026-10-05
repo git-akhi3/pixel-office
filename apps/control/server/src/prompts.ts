@@ -18,6 +18,7 @@ export interface PromptContext {
   diff?: string;
 }
 
+
 const JOBS: Record<ContractStep, string> = {
   intake:
     'Size and route this task. Skim the repo only as much as you need to judge it. Do not plan the implementation.',
@@ -32,6 +33,8 @@ const JOBS: Record<ContractStep, string> = {
   testing:
     "Write tests for the plan's acceptance criteria, then run the full test suite. Only create or change test files.",
   retro: 'The task is finished. Write the retrospective from the documents below.',
+  reviewing_pr:
+    "Review this pull request as a strict, constructive senior reviewer. Your current directory is a checkout of the PR's head. Read the code around the changes, and run the repo's tests or lint if that helps you judge. Your draft is edited by the owner before anything is posted.",
 };
 
 /** Which handoff documents each step reads. */
@@ -44,6 +47,7 @@ const INPUTS: Record<ContractStep, DocName[]> = {
   reviewing: ['plan', 'changes'],
   testing: ['plan', 'changes'],
   retro: ['task', 'plan', 'changes', 'review', 'test-report'],
+  reviewing_pr: [],
 };
 
 function repoNotes(worktree: string): string | null {
@@ -70,7 +74,11 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
   );
   const notes = repoNotes(ctx.worktree);
   if (notes) parts.push(`## Repo instructions\n${notes}`);
-  parts.push(`## The request (owner's words)\n${task.input}`);
+  if (task.kind === 'review') {
+    parts.push(`## Pull request\n${task.prRepo}#${task.prNumber} by ${task.prAuthor}: ${task.title}\n${task.input}`);
+  } else {
+    parts.push(`## The request (owner's words)\n${task.input}`);
+  }
 
   const included = INPUTS[step]
     .map((name) => [name, docs.latest(task.id, name)] as const)

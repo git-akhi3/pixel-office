@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type Gate, type OfficeEvent, type TaskDetail } from './api';
+import { ReviewPanel } from './Review';
 import { DiffView, Doc, duration, formatTokens, StatusBadge, timeAgo } from './ui';
 
 type Tab = 'docs' | 'diff' | 'activity' | 'runs';
@@ -108,7 +109,7 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
 
   const canStop = !['done', 'discarded', 'failed', 'stopped'].includes(task.status);
   const canResume = ['stopped', 'paused', 'blocked'].includes(task.status);
-  const canDone = ['pr_open', 'blocked', 'stopped', 'awaiting_push_approval'].includes(task.status);
+  const canDone = ['pr_open', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status);
 
   return (
     <div className="task-view">
@@ -158,7 +159,9 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
         )}
       </div>
 
-      {!TERMINAL.includes(task.status) && <Steer taskId={id} running={task.running} onError={onError} onReplanned={load} />}
+      {task.kind === 'review' && <ReviewPanel task={task} comments={detail.reviewComments} onChanged={load} onError={onError} />}
+
+      {!TERMINAL.includes(task.status) && task.kind !== 'review' && <Steer taskId={id} running={task.running} onError={onError} onReplanned={load} />}
 
       {alerts.length > 0 && (
         <ul className="alerts">
@@ -243,15 +246,28 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
     );
   }
 
-  const label = gate.kind === 'plan' ? 'Approve the plan?' : 'Push the branch and open a draft PR?';
+  const label =
+    gate.kind === 'plan'
+      ? 'Approve the plan?'
+      : gate.kind === 'review_post'
+        ? 'Post this review to GitHub?'
+        : 'Push the branch and open a draft PR?';
+  const approveLabel = gate.kind === 'plan' ? 'Approve plan' : gate.kind === 'review_post' ? 'Post review' : 'Push & open draft PR';
+  const rejectHint =
+    gate.kind === 'plan'
+      ? 'What should the architect change?'
+      : gate.kind === 'review_post'
+        ? 'What should the reviewer redo?'
+        : 'What should the coder fix before pushing?';
   return (
     <div className="gate">
       <div className="gate-title">{label}</div>
       {gate.kind === 'plan' && <p className="gate-hint">Read the plan below. Approving starts the coder.</p>}
+      {gate.kind === 'review_post' && <p className="gate-hint">Edit or delete comments below first. It posts under the repo's GitHub account.</p>}
       {rejecting && (
         <textarea
           autoFocus
-          placeholder={gate.kind === 'plan' ? 'What should the architect change?' : 'What should the coder fix before pushing?'}
+          placeholder={rejectHint}
           value={comment}
           onChange={(e) => setComment(e.target.value)}
         />
@@ -259,7 +275,7 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
       <div className="gate-buttons">
         {!rejecting && (
           <button disabled={busy} className="primary" onClick={() => decide('approve')}>
-            {gate.kind === 'plan' ? 'Approve plan' : 'Push & open draft PR'}
+            {approveLabel}
           </button>
         )}
         {rejecting ? (

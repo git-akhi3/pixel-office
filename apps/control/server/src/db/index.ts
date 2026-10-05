@@ -22,10 +22,14 @@ export function openDb(path: string): Db {
 export interface Settings {
   autoApprovePush: boolean;
   concurrency: number;
+  /** Queue reviews for PRs that request my review (registered repos only). */
+  reviewAutoPickup: boolean;
+  /** Skip auto-pickup for PRs smaller than this many changed lines. */
+  reviewMinLines: number;
   rateLimit: { fiveHour?: number; sevenDay?: number; resetsAt?: number; at: number } | null;
 }
 
-const DEFAULTS: Settings = { autoApprovePush: false, concurrency: 2, rateLimit: null };
+const DEFAULTS: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: true, reviewMinLines: 0, rateLimit: null };
 
 export function getSettings(db: Db): Settings {
   const rows = db.select().from(schema.settings).all();

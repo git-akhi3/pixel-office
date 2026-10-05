@@ -6,6 +6,8 @@ export function NewTask({ repos, onError }: { repos: Repo[]; onError: (e: unknow
   const [repoId, setRepoId] = useState<number | ''>(repos[0]?.id ?? '');
   const [input, setInput] = useState('');
   const [kind, setKind] = useState<'feature' | 'bug'>('feature');
+  const [mode, setMode] = useState<'task' | 'review'>('task');
+  const [prUrl, setPrUrl] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -25,10 +27,10 @@ export function NewTask({ repos, onError }: { repos: Repo[]; onError: (e: unknow
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (repoId === '' || !input.trim()) return;
+    if (mode === 'review' ? !prUrl.trim() : repoId === '' || !input.trim()) return;
     setBusy(true);
     try {
-      const task = await api.createTask({ repoId, input, kind });
+      const task = mode === 'review' ? await api.createReview(prUrl.trim()) : await api.createTask({ repoId: repoId as number, input, kind });
       location.hash = `#/task/${task.id}`;
     } catch (err) {
       onError(err);
@@ -40,6 +42,30 @@ export function NewTask({ repos, onError }: { repos: Repo[]; onError: (e: unknow
   return (
     <form className="panel" onSubmit={submit}>
       <h1>New task</h1>
+      <fieldset className="segmented">
+        <legend>What kind of work?</legend>
+        <label className={mode === 'task' ? 'active' : ''}>
+          <input type="radio" name="mode" checked={mode === 'task'} onChange={() => setMode('task')} />
+          Build or fix something
+        </label>
+        <label className={mode === 'review' ? 'active' : ''}>
+          <input type="radio" name="mode" checked={mode === 'review'} onChange={() => setMode('review')} />
+          Review a PR
+        </label>
+      </fieldset>
+      {mode === 'review' ? (
+        <>
+          <label>
+            Pull request link
+            <input value={prUrl} onChange={(e) => setPrUrl(e.target.value)} placeholder="https://github.com/owner/repo/pull/123" />
+          </label>
+          <p className="hint">The PR's repo must be registered under Repos. The reviewer drafts comments; you edit them and decide whether to post.</p>
+          <button className="primary" disabled={busy || !prUrl.trim()}>
+            {busy ? 'Creating…' : 'Review it'}
+          </button>
+        </>
+      ) : (
+        <>
       <label>
         Repository
         <select value={repoId} onChange={(e) => setRepoId(Number(e.target.value))}>
@@ -73,6 +99,8 @@ export function NewTask({ repos, onError }: { repos: Repo[]; onError: (e: unknow
       <button className="primary" disabled={busy || !input.trim()}>
         {busy ? 'Creating…' : 'Hand it to the team'}
       </button>
+        </>
+      )}
     </form>
   );
 }
@@ -261,6 +289,21 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
         </select>
         <span className="hint">Tasks waiting for you don't count. 2 is comfortable on Max 5x.</span>
       </label>
+      <h2>PR reviews</h2>
+      <label className="switch">
+        <input type="checkbox" checked={s.reviewAutoPickup} onChange={(e) => save({ reviewAutoPickup: e.target.checked })} />
+        <span>
+          <strong>Pick up review requests automatically</strong>
+          <span className="hint">Every 10 minutes, PRs that request your review (in registered repos, per GitHub account) get a draft review. Nothing is posted without you.</span>
+        </span>
+      </label>
+      <label>
+        Skip PRs smaller than (changed lines)
+        <input type="number" min={0} value={s.reviewMinLines} onChange={(e) => save({ reviewMinLines: Math.max(0, Number(e.target.value) || 0) })} />
+      </label>
+      <button onClick={async () => { try { const r = await api.pickupReviews(); alert(r.created ? `Queued ${r.created} review(s).` : 'No new review requests.'); } catch (err) { onError(err); } }}>
+        Check for review requests now
+      </button>
       <h2>Usage</h2>
       {s.rateLimit ? (
         <p>

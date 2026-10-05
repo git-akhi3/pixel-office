@@ -20,12 +20,13 @@ export function branchName(taskId: number, title: string): string {
   return `office/${taskId}-${slugify(title)}`;
 }
 
-/** Creates the task's worktree on a new office branch from the latest default branch. */
+/** Creates the task's worktree on a new office branch from the latest base branch (the default branch unless given). */
 export async function createWorktree(
   repo: Repo,
   worktreesDir: string,
   taskId: number,
   title: string,
+  baseBranch: string = repo.defaultBranch,
 ): Promise<{ path: string; branch: string; baseSha: string }> {
   const path = join(worktreesDir, String(taskId));
   const branch = branchName(taskId, title);
@@ -34,11 +35,39 @@ export async function createWorktree(
     return { path: realpathSync(path), branch, baseSha };
   }
   // Best effort: work offline if the fetch fails.
-  await run('git', ['fetch', '--quiet', 'origin', repo.defaultBranch], { cwd: repo.path, timeoutMs: 60_000 });
-  const remoteRef = `origin/${repo.defaultBranch}`;
+  await run('git', ['fetch', '--quiet', 'origin', baseBranch], { cwd: repo.path, timeoutMs: 60_000 });
+  const remoteRef = `origin/${baseBranch}`;
   const hasRemote = (await run('git', ['rev-parse', '--verify', '--quiet', remoteRef], { cwd: repo.path })).code === 0;
-  await git(repo.path, ['worktree', 'add', '-b', branch, path, hasRemote ? remoteRef : repo.defaultBranch]);
+  await git(repo.path, ['worktree', 'add', '-b', branch, path, hasRemote ? remoteRef : baseBranch]);
   const baseSha = (await git(path, ['rev-parse', 'HEAD'])).trim();
+  await runSetup(repo, path);
+  return { path: realpathSync(path), branch, baseSha };
+}
+
+/**
+ * A detached checkout of a pull request's head for reviewing. baseSha is the merge base with the PR's
+ * base branch, so the diff shows exactly the PR's changes.
+ */
+export async function createReviewWorktree(
+  repo: Repo,
+  worktreesDir: string,
+  taskId: number,
+  prNumber: number,
+  baseRef: string,
+): Promise<{ path: string; headSha: string; baseSha: string }> {
+  const path = join(worktreesDir, String(taskId));
+  if (!existsSync(path)) {
+    await git(repo.path, ['fetch', '--quiet', 'origin', `pull/${prNumber}/head`, baseRef], { timeoutMs: 120_000 });
+    const head = (await git(repo.path, ['rev-parse', 'FETCH_HEAD'])).trim();
+    await git(repo.path, ['worktree', 'add', '--detach', path, head]);
+    await runSetup(repo, path);
+  }
+  const headSha = (await git(path, ['rev-parse', 'HEAD'])).trim();
+  const baseSha = (await git(path, ['merge-base', `origin/${baseRef}`, 'HEAD'])).trim();
+  return { path: realpathSync(path), headSha, baseSha };
+}
+
+async function runSetup(repo: Repo, path: string): Promise<void> {
   if (repo.setupCmd) {
     // Configured by me, run by the office: not subject to the agent guard.
     const setup = await run('/bin/sh', ['-c', repo.setupCmd], { cwd: path, env: { ...process.env, REPO_PATH: repo.path }, timeoutMs: 15 * 60_000 });
@@ -47,7 +76,6 @@ export async function createWorktree(
     const created = (await git(path, ['ls-files', '--others', '--exclude-standard', '--directory'])).split('\n').map((l) => l.trim().replace(/\/$/, '')).filter(Boolean);
     if (created.length) writeFileSync(await artifactsFile(path), created.join('\n') + '\n');
   }
-  return { path: realpathSync(path), branch, baseSha };
 }
 
 /** Per-worktree list of paths made by the setup command, kept in the worktree's private git dir. */

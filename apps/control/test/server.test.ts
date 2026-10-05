@@ -38,7 +38,14 @@ beforeEach(async () => {
     config,
     agents: loadAgents(join(appDir, 'agents'), join(appDir, 'skills')),
     runner: idleRunner,
-    publisher: { pushAndOpenDraftPr: async () => '', prState: async () => 'OPEN' },
+    publisher: {
+      pushAndOpenDraftPr: async () => '',
+      prState: async () => 'OPEN',
+      prInfo: async () => { throw new Error('no'); },
+      postReview: async () => '',
+      reviewRequests: async () => [],
+      login: async () => 'me',
+    },
     docs,
   });
   app = await buildServer({ db, bus, config, pipeline, docs });
