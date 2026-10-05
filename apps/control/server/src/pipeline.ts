@@ -291,7 +291,7 @@ export class Pipeline {
         worktree,
         write: agent.write,
         testGlobs: repo.testGlobs,
-        allowlist: step === 'reviewing_pr' ? [...BASE_ALLOWLIST] : effectiveAllowlist(repo),
+        allowlist: step === 'reviewing_pr' ? BASE_ALLOWLIST.filter((c) => c !== 'git grep') : effectiveAllowlist(repo),
       },
       signal: abort.signal,
       onEvent: (type, payload) => bus.emit(task.id, type, payload, run.id),

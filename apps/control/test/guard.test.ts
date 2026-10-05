@@ -163,8 +163,26 @@ describe('shell allow-list', () => {
     'git -c core.pager=./evil.sh log',
     'sort -o out.txt in.txt',
     'tree -o x.txt',
+    // bundled short flags and abbreviated long options (from review)
+    'git grep -lOsh pat',
+    'git grep --open-files=sh pat',
+    'git grep --open=sh pat',
+    'git diff --outp=/tmp/x',
+    'git diff --ext',
+    'git -C /etc log',
+    'git --git-dir=/x/.git log',
+    'sort -uo f in.txt',
+    'sort --outp=f in.txt',
+    'sort --compress-program=sh x',
+    'cd src && git grep -nO./x.sh foo',
   ])('blocks read-only tools used to run or write: %s', (cmd) => {
     expect(decision(checkCommand(ctx(), cmd))).toBe('deny');
+  });
+
+  it('still allows the ordinary flags of those tools', () => {
+    for (const cmd of ['git grep -n -c foo', 'git log --oneline -5', 'git diff --stat main', 'sort -u -r x', 'git show HEAD:src/a.ts', 'rg -n foo src', 'git log --oneline -- src']) {
+      expect(decision(checkCommand(ctx(), cmd)), cmd).toBe('allow');
+    }
   });
 
   it('allows read-only text pipelines', () => {

@@ -5,6 +5,7 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { GRAPH_TOOLS } from './graph.js';
 
 export type WriteAccess = 'none' | 'tests' | 'all';
 
@@ -120,11 +121,8 @@ const DENIED_COMMANDS: Array<[RegExp, string]> = [
   [/(^|[\s;&|(])gh(\s|$)/, 'only the office talks to GitHub'],
   [/\bgit\s+(remote\s+(add|set-url|remove|rm|rename)|config|commit|merge|rebase|tag|worktree|filter-branch|update-ref|reset\s+--hard|clean\s+-\w*f)\b/, 'the office manages git history; agents only edit files'],
   [/\bsudo\b/, 'no sudo'],
-  // Flags that make "read-only" tools run programs or write files.
+  // Flags that make "read-only" tools run programs or write files: also checked per argument in unsafeFlag().
   [/\brg\b[^|;&]*\s--pre(-glob)?(=|\s)/, 'rg --pre runs a program'],
-  [/\bgit\b[^|;&]*\s(-O|--open-files-in-pager|--ext-diff|--output)(\S*)/, 'that git flag runs a program or writes a file'],
-  [/\bgit\s+(-c|--config-env|--exec-path)\b/, 'no git config overrides'],
-  [/\b(sort|tree)\b[^|;&]*\s(-o|--output)(=|\s|\S)/, 'that flag writes a file'],
   [/\brm\s+-\w*r\w*\s+(\/|~|\$HOME)(\s|$|\/\s|\/$)/, 'no deleting outside the project'],
   [/\b(curl|wget)\b[^|]*\|\s*(ba|z)?sh\b/, 'no piping downloads into a shell'],
   [/\b(printenv|security|launchctl|crontab|osascript)\b|(^|[;&|]\s*)(env|set|export\s+-p|declare\s+-x)\s*($|[;&|])/, 'no reading the environment or system credentials'],
@@ -134,6 +132,44 @@ const DENIED_COMMANDS: Array<[RegExp, string]> = [
   // ~/.office holds the token and other tasks; only the worktrees under it are fair game.
   [/\.office(?!\/worktrees\/)(\/|\b)/, 'secrets are off-limits: ~/.office'],
 ];
+
+/** Long options that make a read-only tool run a program, write a file or read elsewhere. */
+const DANGEROUS_LONG: Record<string, string[]> = {
+  git: ['--open-files-in-pager', '--output', '--ext-diff', '--exec-path', '--config-env', '--upload-pack', '--receive-pack', '--exec', '--no-index', '--git-dir', '--work-tree', '--textconv'],
+  sort: ['--output', '--compress-program'],
+  tree: ['--output'],
+  rg: ['--pre', '--pre-glob', '--search-zip'],
+};
+/** Short flags with the same effect; they can be bundled (-lO) so any cluster containing them counts. */
+const DANGEROUS_SHORT: Record<string, string> = { git: 'O', sort: 'o', tree: 'o', rg: 'z' };
+
+/**
+ * Tokenises one simple command and flags dangerous options, including bundled short flags and
+ * abbreviated long options (git accepts --open-files= for --open-files-in-pager). Returns a reason or null.
+ */
+export function unsafeFlag(segment: string): string | null {
+  const tokens = segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  const tool = basename(tokens[0] ?? '');
+  if (!(tool in DANGEROUS_LONG)) return null;
+  if (tool === 'git') {
+    // Global options before the subcommand: -c (config override) and -C (another directory).
+    for (const t of tokens.slice(1)) {
+      if (!t.startsWith('-')) break;
+      if (/^-[cC]/.test(t) || t.startsWith('--git-dir') || t.startsWith('--work-tree') || t.startsWith('--exec-path') || t.startsWith('--config-env')) return 'no git global overrides (-c, -C, --git-dir, --work-tree)';
+    }
+  }
+  for (const raw of tokens.slice(1)) {
+    const t = raw.replace(/^["']|["']$/g, '');
+    if (t === '--') break;
+    if (t.startsWith('--')) {
+      const name = t.split('=')[0]!;
+      if (name.length >= 4 && DANGEROUS_LONG[tool]!.some((opt) => opt.startsWith(name))) return `${tool} ${name} can run a program or write a file`;
+    } else if (/^-[A-Za-z]/.test(t) && t.slice(1).split(/[=\d]/)[0]!.includes(DANGEROUS_SHORT[tool]!)) {
+      return `${tool} -${DANGEROUS_SHORT[tool]} can run a program or write a file`;
+    }
+  }
+  return null;
+}
 
 /**
  * Splits a command line into simple commands on && || ; | and newlines, outside quotes.
@@ -213,6 +249,8 @@ export function checkCommand(ctx: GuardContext, command: string): GuardDecision 
     }
     // Strip a trailing redirect (already checked above) before matching.
     const bare = segment.replace(/\s*\d?>>?\s*\S+/g, '').replace(/\s*2>&1/g, '').trim();
+    const flag = unsafeFlag(bare);
+    if (flag) return deny(flag);
     if (!matchesAllowlist(bare, ctx.allowlist)) unmatched.push(bare);
   }
   if (unmatched.length) {
@@ -251,6 +289,8 @@ export function checkToolCall(ctx: GuardContext, tool: string, input: Record<str
     case 'TodoWrite':
       return allow();
     default:
+      // The Graphify code graph (local, read-only). Its PR tools call GitHub and are not allowed.
+      if (tool.startsWith('mcp__graphify__') && GRAPH_TOOLS.includes(tool.slice('mcp__graphify__'.length))) return allow();
       return deny(`tool ${tool} is not available to office agents`);
   }
 }
