@@ -187,6 +187,40 @@ textarea {
   background: var(--danger);
 }
 
+.banner {
+  margin: 12px 20px 0;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--attention-bg);
+  color: var(--attention);
+}
+.panel-wide {
+  max-width: 980px;
+}
+.code-editor {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.hint.over {
+  color: var(--danger);
+}
+.team {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.team th,
+.team td {
+  text-align: left;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.team .kind {
+  margin-left: 6px;
+}
+
 .error {
   display: flex;
   justify-content: space-between;

@@ -292,6 +292,55 @@ describe('pipeline', () => {
     expect(pipeline.getTask(task.id).replanCount).toBe(0);
   });
 
+  it('proposes the knowledge note from the retrospective and gives approved notes to every agent', async () => {
+    runner.queue('retro', () => ({ text: '---\n---\n- **Went well:** a\n- **Went wrong:** b\n- **Knowledge-file edit:** Always run codegen first.' }));
+    setSetting(db, 'autoApprovePush', true);
+    const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
+    await settle();
+    await pipeline.decideGate(planGate(task).id, 'approve');
+    await settle();
+    await pipeline.action(task.id, 'done');
+    await settle();
+    const k = new Knowledge(db, config.knowledgeDir);
+    const [p] = k.proposals('pending', repo.id);
+    expect(p!.text).toBe('Always run codegen first.');
+    k.decide(p!.id, 'accept');
+    pipeline.createTask({ repoId: repo.id, input: 'next' });
+    await settle();
+    expect(runner.calls.at(-1)!.prompt).toContain('## Repo knowledge');
+    expect(runner.calls.at(-1)!.prompt).toContain('Always run codegen first.');
+  });
+
+  it('starts no new steps near the usage limit', async () => {
+    setSetting(db, 'rateLimit', { fiveHour: 0.95, fiveHourResetsAt: Math.floor(Date.now() / 1000) + 3600, at: Date.now() });
+    const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
+    await settle();
+    expect(statusOf(task)).toBe('queued');
+    expect(runner.calls).toHaveLength(0);
+    setSetting(db, 'usagePauseAt', 1);
+    await settle();
+    expect(statusOf(task)).toBe('awaiting_plan_approval');
+  });
+
+  it('gives the architect the code graph when the repo uses it, and records that on the run', async () => {
+    const { updateRepo } = await import('../server/src/repos.js');
+    await updateRepo(db, repo.id, { ...repo, graphify: true });
+    const graphs = new Graphs(config.graphsDir);
+    graphs.mcpFor = (r, role) => (r.graphify && role === 'architect' ? { graphify: { type: 'stdio', command: '/abs/graphify-mcp', args: ['/g.json'] } } : undefined);
+    graphs.build = async () => {};
+    pipeline = new Pipeline({ ...(pipeline as unknown as { deps: ConstructorParameters<typeof Pipeline>[0] }).deps, graphs });
+    let mcp: unknown;
+    runner.queue('planning', (req) => ((mcp = req.mcpServers), { text: docs.plan }));
+    const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
+    await settle();
+    expect(mcp).toEqual({ graphify: { type: 'stdio', command: '/abs/graphify-mcp', args: ['/g.json'] } });
+    expect(runner.calls[1]!.prompt).toContain('## Code graph');
+    expect(runner.calls[0]!.prompt).not.toContain('## Code graph'); // the manager doesn't get it
+    const runs = db.select().from(schema.runs).where(eq(schema.runs.taskId, task.id)).all();
+    expect(runs.map((r) => [r.role, r.graphify])).toEqual([['manager', false], ['architect', true]]);
+    expect(pipeline.graphTokenStats(repo.id).withGraph.runs).toBe(1);
+  });
+
   it('records token usage per run', async () => {
     const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
     await settle();

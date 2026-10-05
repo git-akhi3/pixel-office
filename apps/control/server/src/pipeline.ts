@@ -90,6 +90,27 @@ export class Pipeline {
   }
 
 
+  agentSkills(role: Role): string[] {
+    return this.agents[role].skills;
+  }
+
+  /** Average tokens per architect/reviewer/debugger run with and without the code graph, to judge whether it pays off. */
+  graphTokenStats(repoId: number): { withGraph: { runs: number; avg: number }; without: { runs: number; avg: number } } {
+    const rows = this.deps.db
+      .select({ r: schema.runs })
+      .from(schema.runs)
+      .innerJoin(schema.tasks, eq(schema.runs.taskId, schema.tasks.id))
+      .where(and(eq(schema.tasks.repoId, repoId), eq(schema.runs.status, 'ok')))
+      .all()
+      .map((x) => x.r)
+      .filter((r) => ['architect', 'reviewer', 'debugger'].includes(r.role));
+    const stat = (list: typeof rows) => ({
+      runs: list.length,
+      avg: list.length ? Math.round(list.reduce((s, r) => s + r.inputTokens + r.outputTokens + r.cacheWriteTokens, 0) / list.length) : 0,
+    });
+    return { withGraph: stat(rows.filter((r) => r.graphify)), without: stat(rows.filter((r) => !r.graphify)) };
+  }
+
   /** Swaps in edited agent definitions; running steps keep the version they started with. */
   setAgents(agents: Record<Role, AgentDef>): void {
     this.agents = agents;

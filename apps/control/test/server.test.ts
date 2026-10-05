@@ -110,6 +110,51 @@ describe('server', () => {
     expect(r.statusCode).toBe(400);
   });
 
+  it('edits an agent (validated), lists it as edited, and resets it', async () => {
+    const list = await app.inject({ method: 'GET', url: '/api/agents', headers });
+    const coder = list.json().find((a: { role: string }) => a.role === 'coder');
+    expect(coder.custom).toBe(false);
+
+    const bad = await app.inject({ method: 'PUT', url: '/api/agents/coder', headers, payload: { text: coder.text.replace('tools: [', 'tools: [Agent, ') } });
+    expect(bad.statusCode).toBe(400);
+    const wrongName = await app.inject({ method: 'PUT', url: '/api/agents/tester', headers, payload: { text: coder.text } });
+    expect(wrongName.json().error).toMatch(/name: coder/);
+
+    const ok = await app.inject({ method: 'PUT', url: '/api/agents/coder', headers, payload: { text: coder.text.replace('effort: high', 'effort: max') } });
+    expect(ok.statusCode).toBe(200);
+    const after = (await app.inject({ method: 'GET', url: '/api/agents', headers })).json().find((a: { role: string }) => a.role === 'coder');
+    expect(after).toMatchObject({ custom: true, effort: 'max' });
+
+    await app.inject({ method: 'DELETE', url: '/api/agents/coder', headers });
+    const reset = (await app.inject({ method: 'GET', url: '/api/agents', headers })).json().find((a: { role: string }) => a.role === 'coder');
+    expect(reset).toMatchObject({ custom: false, effort: 'high' });
+  });
+
+  it('creates, lists and deletes my own skill', async () => {
+    const text = '---\nname: our-style\ndescription: House style.\n---\nUse tabs.';
+    expect((await app.inject({ method: 'PUT', url: '/api/skills/our-style', headers, payload: { text } })).statusCode).toBe(200);
+    const skills = (await app.inject({ method: 'GET', url: '/api/skills', headers })).json();
+    expect(skills.find((x: { name: string }) => x.name === 'our-style')).toMatchObject({ custom: true });
+    expect(skills.find((x: { name: string }) => x.name === 'write-pr')).toMatchObject({ custom: false });
+    expect((await app.inject({ method: 'PUT', url: '/api/skills/Bad Name', headers, payload: { text } })).statusCode).toBe(400);
+    await app.inject({ method: 'DELETE', url: '/api/skills/our-style', headers });
+    expect((await app.inject({ method: 'GET', url: '/api/skills', headers })).json().some((x: { name: string }) => x.name === 'our-style')).toBe(false);
+  });
+
+  it('saves a knowledge file and enforces its size cap', async () => {
+    const repo = (await app.inject({ method: 'POST', url: '/api/repos', headers, payload: { name: 'app', path: repoPath } })).json();
+    expect((await app.inject({ method: 'PUT', url: `/api/repos/${repo.id}/knowledge`, headers, payload: { text: '# Notes\n- one' } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: `/api/repos/${repo.id}/knowledge`, headers })).json().text).toContain('- one');
+    const tooLong = Array.from({ length: 200 }, (_, i) => `- ${i}`).join('\n');
+    expect((await app.inject({ method: 'PUT', url: `/api/repos/${repo.id}/knowledge`, headers, payload: { text: tooLong } })).statusCode).toBe(400);
+  });
+
+  it('reports the usage pause in settings', async () => {
+    const r = await app.inject({ method: 'PUT', url: '/api/settings', headers, payload: { usagePauseAt: 0.8 } });
+    expect(r.json().usagePauseAt).toBe(0.8);
+    expect((await app.inject({ method: 'GET', url: '/api/settings', headers })).json().usage).toMatchObject({ paused: false });
+  });
+
   it('refuses document paths that escape the task folder', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/tasks/1/docs/..%2F..%2Fenv', headers });
     expect(r.statusCode).toBe(404);

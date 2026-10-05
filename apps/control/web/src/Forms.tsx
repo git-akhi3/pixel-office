@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Repo, type Settings } from './api';
+import { api, type GraphInfo, type Repo, type Settings } from './api';
 import { timeAgo } from './ui';
 
 export function NewTask({ repos, onError }: { repos: Repo[]; onError: (e: unknown) => void }) {
@@ -138,6 +138,20 @@ const lines = (s: string) =>
     .map((l) => l.trim())
     .filter(Boolean);
 
+/** "coder: a, b" lines → { coder: ["a", "b"] }. */
+function parseSkillLines(text: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const line of lines(text)) {
+    const [role, rest] = line.split(':');
+    if (!role || rest === undefined) continue;
+    out[role.trim()] = rest
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return out;
+}
+
 export function Repos({
   repos,
   reload,
@@ -149,13 +163,27 @@ export function Repos({
 }) {
   const [editing, setEditing] = useState<Partial<Repo> | null>(null);
   const [accounts, setAccounts] = useState<string[]>([]);
+  const [graph, setGraph] = useState<GraphInfo | null>(null);
 
   useEffect(() => {
     api
       .ghAccounts()
       .then(setAccounts)
       .catch(() => setAccounts([]));
-  }, []);
+    api
+      .graphify()
+      .then(setGraph)
+      .catch(() => setGraph(null));
+  }, [repos]);
+
+  const buildGraph = async (r: Repo) => {
+    try {
+      await api.buildGraph(r.id);
+      setGraph(await api.graphify());
+    } catch (err) {
+      onError(err);
+    }
+  };
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -284,6 +312,27 @@ export function Repos({
           />
         </label>
         <label>
+          Extra skills for this repo's agents (one line per agent, e.g. "coder: fastify-conventions, our-api-style")
+          <textarea
+            rows={3}
+            value={Object.entries(editing.skills ?? {})
+              .map(([role, names]) => `${role}: ${names.join(', ')}`)
+              .join('\n')}
+            onChange={(e) => set('skills', parseSkillLines(e.target.value))}
+            placeholder="coder: fastify-conventions"
+          />
+        </label>
+        <label className="switch">
+          <input type="checkbox" checked={!!editing.graphify} onChange={(e) => set('graphify', e.target.checked)} />
+          <span>
+            <strong>Code graph (Graphify)</strong>
+            <span className="hint">
+              Gives the architect, reviewer and debugger a code graph of this repo, built locally from code only (no tokens). Turn it off if the
+              token stats show no saving.
+            </span>
+          </span>
+        </label>
+        <label>
           Extra allowed commands (one per line; end with " *" to allow any arguments)
           <textarea
             rows={4}
@@ -321,6 +370,7 @@ export function Repos({
               <div className="hint">
                 test: {r.testCmd ?? '–'} · lint: {r.lintCmd ?? '–'} · {r.allowlist.length} approved command(s)
               </div>
+              {r.graphify && <GraphLine info={graph} repoId={r.id} onBuild={() => buildGraph(r)} />}
             </div>
             <div className="row-buttons">
               <button onClick={() => setEditing(r)}>Edit</button>
@@ -331,6 +381,32 @@ export function Repos({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function GraphLine({ info, repoId, onBuild }: { info: GraphInfo | null; repoId: number; onBuild: () => void }) {
+  if (!info) return null;
+  if (!info.installed) {
+    return (
+      <div className="hint">
+        Code graph: Graphify isn't installed. Install it with <code>{info.install}</code>
+      </div>
+    );
+  }
+  const g = info.repos.find((x) => x.repoId === repoId);
+  const stat = (s: { runs: number; avg: number }) => (s.runs ? `${Math.round(s.avg / 1000)}k avg over ${s.runs} runs` : 'no runs yet');
+  return (
+    <div className="hint">
+      Code graph: {g?.building ? 'building…' : g?.builtAt ? `built ${new Date(g.builtAt).toLocaleString()}` : 'not built'}{' '}
+      <button className="link" onClick={onBuild} disabled={g?.building}>
+        {g?.builtAt ? 'Rebuild' : 'Build now'}
+      </button>
+      {g && (
+        <div>
+          Architect/reviewer/debugger tokens with the graph: {stat(g.withGraph)} · without: {stat(g.without)}
+        </div>
+      )}
     </div>
   );
 }
@@ -414,6 +490,17 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
         Check for review requests now
       </button>
       <h2>Usage</h2>
+      <label>
+        Pause new steps at this much of the 5-hour or 7-day limit
+        <select value={s.usagePauseAt} onChange={(e) => save({ usagePauseAt: Number(e.target.value) })}>
+          {[0.8, 0.85, 0.9, 0.95, 1].map((v) => (
+            <option key={v} value={v}>
+              {v === 1 ? 'Never pause' : `${Math.round(v * 100)}%`}
+            </option>
+          ))}
+        </select>
+        <span className="hint">Running steps always finish. Paused work starts again when the window resets.</span>
+      </label>
       {s.rateLimit ? (
         <p>
           5-hour window: <strong>{pct(s.rateLimit.fiveHour)}</strong> · 7-day:{' '}

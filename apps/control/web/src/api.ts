@@ -110,6 +110,50 @@ export interface Repo {
   gitAuthor: string | null;
   allowlist: string[];
   effectiveAllowlist: string[];
+  skills: Record<string, string[]>;
+  graphify: boolean;
+}
+
+export interface AgentInfo {
+  role: string;
+  custom: boolean;
+  text: string;
+  model: string;
+  effort?: string;
+  tools: string[];
+  skills: string[];
+  description: string;
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  text: string;
+  custom: boolean;
+}
+
+export interface Proposal {
+  id: number;
+  repoId: number;
+  taskId: number | null;
+  text: string;
+  status: string;
+  createdAt: number;
+}
+
+export interface GraphInfo {
+  installed: boolean;
+  version: string | null;
+  pinned: string;
+  install: string;
+  repos: Array<{
+    repoId: number;
+    enabled: boolean;
+    builtAt: number | null;
+    building: boolean;
+    withGraph: { runs: number; avg: number };
+    without: { runs: number; avg: number };
+  }>;
 }
 
 export interface Settings {
@@ -118,6 +162,8 @@ export interface Settings {
   reviewAutoPickup: boolean;
   reviewMinLines: number;
   rateLimit: { fiveHour?: number; sevenDay?: number; resetsAt?: number; at: number } | null;
+  usagePauseAt: number;
+  usage?: { paused: boolean; until: number | null; window: string | null };
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -149,6 +195,19 @@ export const api = {
   editComment: (id: number, patch: { body?: string; deleted?: boolean }) => request<ReviewComment>('PUT', `/api/review-comments/${id}`, patch),
   editSummary: (id: number, summary: string) => request<Task>('PUT', `/api/tasks/${id}/review-summary`, { summary }),
   fixIt: (id: number) => request<Task>('POST', `/api/tasks/${id}/fix-it`, {}),
+  agents: () => request<AgentInfo[]>('GET', '/api/agents'),
+  saveAgent: (role: string, text: string) => request('PUT', `/api/agents/${role}`, { text }),
+  resetAgent: (role: string) => request('DELETE', `/api/agents/${role}`),
+  skills: () => request<SkillInfo[]>('GET', '/api/skills'),
+  saveSkill: (name: string, text: string) => request('PUT', `/api/skills/${name}`, { text }),
+  deleteSkill: (name: string) => request('DELETE', `/api/skills/${name}`),
+  installSkillGlobally: (name: string) => request<{ path: string }>('POST', `/api/skills/${name}/install-global`, {}),
+  knowledge: (repoId: number) => request<{ text: string; maxLines: number; proposals: Proposal[] }>('GET', `/api/repos/${repoId}/knowledge`),
+  saveKnowledge: (repoId: number, text: string) => request('PUT', `/api/repos/${repoId}/knowledge`, { text }),
+  proposals: () => request<Proposal[]>('GET', '/api/knowledge/proposals'),
+  decideProposal: (id: number, decision: 'accept' | 'reject', text?: string) => request('POST', `/api/knowledge/proposals/${id}`, { decision, text }),
+  graphify: () => request<GraphInfo>('GET', '/api/graphify'),
+  buildGraph: (repoId: number) => request('POST', `/api/repos/${repoId}/graph`, {}),
   repos: () => request<Repo[]>('GET', '/api/repos'),
   saveRepo: (repo: Partial<Repo>, id?: number) => request<Repo>(id ? 'PUT' : 'POST', id ? `/api/repos/${id}` : '/api/repos', repo),
   deleteRepo: (id: number) => request('DELETE', `/api/repos/${id}`),

@@ -2,8 +2,10 @@
 // ~/.office/graphs/<repoId>/ and served to the architect, reviewer and debugger over MCP.
 // Nothing is written into the repo and no git hooks are installed.
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import type { Repo } from './db/schema.js';
 import { run } from './util/exec.js';
 
@@ -70,6 +72,24 @@ export class Graphs {
   /** MCP server config for an agent session, or undefined when this run should not get the graph. */
   mcpFor(repo: Repo, role: string): Record<string, { type: 'stdio'; command: string; args: string[] }> | undefined {
     if (!repo.graphify || !GRAPH_ROLES.includes(role) || !this.has(repo.id)) return undefined;
-    return { graphify: { type: 'stdio', command: 'graphify-mcp', args: [this.graphPath(repo.id)] } };
+    const command = this.mcpBinary();
+    return command ? { graphify: { type: 'stdio', command, args: [this.graphPath(repo.id)] } } : undefined;
   }
+
+  /**
+   * Absolute path of graphify-mcp, resolved from the home directory. The MCP server is started with the
+   * task's worktree as cwd, so a relative PATH entry (".", node_modules/.bin) could pick up a PR's file.
+   */
+  private mcpBinary(): string | null {
+    if (this.mcpBin === undefined) {
+      try {
+        const out = execFileSync('/usr/bin/which', ['graphify-mcp'], { cwd: homedir(), encoding: 'utf8' }).trim();
+        this.mcpBin = isAbsolute(out) && !out.startsWith(homedir() + '/.office/worktrees') ? out : null;
+      } catch {
+        this.mcpBin = null;
+      }
+    }
+    return this.mcpBin;
+  }
+  private mcpBin: string | null | undefined;
 }

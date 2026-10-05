@@ -2,11 +2,16 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { and, desc, eq, gt } from 'drizzle-orm';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { z } from 'zod';
 import type { OfficeConfig } from './config.js';
-import { getSettings, schema, setSetting, type Db } from './db/index.js';
-import { boardColumn, TASK_STATUSES } from './domain.js';
+import { getSettings, schema, setSetting, usagePause, type Db } from './db/index.js';
+import { boardColumn, ROLES, TASK_STATUSES } from './domain.js';
+import { listSkills, loadAgents, parseAgent, parseSkill, SKILL_NAME } from './agents.js';
+import { GRAPHIFY_INSTALL } from './graph.js';
+import { MAX_KNOWLEDGE_LINES } from './knowledge.js';
 import type { EventBus } from './events.js';
 import type { TaskDocs } from './handoffs.js';
 import type { Graphs } from './graph.js';
@@ -189,9 +194,109 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   app.post('/api/tasks/:id/fix-it', async (req) => summary(await pipeline.fixIt(id.parse((req.params as { id: string }).id))));
 
+  // ---------------------------------------------------------------- knowledge files
+
+  app.get('/api/repos/:id/knowledge', async (req) => {
+    const repoId = id.parse((req.params as { id: string }).id);
+    getRepo(db, repoId);
+    return { text: knowledge.read(repoId), maxLines: MAX_KNOWLEDGE_LINES, proposals: knowledge.proposals('pending', repoId) };
+  });
+  app.put('/api/repos/:id/knowledge', async (req) => {
+    const repoId = id.parse((req.params as { id: string }).id);
+    getRepo(db, repoId);
+    knowledge.write(repoId, z.object({ text: z.string().max(50_000) }).parse(req.body).text);
+    return { ok: true };
+  });
+  app.get('/api/knowledge/proposals', async () => knowledge.proposals('pending'));
+  app.post('/api/knowledge/proposals/:id', async (req) => {
+    const body = z.object({ decision: z.enum(['accept', 'reject']), text: z.string().trim().min(1).max(2000).optional() }).parse(req.body);
+    return knowledge.decide(id.parse((req.params as { id: string }).id), body.decision, body.text);
+  });
+
+  // ---------------------------------------------------------------- agents and skills
+
+  const agentDirs = [config.customAgentsDir, config.agentsDir];
+  const skillDirs = [config.customSkillsDir, config.skillsDir];
+  const reloadAgents = () => pipeline.setAgents(loadAgents(agentDirs, skillDirs));
+  const role = z.enum(ROLES);
+
+  app.get('/api/agents', async () =>
+    ROLES.map((r) => {
+      const custom = join(config.customAgentsDir, `${r}.md`);
+      const file = existsSync(custom) ? custom : join(config.agentsDir, `${r}.md`);
+      const def = parseAgent(readFileSync(file, 'utf8'), file, skillDirs);
+      return { role: r, custom: existsSync(custom), text: readFileSync(file, 'utf8'), model: def.model, effort: def.effort, tools: def.tools, skills: def.skills, description: def.description };
+    }),
+  );
+  app.put('/api/agents/:role', async (req) => {
+    const r = role.parse((req.params as { role: string }).role);
+    const { text } = z.object({ text: z.string().min(1).max(50_000) }).parse(req.body);
+    const def = parseAgent(text, `${r}.md`, skillDirs); // validates; throws a readable error
+    if (def.name !== r) throw new Error(`The file says name: ${def.name}, but this is the ${r} agent.`);
+    mkdirSync(config.customAgentsDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(config.customAgentsDir, `${r}.md`), text);
+    reloadAgents();
+    return { ok: true };
+  });
+  app.delete('/api/agents/:role', async (req) => {
+    rmSync(join(config.customAgentsDir, `${role.parse((req.params as { role: string }).role)}.md`), { force: true });
+    reloadAgents();
+    return { ok: true };
+  });
+
+  app.get('/api/skills', async () =>
+    listSkills(skillDirs).map((s) => ({ name: s.name, description: s.description, text: s.text, custom: s.source === config.customSkillsDir })),
+  );
+  app.put('/api/skills/:name', async (req) => {
+    const name = z.string().regex(SKILL_NAME).parse((req.params as { name: string }).name);
+    const { text } = z.object({ text: z.string().min(1).max(50_000) }).parse(req.body);
+    const skill = parseSkill(text, `${name}/SKILL.md`);
+    if (skill.name !== name) throw new Error(`The file says name: ${skill.name}, but the skill is ${name}.`);
+    mkdirSync(join(config.customSkillsDir, name), { recursive: true, mode: 0o700 });
+    writeFileSync(join(config.customSkillsDir, name, 'SKILL.md'), text);
+    reloadAgents();
+    return { ok: true };
+  });
+  app.delete('/api/skills/:name', async (req) => {
+    const name = z.string().regex(SKILL_NAME).parse((req.params as { name: string }).name);
+    const inUse = ROLES.filter((r) => pipeline.agentSkills(r).includes(name));
+    if (inUse.length && !existsSync(join(config.skillsDir, name))) throw new Error(`Used by: ${inUse.join(', ')}. Remove it from those agents first.`);
+    rmSync(join(config.customSkillsDir, name), { recursive: true, force: true });
+    reloadAgents();
+    return { ok: true };
+  });
+  /** Optional: also make a skill available to my everyday Claude Code sessions (~/.claude/skills). */
+  app.post('/api/skills/:name/install-global', async (req) => {
+    const name = z.string().regex(SKILL_NAME).parse((req.params as { name: string }).name);
+    const skill = listSkills(skillDirs).find((s) => s.name === name);
+    if (!skill) throw new Error(`Unknown skill ${name}`);
+    const dest = join(homedir(), '.claude', 'skills', name);
+    if (existsSync(join(dest, 'SKILL.md'))) throw new Error(`~/.claude/skills/${name} already exists; not overwriting it.`);
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(join(dest, 'SKILL.md'), skill.text);
+    return { ok: true, path: dest };
+  });
+
+  // ---------------------------------------------------------------- code graph
+
+  app.get('/api/graphify', async () => {
+    const status = await graphs.status();
+    const repos = listRepos(db).map((r) => ({ repoId: r.id, enabled: r.graphify, builtAt: graphs.builtAt(r.id), building: graphs.isBuilding(r.id), ...pipeline.graphTokenStats(r.id) }));
+    return { ...status, repos };
+  });
+  app.post('/api/repos/:id/graph', async (req) => {
+    const repo = getRepo(db, id.parse((req.params as { id: string }).id));
+    if (!(await graphs.status()).installed) throw new Error(`Graphify isn't installed. Run: ${GRAPHIFY_INSTALL}`);
+    await graphs.build(repo);
+    return { ok: true, builtAt: graphs.builtAt(repo.id) };
+  });
+
   // ---------------------------------------------------------------- settings
 
-  app.get('/api/settings', async () => ({ ...getSettings(db), statuses: TASK_STATUSES }));
+  app.get('/api/settings', async () => {
+    const s = getSettings(db);
+    return { ...s, usage: usagePause(s, Date.now()), statuses: TASK_STATUSES };
+  });
   app.put('/api/settings', async (req) => {
     const body = z
       .object({
@@ -199,12 +304,14 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         concurrency: z.number().int().min(1).max(6).optional(),
         reviewAutoPickup: z.boolean().optional(),
         reviewMinLines: z.number().int().min(0).max(100_000).optional(),
+        usagePauseAt: z.number().min(0.5).max(1).optional(),
       })
       .parse(req.body);
     if (body.autoApprovePush !== undefined) setSetting(db, 'autoApprovePush', body.autoApprovePush);
     if (body.concurrency !== undefined) setSetting(db, 'concurrency', body.concurrency);
     if (body.reviewAutoPickup !== undefined) setSetting(db, 'reviewAutoPickup', body.reviewAutoPickup);
     if (body.reviewMinLines !== undefined) setSetting(db, 'reviewMinLines', body.reviewMinLines);
+    if (body.usagePauseAt !== undefined) setSetting(db, 'usagePauseAt', body.usagePauseAt);
     void pipeline.tick();
     return getSettings(db);
   });

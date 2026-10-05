@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, connectLive, type OfficeEvent, type Repo, type Task } from './api';
+import { api, connectLive, type OfficeEvent, type Repo, type Settings, type Task } from './api';
 import { Board } from './Board';
 import { NewTask, Repos, SettingsPanel } from './Forms';
+import { KnowledgePage } from './Knowledge';
 import { TaskView } from './TaskView';
+import { Team } from './Team';
 
 function useHash(): string {
   const [hash, setHash] = useState(location.hash || '#/');
@@ -21,9 +23,21 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<OfficeEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [proposalCount, setProposalCount] = useState(0);
 
   const onError = useCallback((e: unknown) => setError(e instanceof Error ? e.message : String(e)), []);
   const loadRepos = useCallback(() => api.repos().then(setRepos).catch(onError), [onError]);
+
+  const loadStatus = useCallback(() => {
+    api.settings().then(setSettings).catch(() => {});
+    api.proposals().then((p) => setProposalCount(p.length)).catch(() => {});
+  }, []);
+  useEffect(() => {
+    loadStatus();
+    const t = window.setInterval(loadStatus, 60_000);
+    return () => window.clearInterval(t);
+  }, [loadStatus]);
 
   useEffect(() => {
     api.tasks().then(setTasks).catch(onError);
@@ -31,14 +45,17 @@ export function App() {
     return connectLive(
       (m) => {
         if (m.type === 'task') setTasks((prev) => [m.task, ...prev.filter((t) => t.id !== m.task.id)].sort((a, b) => b.updatedAt - a.updatedAt));
-        else setLastEvent(m.event);
+        else {
+          setLastEvent(m.event);
+          if (m.event.type === 'alert' || m.event.type === 'step_start') loadStatus();
+        }
       },
       (up) => {
         setConnected(up);
         if (up) api.tasks().then(setTasks).catch(onError);
       },
     );
-  }, [loadRepos, onError]);
+  }, [loadRepos, onError, loadStatus]);
 
   const waiting = tasks.filter((t) => t.column === 'Awaiting you' || t.pendingGates.length > 0).length;
   useEffect(() => {
@@ -62,6 +79,12 @@ export function App() {
           <a href="#/repos" className={hash === '#/repos' ? 'active' : ''}>
             Repos
           </a>
+          <a href="#/team" className={hash === '#/team' ? 'active' : ''}>
+            Team
+          </a>
+          <a href="#/knowledge" className={hash === '#/knowledge' ? 'active' : ''}>
+            Knowledge{proposalCount ? <span className="dot">{proposalCount}</span> : null}
+          </a>
           <a href="#/settings" className={hash === '#/settings' ? 'active' : ''}>
             Settings
           </a>
@@ -79,6 +102,13 @@ export function App() {
           </button>
         </div>
       )}
+      {settings?.usage?.paused && (
+        <div className="banner" role="status">
+          Usage is at {Math.round(((settings.usage.window === '7-day' ? settings.rateLimit?.sevenDay : settings.rateLimit?.fiveHour) ?? 0) * 100)}% of
+          the {settings.usage.window} limit: no new agent steps start until {new Date(settings.usage.until!).toLocaleString()}. Running steps
+          finish. <a href="#/settings">Change the threshold</a>
+        </div>
+      )}
       <main>
         {taskMatch ? (
           <TaskView id={Number(taskMatch[1])} lastEvent={lastEvent} onError={onError} />
@@ -86,6 +116,10 @@ export function App() {
           <NewTask repos={repos} onError={onError} />
         ) : hash === '#/repos' ? (
           <Repos repos={repos} reload={loadRepos} onError={onError} />
+        ) : hash === '#/team' ? (
+          <Team onError={onError} />
+        ) : hash === '#/knowledge' ? (
+          <KnowledgePage repos={repos} onError={onError} onChanged={loadStatus} />
         ) : hash === '#/settings' ? (
           <SettingsPanel onError={onError} />
         ) : (
