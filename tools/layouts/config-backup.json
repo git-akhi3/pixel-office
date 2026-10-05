@@ -1,0 +1,29 @@
+{
+  "vscode": {
+    "soundEnabled": true,
+    "lastSeenVersion": "",
+    "alwaysShowLabels": false,
+    "ghostHeadlessAgents": false,
+    "watchAllSessions": false,
+    "hooksInfoShown": false,
+    "showAreas": false,
+    "areaMappings": {}
+  },
+  "standalone": {
+    "soundEnabled": true,
+    "lastSeenVersion": "1.4",
+    "alwaysShowLabels": false,
+    "ghostHeadlessAgents": false,
+    "watchAllSessions": true,
+    "hooksInfoShown": true,
+    "showAreas": true,
+    "areaMappings": {}
+  },
+  "externalAssetDirectories": [],
+  "hooksConsent": {
+    "claude": "granted"
+  },
+  "hooksEnabled": {
+    "claude": true
+  }
+}

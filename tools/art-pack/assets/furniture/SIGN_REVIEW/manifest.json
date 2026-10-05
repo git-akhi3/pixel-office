@@ -1,0 +1,14 @@
+{
+  "id": "SIGN_REVIEW",
+  "name": "Sign: Review",
+  "category": "wall",
+  "type": "asset",
+  "file": "SIGN_REVIEW.png",
+  "width": 32,
+  "height": 16,
+  "footprintW": 2,
+  "footprintH": 1,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

@@ -1,0 +1,14 @@
+{
+  "id": "SIGN_RESEARCH_DOCS",
+  "name": "Sign: Research & Docs",
+  "category": "wall",
+  "type": "asset",
+  "file": "SIGN_RESEARCH_DOCS.png",
+  "width": 80,
+  "height": 16,
+  "footprintW": 5,
+  "footprintH": 1,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

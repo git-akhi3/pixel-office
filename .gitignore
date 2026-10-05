@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+# spike raw output
+apps/control/spike/results-*.json

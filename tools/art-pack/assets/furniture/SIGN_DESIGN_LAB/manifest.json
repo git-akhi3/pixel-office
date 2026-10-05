@@ -1,0 +1,14 @@
+{
+  "id": "SIGN_DESIGN_LAB",
+  "name": "Sign: Design Lab",
+  "category": "wall",
+  "type": "asset",
+  "file": "SIGN_DESIGN_LAB.png",
+  "width": 48,
+  "height": 16,
+  "footprintW": 3,
+  "footprintH": 1,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

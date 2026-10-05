@@ -1,0 +1,14 @@
+{
+  "id": "SIGN_HEALTH",
+  "name": "Sign: Health",
+  "category": "wall",
+  "type": "asset",
+  "file": "SIGN_HEALTH.png",
+  "width": 32,
+  "height": 16,
+  "footprintW": 2,
+  "footprintH": 1,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}
