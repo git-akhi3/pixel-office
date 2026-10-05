@@ -38,8 +38,13 @@ interface ToolOverlayProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
   zoom: number;
   panRef: React.RefObject<{ x: number; y: number }>;
-  onCloseAgent: (id: number) => void;
+  /** Omitted in the embedded view: no close button. */
+  onCloseAgent?: (id: number) => void;
   alwaysShowOverlay: boolean;
+  /** Embedded view: label only characters that are working (plus hovered/selected), so small frames stay readable. */
+  workingOnly?: boolean;
+  /** Embedded view: shrink labels with the scene on small frames (1 = normal size). */
+  labelScale?: number;
 }
 
 /** Derive a short human-readable activity string from tools/status */
@@ -92,6 +97,8 @@ export function ToolOverlay({
   panRef,
   onCloseAgent,
   alwaysShowOverlay,
+  workingOnly = false,
+  labelScale = 1,
 }: ToolOverlayProps) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -108,7 +115,8 @@ export function ToolOverlay({
   if (!el) return null;
   const project = overlayProjection(
     officeState.getLayout(),
-    el.getBoundingClientRect(),
+    // Layout size, like OfficeCanvas: stays right when an embedding page scales the view.
+    { width: el.clientWidth, height: el.clientHeight },
     zoom,
     panRef.current,
     window.devicePixelRatio || 1,
@@ -133,8 +141,11 @@ export function ToolOverlay({
         const isSub =
           ch.isSubagent || (!!ch.isResident && subagentCharacters.some((s) => s.id === id));
 
-        // Only show for hovered or selected agents (unless always-show is on)
-        if (!alwaysShowOverlay && !isSelected && !isHovered) return null;
+        // Only show for hovered or selected agents (unless always-show is on, or it is working in the embedded view)
+        const shown = workingOnly
+          ? isSelected || isHovered || ch.isActive
+          : alwaysShowOverlay || isSelected || isHovered;
+        if (!shown) return null;
 
         // Position above character
         const sittingOffset = ch.state === CharacterState.TYPE ? CHARACTER_SITTING_OFFSET_PX : 0;
@@ -226,6 +237,9 @@ export function ToolOverlay({
               pointerEvents: isSelected ? 'auto' : 'none',
               opacity: alwaysShowOverlay && !isSelected && !isHovered ? (isSub ? 0.5 : 0.75) : 1,
               zIndex: isSelected ? 42 : 41,
+              ...(labelScale !== 1
+                ? { scale: String(labelScale), transformOrigin: 'bottom center' }
+                : {}),
             }}
             data-testid="agent-overlay"
             data-agent-id={id}
@@ -265,7 +279,7 @@ export function ToolOverlay({
                   </span>
                 )}
               </div>
-              {isSelected && !isSub && (
+              {isSelected && !isSub && onCloseAgent && (
                 <Button
                   variant="ghost"
                   size="icon"

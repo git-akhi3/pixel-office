@@ -337,7 +337,13 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   app.get('/api/office', async () => {
     const bridge = deps.pixel?.();
     const server = bridge?.server() ?? null;
-    return { running: !!server, url: server ? `http://127.0.0.1:${server.port}/` : null, linked: !!bridge?.workspace(), start: 'npm run pixel' };
+    return {
+      running: !!server,
+      url: server ? `http://127.0.0.1:${server.port}/` : null,
+      linked: !!bridge?.workspace(),
+      aspect: bridge?.layoutAspect() ?? null,
+      start: 'npm run pixel',
+    };
   });
 
   // ---------------------------------------------------------------- settings

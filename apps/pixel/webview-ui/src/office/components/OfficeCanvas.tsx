@@ -45,6 +45,8 @@ interface OfficeCanvasProps {
   showAreas: boolean;
   /** Currently-selected area label in the editor (alpha-bumped overlay). null otherwise. */
   activeAreaLabel: string | null;
+  /** Embedded fit view: no camera follow, no wheel zoom/pan, no drag-pan. The map stays centered. */
+  fixedView?: boolean;
 }
 
 export function OfficeCanvas({
@@ -64,6 +66,7 @@ export function OfficeCanvas({
   panRef,
   showAreas,
   activeAreaLabel,
+  fixedView = false,
 }: OfficeCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -104,7 +107,9 @@ export function OfficeCanvas({
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
-    const rect = container.getBoundingClientRect();
+    // Layout size (clientWidth/Height), not getBoundingClientRect: an embedding page may scale this
+    // element with a CSS transform, and the backing store must stay at its untransformed size.
+    const rect = { width: container.clientWidth, height: container.clientHeight };
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.round(rect.width * dpr);
     canvas.height = Math.round(rect.height * dpr);
@@ -242,7 +247,7 @@ export function OfficeCanvas({
             ? officeState.characters.get(officeState.cameraFollowId)
             : undefined;
         const cameraFocus = followCh ?? officeState.greeterCameraTarget;
-        if (cameraFocus) {
+        if (cameraFocus && !fixedView) {
           const layout = officeState.getLayout();
           const mapW = layout.cols * TILE_SIZE * zoom;
           const mapH = layout.rows * TILE_SIZE * zoom;
@@ -317,6 +322,7 @@ export function OfficeCanvas({
     panRef,
     showAreas,
     activeAreaLabel,
+    fixedView,
   ]);
 
   // Convert CSS mouse coords to world (sprite pixel) coords
@@ -325,13 +331,15 @@ export function OfficeCanvas({
       const canvas = canvasRef.current;
       if (!canvas) return null;
       const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
+      // Device pixels per on-screen CSS pixel. Equals devicePixelRatio unless an embedding page
+      // scales the canvas with a CSS transform; measuring it keeps clicks on target either way.
+      const scale = rect.width > 0 ? canvas.width / rect.width : window.devicePixelRatio || 1;
       // CSS coords relative to canvas
       const cssX = clientX - rect.left;
       const cssY = clientY - rect.top;
       // Convert to device pixels
-      const deviceX = cssX * dpr;
-      const deviceY = cssY * dpr;
+      const deviceX = cssX * scale;
+      const deviceY = cssY * scale;
       // Convert to world (sprite pixel) coords
       const worldX = (deviceX - offsetRef.current.x) / zoom;
       const worldY = (deviceY - offsetRef.current.y) / zoom;
@@ -539,7 +547,7 @@ export function OfficeCanvas({
     (e: React.MouseEvent) => {
       unlockAudio();
       // Middle mouse button (button 1) starts panning
-      if (e.button === 1) {
+      if (e.button === 1 && !fixedView) {
         e.preventDefault();
         // Break camera follow + greeter centering on manual pan
         officeState.cameraFollowId = null;
@@ -649,6 +657,7 @@ export function OfficeCanvas({
       hitTestDeleteButton,
       hitTestRotateButton,
       panRef,
+      fixedView,
     ],
   );
 
@@ -832,6 +841,7 @@ export function OfficeCanvas({
   // Wheel: Ctrl+wheel to zoom, plain wheel/trackpad to pan
   const handleWheel = useCallback(
     (e: WheelEvent) => {
+      if (fixedView) return;
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
         // Accumulate scroll delta, step zoom when threshold crossed
@@ -855,7 +865,7 @@ export function OfficeCanvas({
         );
       }
     },
-    [zoom, onZoomChange, officeState, panRef, clampPan],
+    [zoom, onZoomChange, officeState, panRef, clampPan, fixedView],
   );
 
   // Attach wheel listener with { passive: false } so preventDefault() works.

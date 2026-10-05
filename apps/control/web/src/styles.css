@@ -800,7 +800,7 @@ button.link {
   display: grid;
   grid-template-columns: 240px 1fr;
   gap: 16px;
-  height: calc(100vh - 100px);
+  height: calc(100dvh - 92px);
 }
 .office-side {
   overflow-y: auto;
@@ -815,12 +815,65 @@ button.link {
 .office-frame {
   width: 100%;
   height: 100%;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
-  background: #1e1e2e;
+  background: #181828; /* the pixel office's own dark background */
 }
 .office-off {
   align-self: start;
+}
+/* Fit: the frame takes the office's own shape (as large as the space allows), so the scene fills it
+   edge to edge instead of leaving empty bands inside the frame. */
+.office-contain .office-frame {
+  height: auto;
+  max-height: 100%;
+  aspect-ratio: var(--office-aspect, 4 / 3);
+  align-self: center;
+  justify-self: center;
+}
+.segmented-buttons {
+  display: flex;
+  margin: 14px 0;
+}
+.segmented-buttons button {
+  flex: 1;
+  border-radius: 0;
+}
+.segmented-buttons button:first-child {
+  border-radius: 8px 0 0 8px;
+}
+.segmented-buttons button:last-child {
+  border-radius: 0 8px 8px 0;
+  border-left: none;
+}
+.segmented-buttons button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+/* Portrait screens (phones, tablets): the list above, the office below at full width. */
+@media (max-width: 760px), (orientation: portrait) {
+  .office {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    height: calc(100dvh - 80px);
+  }
+  .office-side {
+    max-height: 30dvh;
+  }
+  .office-frame {
+    min-height: 0;
+  }
+  /* Fit: the office at its own shape, filling the width. */
+  .office-contain {
+    grid-template-rows: auto auto;
+    height: auto;
+  }
+  .office-contain .office-frame {
+    width: 100%;
+    max-height: none;
+  }
 }
 
 /* ------------------------------------------------------------ phone */
@@ -856,12 +909,5 @@ button.link {
   }
   .repo-list li {
     flex-direction: column;
-  }
-  .office {
-    grid-template-columns: 1fr;
-    height: auto;
-  }
-  .office-frame {
-    height: 70vh;
   }
 }

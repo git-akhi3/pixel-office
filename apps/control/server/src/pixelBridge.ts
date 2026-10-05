@@ -135,6 +135,16 @@ export class PixelBridge {
     return workspace ? join(this.projectsRoot, projectDirName(workspace), `${sessionId}.jsonl`) : null;
   }
 
+  /** The office layout's width / height, so a page can size a frame to fit it exactly. */
+  layoutAspect(): number | null {
+    try {
+      const layout = JSON.parse(readFileSync(join(this.pixelHome, 'layout.json'), 'utf8')) as { cols?: number; rows?: number };
+      return layout.cols && layout.rows ? layout.cols / layout.rows : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Resident character for a role: same name, or the architect at the designer's desk in older layouts. */
   residentFor(role: string): string {
     let residents: string[] = [];

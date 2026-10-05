@@ -6,6 +6,8 @@ interface OfficeInfo {
   running: boolean;
   url: string | null;
   linked: boolean;
+  /** Office width / height: on phones the frame takes this shape, so Fit leaves no empty bands. */
+  aspect: number | null;
   start: string;
 }
 
@@ -14,8 +16,29 @@ interface OfficeInfo {
  * Pixel Agents' token, so it can't change Claude settings; it can still move or close characters and
  * edit the layout, like the pixel office itself.
  */
+type Fit = 'contain' | 'cover';
+const FIT_KEY = 'office.fit';
+
+function savedFit(): Fit {
+  try {
+    return localStorage.getItem(FIT_KEY) === 'cover' ? 'cover' : 'contain';
+  } catch {
+    return 'contain';
+  }
+}
+
 export function Office({ tasks, onError }: { tasks: Task[]; onError: (e: unknown) => void }) {
   const [info, setInfo] = useState<OfficeInfo | null>(null);
+  // Fit: the whole office, scaled to the frame. Fill: no empty bands, edges cropped.
+  const [fit, setFit] = useState<Fit>(savedFit);
+  const chooseFit = (f: Fit) => {
+    setFit(f);
+    try {
+      localStorage.setItem(FIT_KEY, f);
+    } catch {
+      // private mode: just don't remember it
+    }
+  };
 
   useEffect(() => {
     const load = () => api.office().then(setInfo).catch(onError);
@@ -27,7 +50,7 @@ export function Office({ tasks, onError }: { tasks: Task[]; onError: (e: unknown
   const active = tasks.filter((t) => t.running || t.column === 'Awaiting you');
 
   return (
-    <div className="office">
+    <div className={`office office-${fit}`} style={info?.aspect ? ({ '--office-aspect': String(info.aspect) } as React.CSSProperties) : undefined}>
       <aside className="office-side">
         <h2>Working now</h2>
         {active.length === 0 && <p className="empty">Nobody is working. Hand the team a task.</p>}
@@ -40,12 +63,21 @@ export function Office({ tasks, onError }: { tasks: Task[]; onError: (e: unknown
             <StatusBadge status={t.status} running={t.running} />
           </a>
         ))}
+        <div className="segmented-buttons" role="group" aria-label="Office size">
+          <button className={fit === 'contain' ? 'active' : ''} onClick={() => chooseFit('contain')} title="Show the whole office">
+            Fit
+          </button>
+          <button className={fit === 'cover' ? 'active' : ''} onClick={() => chooseFit('cover')} title="Fill the frame; edges may be cropped">
+            Fill
+          </button>
+        </div>
         {info && !info.linked && info.running && (
           <p className="hint">Start the pixel office with {info.start} so office agents appear in it.</p>
         )}
       </aside>
       {info?.running && info.url ? (
-        <iframe className="office-frame" src={info.url} title="Pixel office" />
+        // ?embed: no toolbars, and the scene scales itself to this frame (see apps/pixel embed.ts).
+        <iframe className="office-frame" src={`${info.url}?embed&fit=${fit}`} title="Pixel office" />
       ) : (
         <div className="panel office-off">
           <h1>The pixel office isn't running</h1>
