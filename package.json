@@ -1,0 +1,11 @@
+{
+  "name": "pixel-office",
+  "private": true,
+  "description": "Personal multi-agent dev workspace: control app (apps/control) plus the Pixel Agents office (apps/pixel).",
+  "workspaces": [
+    "apps/control"
+  ],
+  "scripts": {
+    "pixel": "./start.sh"
+  }
+}
