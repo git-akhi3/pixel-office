@@ -14,6 +14,7 @@
 // A coder blocker goes back to the architect. A task is re-planned at most twice, then it is blocked for me.
 
 import { and, asc, eq, inArray } from 'drizzle-orm';
+import { existsSync } from 'node:fs';
 import { isWrapperSkill, listSkills, withRepoSkills, withSkills, type AgentDef } from './agents.js';
 import type { Graphs } from './graph.js';
 import { proposalFromRetro, type Knowledge } from './knowledge.js';
@@ -29,7 +30,7 @@ import { matchesAnyGlob, realPath } from './guard.js';
 import { CONTRACTS, extractPr, normalizeOutput, parseMilestones, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
 import { laneAtIntake, laneOfDiff } from './lanes.js';
 import { buildPrompt, PICKABLE_ROLES } from './prompts.js';
-import { addToAllowlist, effectiveAllowlist, getRepo } from './repos.js';
+import { addToAllowlist, effectiveAllowlist, getRepo, listRepos } from './repos.js';
 import type { AgentRunner, PermissionAnswer, RunOutcome } from './runner.js';
 import { commentableLines, formatComment, originSlug, parsePrUrl, parseReviewDoc, prSlug, reviewBody, splitComments } from './reviews.js';
 import { changedFiles, commitAll, createReviewWorktree, createWorktree, diff, diffStat, removeWorktree } from './worktree.js';
@@ -42,6 +43,8 @@ const reviewMarker = (taskId: number) => `<!-- pixel-office review task #${taskI
 const PICKUP_RETRY_MS = 60 * 60 * 1000;
 
 export const MAX_CODER_LOOPS = 2;
+/** A task may read at most this many other repos. */
+export const MAX_REF_REPOS = 3;
 /** The architect's and reviewer's model on size S tasks (see forSize). */
 export const SMALL_TASK_MODEL = 'claude-sonnet-5-5';
 /** Skills the manager may pick per role; most tasks need none or one. */
@@ -86,6 +89,8 @@ export interface NewTask {
   parentId?: number;
   dependsOn?: number;
   statusNote?: string;
+  /** Other registered repos the agents may read, never write. */
+  refRepos?: number[];
 }
 
 export type TaskAction = 'stop' | 'resume' | 'discard' | 'done';
@@ -270,6 +275,7 @@ export class Pipeline {
     const title = (input.title?.trim() || text.split('\n')[0]!).slice(0, 80);
     const skillPicks = this.ownerPicks(input.skills);
     const links = cleanLinks(input.links ?? []);
+    const refRepos = this.checkRefRepos(input.repoId, input.refRepos ?? []);
     const uploads = input.attachments ?? [];
     if (uploads.length) this.uploads.check(uploads);
     let task = this.deps.db
@@ -286,6 +292,7 @@ export class Pipeline {
         parentId: input.parentId ?? null,
         dependsOn: input.dependsOn ?? null,
         statusNote: input.statusNote ?? null,
+        refRepos,
       })
       .returning()
       .get();
@@ -303,6 +310,24 @@ export class Pipeline {
     this.deps.bus.taskChanged(task);
     void this.tick();
     return task;
+  }
+
+  /** Registered repos only, not the task's own, no repeats, at most MAX_REF_REPOS. */
+  private checkRefRepos(repoId: number, ids: number[]): number[] {
+    const unique = [...new Set(ids)].filter((id) => id !== repoId);
+    if (unique.length > MAX_REF_REPOS) throw new Error(`A task can read at most ${MAX_REF_REPOS} other repos.`);
+    for (const id of unique) getRepo(this.deps.db, id);
+    return unique;
+  }
+
+  /** The reference repos a run may read: their main checkouts, skipping any since removed from the office. */
+  private refsOf(task: Task): Array<{ name: string; path: string; defaultBranch: string }> {
+    const ids = new Set(listRepos(this.deps.db).map((r) => r.id));
+    return task.refRepos
+      .filter((id) => ids.has(id))
+      .map((id) => getRepo(this.deps.db, id))
+      .filter((r) => existsSync(r.path))
+      .map((r) => ({ name: r.name, path: realPath(r.path), defaultBranch: r.defaultBranch }));
   }
 
   getTask(id: number): Task {
@@ -440,6 +465,10 @@ export class Pipeline {
     // read-only, whatever a custom reviewer definition lists. No shell, no writes, no web.
     const agent = this.forSize(task, role, step === 'reviewing_pr' ? { ...roleAgent, tools: ['Read', 'Grep', 'Glob'], write: 'none' } : withGrill);
     const repo = getRepo(db, task.repoId);
+    // A PR under review reads nothing beyond its own checkout.
+    const refs = step === 'reviewing_pr' ? [] : this.refsOf(task);
+    // Extra folders this run may read, never write: the attachments, and the reference repos.
+    const readRoots = [...(task.attachments.length ? [realPath(attachmentsDir(docs.dir(task.id)))] : []), ...refs.map((r) => r.path)];
 
     // The retrospective only reads handoff documents; the worktree may already be gone after a merge.
     if (!task.worktreePath && step === 'reviewing_pr') {
@@ -471,6 +500,7 @@ export class Pipeline {
         : {}),
       ...(grilling ? { briefing: { hasSkill: withGrill !== roleAgent } } : {}),
       attachmentsDir: realPath(attachmentsDir(docs.dir(task.id))),
+      refs,
     });
 
     const run = db
@@ -495,7 +525,7 @@ export class Pipeline {
         write: agent.write,
         testGlobs: repo.testGlobs,
         allowlist: step === 'reviewing_pr' ? [] : effectiveAllowlist(repo),
-        ...(task.attachments.length ? { readRoots: [realPath(attachmentsDir(docs.dir(task.id)))] } : {}),
+        ...(readRoots.length ? { readRoots } : {}),
       },
       signal: abort.signal,
       onEvent: (type, payload) => bus.emit(task.id, type, payload, run.id),
@@ -929,6 +959,7 @@ export class Pipeline {
         skills: ownerSkills,
         grillMode: epic.grillMode,
         links: epic.links,
+        refRepos: epic.refRepos,
         parentId: epic.id,
         dependsOn: prev,
         statusNote: prev ? `Waits for milestone ${n - 1} (#${prev}) to open its draft PR.` : undefined,

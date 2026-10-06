@@ -43,6 +43,7 @@ export function MissionPanel({
   const [files, setFiles] = useState<Upload[]>([]);
   const [uploading, setUploading] = useState(0);
   const [links, setLinks] = useState('');
+  const [refRepos, setRefRepos] = useState<number[]>([]);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -100,6 +101,7 @@ export function MissionPanel({
               skills,
               grillMode,
               attachments: files.map((f) => f.id),
+              refRepos: refRepos.filter((r) => r !== repoId),
               links: links
                 .split(/\s+/)
                 .map((l) => l.trim())
@@ -110,6 +112,7 @@ export function MissionPanel({
       setGrillMode('auto');
       setFiles([]);
       setLinks('');
+      setRefRepos([]);
       setPrUrl('');
       onCreated(task);
     } catch (err) {
@@ -265,6 +268,31 @@ export function MissionPanel({
                         aria-label="Links"
                       />
                     </div>
+                    {repos.length > 1 && (
+                      <div className="field">
+                        <span className="field-label">Read from other repos</span>
+                        <div className="chips" role="group" aria-label="Reference repos">
+                          {repos
+                            .filter((r) => r.id !== repoId)
+                            .map((r) => {
+                              const on = refRepos.includes(r.id);
+                              return (
+                                <button
+                                  key={r.id}
+                                  type="button"
+                                  aria-pressed={on}
+                                  className={on ? 'chip active' : 'chip'}
+                                  disabled={!on && refRepos.filter((x) => x !== repoId).length >= 3}
+                                  onClick={() => setRefRepos((prev) => (on ? prev.filter((x) => x !== r.id) : [...prev, r.id]))}
+                                >
+                                  <Icon name="repo" /> {r.name}
+                                </button>
+                              );
+                            })}
+                        </div>
+                        <span className="hint">Read-only: the agents can read these repos (for example to port code from them) but never change them. Up to 3.</span>
+                      </div>
+                    )}
                     <div className="field">
                       <span className="field-label">Grill me first</span>
                       <div className="chips" role="radiogroup" aria-label="Grill me first">

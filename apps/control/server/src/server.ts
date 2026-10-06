@@ -121,6 +121,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         grillMode: z.enum(['auto', 'always', 'never']).optional(),
         attachments: z.array(z.string().regex(/^[0-9a-f]{24}$/)).max(10).optional(),
         links: z.array(z.string().max(2000)).max(10).optional(),
+        refRepos: z.array(id).max(10).optional(),
       })
       .parse(req.body);
     return summary(pipeline.createTask(body));
@@ -133,6 +134,9 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     return {
       task: summary(task),
       repo: { id: repo.id, name: repo.name, defaultBranch: repo.defaultBranch },
+      refs: listRepos(db)
+        .filter((r) => task.refRepos.includes(r.id))
+        .map((r) => ({ id: r.id, name: r.name })),
       runs: db.select().from(schema.runs).where(eq(schema.runs.taskId, taskId)).all(),
       gates: db.select().from(schema.gates).where(eq(schema.gates.taskId, taskId)).all(),
       docs: docs.list(taskId),

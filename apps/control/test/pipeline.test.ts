@@ -41,7 +41,7 @@ const docs = {
 type Script = (req: RunRequest) => Promise<Partial<RunOutcome> & { text?: string }> | (Partial<RunOutcome> & { text?: string });
 
 class FakeRunner implements AgentRunner {
-  calls: Array<{ step: string; prompt: string; model?: string; effort?: string; skills: string[] }> = [];
+  calls: Array<{ step: string; prompt: string; model?: string; effort?: string; skills: string[]; readRoots?: string[] }> = [];
   active = 0;
   maxActive = 0;
   overrides: Partial<Record<string, Script[]>> = {};
@@ -58,7 +58,7 @@ class FakeRunner implements AgentRunner {
 
   async run(req: RunRequest): Promise<RunOutcome> {
     const step = this.stepOf(req.taskId);
-    this.calls.push({ step, prompt: req.prompt, skills: req.agent.skills, model: req.agent.model, effort: req.agent.effort });
+    this.calls.push({ step, prompt: req.prompt, skills: req.agent.skills, model: req.agent.model, effort: req.agent.effort, readRoots: req.guard.readRoots });
     this.active++;
     this.maxActive = Math.max(this.maxActive, this.active);
     try {
@@ -399,6 +399,7 @@ describe('pipeline', () => {
       expect([a!.title, b!.title]).toEqual(['Part 1', 'Part 2']);
       expect(a!.input).toContain('Milestone 1 of 2 of #' + epic.id);
       expect(b!.dependsOn).toBe(a!.id);
+      expect(a!.refRepos).toEqual(pipeline.getTask(epic.id).refRepos);
       expect(b!.statusNote).toContain('Waits for milestone 1');
 
       await settle();
@@ -453,6 +454,40 @@ describe('pipeline', () => {
       await settle();
       expect(statusOf(t)).toBe('awaiting_plan_approval');
       expect(steps()).not.toContain('splitting');
+    });
+  });
+
+  describe('reference repos', () => {
+    const otherRepo = async (name: string) => {
+      const path = join(home, name);
+      execSync(`mkdir -p "${path}" && cd "${path}" && git init -q -b main && echo "export const port = 1;" > lib.ts && git add . && git -c user.name=t -c user.email=t@t commit -qm init`);
+      return createRepo(db, { name, path });
+    };
+
+    it('lets every step read the reference repos, read-only, and tells the agents where they are', async () => {
+      const lib = await otherRepo('lib');
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Port the port helper from lib', refRepos: [lib.id, repo.id, lib.id] });
+      expect(pipeline.getTask(task.id).refRepos).toEqual([lib.id]); // its own repo and repeats dropped
+      await settle();
+      for (const step of ['intake', 'planning']) {
+        const call = runner.calls.find((c) => c.step === step)!;
+        expect(call.readRoots).toContain(lib.path);
+        expect(call.prompt).toContain('## Reference repos (read-only)');
+        expect(call.prompt).toContain(`- lib: ${lib.path}`);
+      }
+    });
+
+    it('refuses unknown repos and more than three', async () => {
+      expect(() => pipeline.createTask({ repoId: repo.id, input: 'x', refRepos: [999] })).toThrow();
+      const ids: number[] = [];
+      for (const n of ['a', 'b', 'c', 'd']) ids.push((await otherRepo(n)).id);
+      expect(() => pipeline.createTask({ repoId: repo.id, input: 'x', refRepos: ids })).toThrow(/at most 3/);
+    });
+
+    it('passes no extra read roots without references or attachments', async () => {
+      pipeline.createTask({ repoId: repo.id, input: 'Plain' });
+      await settle();
+      expect(runner.calls[0]!.readRoots).toBeUndefined();
     });
   });
 

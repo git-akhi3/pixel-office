@@ -163,6 +163,11 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
           </span>
           {task.loopCount > 0 && <span className="fact">fix loop {task.loopCount}/2</span>}
           {task.replanCount > 0 && <span className="fact">re-plan {task.replanCount}/2</span>}
+          {detail.refs.length > 0 && (
+            <span className="fact" title="The agents can read these repos but never change them">
+              <Icon name="repo" size={8} /> reads {detail.refs.map((r) => r.name).join(', ')}
+            </span>
+          )}
           {task.grill && (
             <span className="fact" title={task.grillReason ?? ''}>
               <Icon name="question" size={8} /> briefing on{task.grillReason ? `: ${task.grillReason}` : ''}

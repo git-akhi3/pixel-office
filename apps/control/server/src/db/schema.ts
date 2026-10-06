@@ -102,6 +102,8 @@ export const tasks = sqliteTable('tasks', {
   /** Files I attached (stored in the task folder under attachments/) and links. */
   attachments: text('attachments', { mode: 'json' }).$type<Attachment[]>().notNull().default([]),
   links: text('links', { mode: 'json' }).$type<string[]>().notNull().default([]),
+  /** Other registered repos the agents may read (never write) for this task, e.g. to port code from. */
+  refRepos: text('ref_repos', { mode: 'json' }).$type<number[]>().notNull().default([]),
   resumeAt: integer('resume_at'),
   doneAt: integer('done_at'),
   createdAt: integer('created_at').notNull().$defaultFn(now),

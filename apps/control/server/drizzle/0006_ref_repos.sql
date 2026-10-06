@@ -1,0 +1,1 @@
+ALTER TABLE `tasks` ADD `ref_repos` text DEFAULT '[]' NOT NULL;

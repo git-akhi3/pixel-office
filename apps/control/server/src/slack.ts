@@ -93,7 +93,7 @@ function clip(text: string, max = MAX_SECTION): string {
 }
 
 export const HELP = [
-  '*Start a task:* DM me `<repo>: what to build or fix` (the repo name is optional when only one is registered), or paste a GitHub PR link to review it. `status` on its own lists every active task.',
+  '*Start a task:* DM me `<repo>: what to build or fix` (the repo name is optional when only one is registered), or paste a GitHub PR link to review it. Add a line `ref: other-repo` to let the agents read other repos (never change them). `status` on its own lists every active task.',
   '*In a task thread:* `status` · `pause` / `stop` · `resume` · `steer: <note to the agent>` · `replan: <why>` · `approve` · `reject: <what to change>` · `discard` · `done`',
   "*When the architect asks you something:* tap a button, or reply in the thread with your answer. `send` sends what you've answered so far; `enough` lets it plan now.",
 ].join('\n');
@@ -206,7 +206,7 @@ export class SlackBridge {
         return;
       }
       const { ids, problems } = await this.fetchFiles(files);
-      const task = this.deps.pipeline.createTask({ repoId: parsed!.repoId!, input: parsed!.input!, ...(ids.length ? { attachments: ids } : {}) });
+      const task = this.deps.pipeline.createTask({ repoId: parsed!.repoId!, input: parsed!.input!, refRepos: parsed!.refRepos, ...(ids.length ? { attachments: ids } : {}) });
       const attached = ids.length ? ` with ${ids.length} attachment${ids.length === 1 ? '' : 's'}` : '';
       await this.reply(channel, ts, `Task #${task.id} queued${attached}. Updates will appear in this thread.${problems.length ? `\n:warning: Not attached: ${esc(problems.join('; '))}` : ''}`);
     } finally {
@@ -250,13 +250,21 @@ export class SlackBridge {
     return true;
   }
 
-  private parseTask(text: string, allowDefaultRepo = true): { repoId?: number; input?: string; error?: string } {
+  private parseTask(text: string, allowDefaultRepo = true): { repoId?: number; input?: string; refRepos?: number[]; error?: string } {
     const repos = listRepos(this.deps.db);
     if (repos.length === 0) return { error: 'No repos registered yet. Add one on the board under Repos first.' };
-    const m = text.match(/^([\w.-]+)\s*:\s*([\s\S]+)$/);
-    const named = m && repos.find((r) => r.name.toLowerCase() === m[1]!.toLowerCase());
-    if (named) return { repoId: named.id, input: m![2]!.trim() };
-    if (repos.length === 1 && allowDefaultRepo) return { repoId: repos[0]!.id, input: text };
+    // A "ref: other-repo, another" line names repos the agents may read but not change.
+    const byName = (n: string) => repos.find((r) => r.name.toLowerCase() === n.toLowerCase());
+    const refLine = text.match(/^\s*refs?\s*:\s*(.+)$/im);
+    const refNames = refLine ? refLine[1]!.split(/[\s,]+/).filter(Boolean) : [];
+    const unknown = refNames.filter((n) => !byName(n));
+    if (unknown.length) return { error: `Not registered: ${unknown.map((n) => `\`${esc(n)}\``).join(', ')}. Registered: ${repos.map((r) => `\`${esc(r.name)}\``).join(', ')}.` };
+    const refRepos = refNames.map((n) => byName(n)!.id);
+    const rest = refLine ? text.replace(refLine[0], '').trim() : text;
+    const m = rest.match(/^([\w.-]+)\s*:\s*([\s\S]+)$/);
+    const named = m && byName(m[1]!);
+    if (named) return { repoId: named.id, input: m![2]!.trim(), refRepos };
+    if (repos.length === 1 && allowDefaultRepo) return { repoId: repos[0]!.id, input: rest, refRepos };
     return { error: `Which repo? Start with \`<repo>: ...\`. Registered: ${repos.map((r) => `\`${esc(r.name)}\``).join(', ')}.` };
   }
 

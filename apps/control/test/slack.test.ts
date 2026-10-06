@@ -48,11 +48,13 @@ function setup(repoNames: string[] = ['alpha'], assistant = false) {
   };
 
   const calls: string[] = [];
+  const created: Array<{ repoId: number; input: string; refRepos?: number[] }> = [];
   const pipeline = {
     getTask: (id: number) => db.select().from(schema.tasks).where(eq(schema.tasks.id, id)).get()!,
     tokensUsed: () => 1500,
     pendingGates: (taskId?: number): Gate[] => db.select().from(schema.gates).where(eq(schema.gates.status, 'pending')).all().filter((g) => taskId === undefined || g.taskId === taskId),
-    createTask: (input: { repoId: number; input: string; attachments?: string[] }) => {
+    createTask: (input: { repoId: number; input: string; attachments?: string[]; refRepos?: number[] }) => {
+      created.push(input);
       calls.push(`create:${input.repoId}:${input.input}${input.attachments ? `:files=${input.attachments.length}` : ''}`);
       const task = db.insert(schema.tasks).values({ repoId: input.repoId, title: input.input.slice(0, 80), input: input.input }).returning().get();
       bus.emit(task.id, 'created', { title: task.title });
@@ -75,7 +77,7 @@ function setup(repoNames: string[] = ['alpha'], assistant = false) {
   const uploads = new Uploads(join(mkdtempSync(join(tmpdir(), 'slack-up-')), 'uploads'));
   const bridge = new SlackBridge({ db, bus, pipeline, docs, uploads, ownerId: OWNER, botUserId: 'U0BOT0001', ...(assistant ? { channelId: CH, assistantIds: [INSTINCT] } : {}), publicUrl: 'http://127.0.0.1:4100', api });
   const settle = () => new Promise((r) => setTimeout(r, 20));
-  return { db, bus, bridge, posted, updated, calls, settle, repo };
+  return { db, bus, bridge, posted, updated, calls, created, settle, repo };
 }
 
 const dm = (text: string, extra: Record<string, unknown> = {}) => ({ user: OWNER, channel: DM, ts: '50.1', text, ...extra });
@@ -139,6 +141,16 @@ describe('SlackBridge', () => {
     expect(t.posted).toEqual([]);
     await t.bridge.onMessage(dm('<@U0BOT0001> alpha: add a greeting', { ts: '58.1' }));
     expect(t.calls).toEqual([`create:${t.repo.id}:add a greeting`]);
+  });
+
+  it('reads a "ref:" line as repos the agents may read', async () => {
+    const many = setup(['alpha', 'beta', 'gamma']);
+    await many.bridge.start();
+    const [alpha, beta, gamma] = many.db.select().from(schema.repos).all();
+    await many.bridge.onMessage(dm('alpha: port the date helpers\nref: beta, gamma'));
+    expect(many.created.at(-1)).toMatchObject({ repoId: alpha!.id, input: 'port the date helpers', refRepos: [beta!.id, gamma!.id] });
+    await many.bridge.onMessage(dm('alpha: x\nref: nope', { ts: '57.1' }));
+    expect(many.posted.at(-1)!.text).toContain('Not registered: `nope`');
   });
 
   it('starts a PR review from a pasted link', async () => {

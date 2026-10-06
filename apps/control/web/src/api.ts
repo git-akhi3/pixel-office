@@ -47,6 +47,8 @@ export interface Task {
   lane: 'trivial' | 'small' | 'standard' | null;
   parentId: number | null;
   dependsOn: number | null;
+  /** Other repos the agents may read, never write. */
+  refRepos: number[];
   status: TaskStatus;
   resumeStatus: TaskStatus | null;
   statusNote: string | null;
@@ -127,6 +129,8 @@ export interface TaskDetail {
   questions: Question[];
   /** Epics: the milestone tasks it was split into. Milestones: their epic. */
   milestones: Array<{ id: number; title: string; status: TaskStatus; dependsOn: number | null }>;
+  /** The reference repos this task reads. */
+  refs: Array<{ id: number; name: string }>;
   parent: { id: number; title: string; status: TaskStatus } | null;
 }
 
@@ -244,6 +248,7 @@ export const api = {
     grillMode?: Task['grillMode'];
     attachments?: string[];
     links?: string[];
+    refRepos?: number[];
   }) => request<Task>('POST', '/api/tasks', body),
   /** Uploads one file for a mission; the returned id goes into createTask's attachments. */
   upload: async (file: File): Promise<Upload> => {

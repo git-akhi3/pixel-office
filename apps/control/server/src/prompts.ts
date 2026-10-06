@@ -29,6 +29,8 @@ export interface PromptContext {
   briefing?: { hasSkill: boolean };
   /** Where the task's attachments are (realpath), when it has any. */
   attachmentsDir?: string;
+  /** Other repos this task may read but not change (their main checkouts). */
+  refs?: Array<{ name: string; path: string; defaultBranch: string }>;
 }
 
 /** Roles a mission can pick skills for (the manager's own intake has already started). */
@@ -148,6 +150,7 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
 
   const attachments = attachmentSection(step, task, ctx.attachmentsDir);
   if (attachments) parts.push(attachments);
+  if (ctx.refs?.length) parts.push(referenceSection(ctx.refs));
 
   const included = inputsFor(step, task)
     .map((name) => [name, docs.latest(task.id, name)] as const)
@@ -200,6 +203,15 @@ function skillCatalog(task: Task, catalog: Array<{ name: string; description: st
     `Pick only skills that clearly fit this task, for these roles: ${PICKABLE_ROLES.join(', ')}. Most tasks need none or one or two. Put them under "skills" with a one-line reason per role under "skills_why".`,
   );
   return lines.join('\n');
+}
+
+/** Repos to learn from or port code from. Read with Read, Grep and Glob (or cat/rg on their paths); never change them. */
+function referenceSection(refs: Array<{ name: string; path: string; defaultBranch: string }>): string {
+  return [
+    '## Reference repos (read-only)',
+    'The owner gave this task other repos to read, for example to port or match code from them. Read them with Read, Grep and Glob using these absolute paths. You cannot change them, cd into them or run commands in them; all your changes go in your worktree.',
+    ...refs.map((r) => `- ${r.name}: ${r.path} (the main checkout, usually on ${r.defaultBranch})`),
+  ].join('\n');
 }
 
 /** Steps that must read the attachments; the others open one when they need it. */

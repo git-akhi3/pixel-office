@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -7,6 +7,7 @@ import {
   checkToolCall,
   globToRegExp,
   matchesAllowlist,
+  realPath,
   splitCommand,
   type GuardContext,
 } from '../server/src/guard.js';
@@ -304,5 +305,20 @@ describe('effectiveAllowlist', () => {
     expect(decision(checkCommand(c, 'cd app && ../poc/.venv/bin/python -m pytest -q tests'))).toBe('allow');
     expect(decision(checkCommand(c, 'poc/.venv/bin/ruff check .'))).toBe('allow');
     expect(allowlist).not.toContain('cd app');
+  });
+});
+
+describe('reference repos (read roots)', () => {
+  it('can be read but not written, and their secrets stay off-limits', () => {
+    const wt = realPath(mkdtempSync(join(tmpdir(), 'wt-')));
+    const ref = realPath(mkdtempSync(join(tmpdir(), 'ref-')));
+    writeFileSync(join(ref, 'lib.ts'), 'export {};');
+    writeFileSync(join(ref, '.env'), 'TOKEN=x');
+    const ctx = { worktree: wt, write: 'all' as const, testGlobs: [], allowlist: ['cat'], readRoots: [ref] };
+    expect(checkToolCall(ctx, 'Read', { file_path: join(ref, 'lib.ts') }).decision).toBe('allow');
+    expect(checkToolCall(ctx, 'Write', { file_path: join(ref, 'lib.ts'), content: 'x' }).decision).toBe('deny');
+    expect(checkToolCall(ctx, 'Edit', { file_path: join(ref, 'lib.ts'), old_string: 'a', new_string: 'b' }).decision).toBe('deny');
+    expect(checkToolCall(ctx, 'Read', { file_path: join(ref, '.env') }).decision).toBe('deny');
+    expect(checkCommand(ctx, `cd ${ref}`).decision).toBe('deny');
   });
 });
