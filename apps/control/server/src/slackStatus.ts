@@ -5,7 +5,7 @@ import { desc, eq, and } from 'drizzle-orm';
 import type { Db } from './db/index.js';
 import { schema } from './db/index.js';
 import type { Gate, Task } from './db/schema.js';
-import { AGENT_STEPS, boardColumn, isAgentStep, TERMINAL_STATUSES, type TaskStatus } from './domain.js';
+import { boardColumn, isAgentStep, stepRole, TERMINAL_STATUSES, type TaskStatus } from './domain.js';
 
 /** The order a feature or bug task moves through. Waiting states sit where the work resumes. */
 const FEATURE_STAGES: TaskStatus[] = ['queued', 'intake', 'planning', 'awaiting_plan_approval', 'coding', 'reviewing', 'testing', 'awaiting_push_approval', 'pushing', 'pr_open', 'retro', 'done'];
@@ -108,7 +108,7 @@ export function describeTask(task: Task, ctx: StatusContext): string {
 
   const work: string[] = [];
   if (running) {
-    work.push(`${AGENT_STEPS[task.status]} working`);
+    work.push(`${stepRole(task.status, task)} working`);
     work.push(`${duration(ctx.now - (ctx.stepStartedAt(task.id) ?? task.updatedAt))} in this step`);
   }
   work.push(`${duration(ctx.now - task.createdAt)} since it started`);

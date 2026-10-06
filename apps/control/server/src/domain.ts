@@ -1,6 +1,6 @@
 // Shared vocabulary for tasks, roles and gates.
 
-export const ROLES = ['manager', 'architect', 'coder', 'reviewer', 'tester', 'debugger', 'researcher'] as const;
+export const ROLES = ['manager', 'architect', 'coder', 'ui-coder', 'reviewer', 'tester', 'debugger', 'researcher'] as const;
 export type Role = (typeof ROLES)[number];
 
 export const TASK_STATUSES = [
@@ -50,6 +50,15 @@ export const AGENT_STEPS: Record<string, Role> = {
 
 export function isAgentStep(status: TaskStatus): boolean {
   return status in AGENT_STEPS;
+}
+
+/**
+ * Who works a step on this task: the step's role, except that a frontend task (the manager's call at
+ * intake: screens, components, styling, layout) is built by the UI coder instead of the coder.
+ */
+export function stepRole(status: string, task: { frontend?: boolean | null }): Role | undefined {
+  const role = AGENT_STEPS[status];
+  return role === 'coder' && task.frontend ? 'ui-coder' : role;
 }
 
 export const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'discarded'];

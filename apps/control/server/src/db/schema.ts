@@ -61,6 +61,8 @@ export const tasks = sqliteTable('tasks', {
   parentId: integer('parent_id'),
   dependsOn: integer('depends_on'),
   needsDebugger: integer('needs_debugger', { mode: 'boolean' }).notNull().default(false),
+  /** Mostly UI work (intake's call): the UI coder builds it instead of the coder. */
+  frontend: integer('frontend', { mode: 'boolean' }).notNull().default(false),
   needsResearcher: integer('needs_researcher', { mode: 'boolean' }).notNull().default(false),
   designFlag: integer('design_flag', { mode: 'boolean' }).notNull().default(false),
   status: text('status').$type<TaskStatus>().notNull().default('queued'),

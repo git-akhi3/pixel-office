@@ -52,7 +52,7 @@ interface ToolOverlayProps {
 }
 
 /** Longest name shown on a tag; the full name is on the hover label. */
-const TAG_NAME_MAX = 14;
+const TAG_NAME_MAX = 22; // room for a themed name like "Iron Man (developer)"
 const TAG_HEIGHT_PX = 22;
 
 /** Derive a short human-readable activity string from tools/status */

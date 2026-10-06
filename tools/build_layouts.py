@@ -359,15 +359,15 @@ def helicarrier() -> Office:
     def hero(name, label, key, aliases=()):
         return {"name": name, "label": label, "palette": pal[key], **({"aliases": list(aliases)} if aliases else {})}
 
-    o.area("The Archive", "#4fb0a0", 0, 1, 14, 12, (hero("researcher", "Vision", "vision"),))
-    o.area("Sanctum", "#e08a3c", 14, 1, 34, 12, (hero("architect", "Strange", "strange", ("designer",)),))
-    o.area("Stark Workshop", "#8ea0c8", 34, 1, 48, 12, (hero("coder", "Stark", "ironman"),))
-    o.area("Red Room", "#e05a6e", 0, 12, 14, 23, (hero("debugger", "Widow", "widow"),))
-    o.area("The Bridge", "#5aa8e8", 14, 12, 34, 23, (hero("manager", "Fury", "fury"),))
-    o.area("Smash Lab", "#8ccc64", 34, 12, 48, 23, (hero("tester", "Hulk", "hulk"),))
+    o.area("The Archive", "#4fb0a0", 0, 1, 14, 12, (hero("researcher", "Vision (researcher)", "vision"),))
+    o.area("Sanctum", "#e08a3c", 14, 1, 34, 12, (hero("architect", "Strange (architect)", "strange", ("designer",)),))
+    o.area("Stark Workshop", "#8ea0c8", 34, 1, 48, 12, (hero("coder", "Iron Man (developer)", "ironman"), hero("ui-coder", "Loki (UI developer)", "loki")))
+    o.area("Red Room", "#e05a6e", 0, 12, 14, 23, (hero("debugger", "Widow (debugger)", "widow"),))
+    o.area("The Bridge", "#5aa8e8", 14, 12, 34, 23, (hero("manager", "Fury (manager)", "fury"),))
+    o.area("Smash Lab", "#8ccc64", 34, 12, 48, 23, (hero("tester", "Hulk (tester)", "hulk"),))
     o.area("Quinjet Bay", "#9aa6be", 0, 23, 14, 34)
-    o.area("Daily Bugle", "#d8c8a8", 14, 23, 34, 34, (hero("pr-writer", "Spidey", "spidey"),))
-    o.area("Hall of Asgard", "#e8c060", 34, 23, 48, 34, (hero("reviewer", "Thor", "thor"),))
+    o.area("Daily Bugle", "#d8c8a8", 14, 23, 34, 34, (hero("pr-writer", "Spidey (PR writer)", "spidey"),))
+    o.area("Hall of Asgard", "#e8c060", 34, 23, 48, 34, (hero("reviewer", "Thor (reviewer)", "thor"),))
 
     def station(c, r, desk="STEEL_DESK", seat="COMMAND_CHAIR", color=None, screen=None):
         """Desk facing the viewer, holo screen on it, seat below: 3 wide x 3 tall from (c, r)."""

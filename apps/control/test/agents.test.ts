@@ -11,7 +11,7 @@ const agent = (front: string, body = 'You are a test agent.') => `---\n${front}\
 describe('agent definitions', () => {
   it('loads every role from apps/control/agents', () => {
     const agents = loadAgents(agentsDir, skillsDir);
-    expect(Object.keys(agents).sort()).toEqual(['architect', 'coder', 'debugger', 'manager', 'researcher', 'reviewer', 'tester']);
+    expect(Object.keys(agents).sort()).toEqual(['architect', 'coder', 'debugger', 'manager', 'researcher', 'reviewer', 'tester', 'ui-coder']);
     expect(agents.architect.model).toBe('claude-opus-5-5');
     expect(agents.coder.model).toBe('claude-sonnet-5-5');
     expect(agents.coder.write).toBe('all');

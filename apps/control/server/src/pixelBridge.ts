@@ -156,6 +156,7 @@ export class PixelBridge {
     }
     if (residents.includes(role)) return role;
     if (role === 'architect' && residents.includes('designer')) return 'designer';
+    if (role === 'ui-coder' && residents.includes('coder')) return 'coder';
     return role;
   }
 

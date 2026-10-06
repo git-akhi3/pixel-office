@@ -9,12 +9,13 @@
     "thor": 11,
     "vision": 12,
     "spidey": 13,
-    "agent0": 14,
-    "agent1": 15,
-    "agent2": 16,
-    "agent3": 17,
-    "agent4": 18,
-    "agent5": 19
+    "loki": 14,
+    "agent0": 15,
+    "agent1": 16,
+    "agent2": 17,
+    "agent3": 18,
+    "agent4": 19,
+    "agent5": 20
   },
   "heroes": {
     "manager": "Fury",
@@ -24,7 +25,8 @@
     "debugger": "Widow",
     "reviewer": "Thor",
     "researcher": "Vision",
-    "pr-writer": "Spidey"
+    "pr-writer": "Spidey",
+    "ui-coder": "Loki"
   },
   "furniture": [
     "STEEL_DESK",

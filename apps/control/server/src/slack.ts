@@ -9,7 +9,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Db } from './db/index.js';
 import { schema } from './db/index.js';
 import type { Gate, Task } from './db/schema.js';
-import { AGENT_STEPS, boardColumn, isAgentStep, TERMINAL_STATUSES, type GateDecision } from './domain.js';
+import { boardColumn, isAgentStep, stepRole, TERMINAL_STATUSES, type GateDecision } from './domain.js';
 import type { BusMessage, EventBus } from './events.js';
 import type { TaskDocs } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
@@ -525,7 +525,7 @@ export class SlackBridge {
     const started = this.stepStartedAt.get(task.id) ?? task.updatedAt;
     return statusBlocks({
       task,
-      agent: running ? (AGENT_STEPS[task.status] ?? null) : null,
+      agent: running ? (stepRole(task.status, task) ?? null) : null,
       elapsed: running ? duration(this.now() - started) : null,
       stage: stageOf(task),
       tokens: this.deps.pipeline.tokensUsed(task.id),

@@ -35,6 +35,8 @@ export const CONTRACTS = {
       needs_debugger: bool,
       needs_researcher: bool,
       design_review: bool,
+      /** Mostly UI work: the UI coder builds it. Missing means no. */
+      frontend: bool.optional().catch(undefined),
       /** Catalog skills per role, for roles the owner left empty. Checked against the catalog afterwards. */
       // Hints, not requirements: a malformed value is ignored rather than failing the intake.
       skills: z.unknown().optional().catch(undefined),
@@ -52,6 +54,7 @@ epic: true | false       # true only for size L requests that are several featur
 needs_debugger: true | false    # true only for bugs whose cause is unclear
 needs_researcher: true | false  # true only if external docs/APIs must be checked first
 design_review: true | false     # true for UI or architecture changes: the plan gets a design section
+frontend: true | false          # true when the change is mostly UI (screens, components, styling, layout, markup): the UI coder builds it
 skills:                  # optional: catalog skills for roles the owner hasn't picked; leave out when none fit
   coder: [skill-name]
 skills_why:              # one line per role you picked for

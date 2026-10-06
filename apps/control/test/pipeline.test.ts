@@ -23,8 +23,8 @@ const appDir = resolve(import.meta.dirname, '..');
 // ---------------------------------------------------------------- fakes
 
 const docs = {
-  task: (o: Partial<{ debugger: boolean; lane: string; size: string; epic: boolean }> = {}) =>
-    `---\ntitle: Add greeting\nkind: feature\nsize: ${o.size ?? 'S'}\n${o.lane ? `lane: ${o.lane}\n` : ''}${o.epic ? 'epic: true\n' : ''}needs_debugger: ${!!o.debugger}\nneeds_researcher: false\ndesign_review: false\n---\n## Request\nAdd a greeting.\n\n## Draft acceptance criteria\n- greet() returns hello`,
+  task: (o: Partial<{ debugger: boolean; lane: string; size: string; epic: boolean; frontend: boolean }> = {}) =>
+    `---\ntitle: Add greeting\nkind: feature\nsize: ${o.size ?? 'S'}\n${o.lane ? `lane: ${o.lane}\n` : ''}${o.epic ? 'epic: true\n' : ''}${o.frontend ? 'frontend: true\n' : ''}needs_debugger: ${!!o.debugger}\nneeds_researcher: false\ndesign_review: false\n---\n## Request\nAdd a greeting.\n\n## Draft acceptance criteria\n- greet() returns hello`,
   diagnosis: '---\nreproduced: true\n---\n## Root cause\nx',
   plan: '---\nfiles_in_scope:\n  - src/**\ntoken_estimate: 1000\n---\n## Goal\nAdd greet().\n\n## Steps\n1. src/greet.ts: add greet()',
   changes: '---\nstatus: done\n---\n## Changes\n- Step 1: added src/greet.ts\n\n## PR\n**Title:** Add greet helper\n**Summary:**\n- adds greet()\n**How it was tested:** npm test',
@@ -281,6 +281,17 @@ describe('pipeline', () => {
       await settle();
       expect(statusOf(task)).toBe('done');
       expect(steps()).not.toContain('retro');
+    });
+
+    it('hands the coding step of a frontend task to the UI coder', async () => {
+      intakeAs({ lane: 'trivial', frontend: true });
+      runner.queue('coding', writeReadme());
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Restyle the settings page' });
+      await settle();
+      expect(statusOf(task)).toBe('awaiting_push_approval');
+      expect(pipeline.getTask(task.id).frontend).toBe(true);
+      const runs = db.select().from(schema.runs).where(eq(schema.runs.taskId, task.id)).all();
+      expect(runs.map((r) => [r.step, r.role])).toEqual([['intake', 'manager'], ['coding', 'ui-coder']]);
     });
 
     it('never auto-approves the push of a trivial change, which had no review', async () => {

@@ -494,6 +494,23 @@ def spidey_post(s: Sprite, d: str, f: int) -> None:
         s.rect(6, 19, 6, 22, blue)
 
 
+def loki_post(s: Sprite, d: str, f: int) -> None:
+    gold, gold_l = rgb(222, 178, 58), rgb(250, 230, 150)
+    if d == DOWN or d == UP:
+        s.hline(3, 12, 3, gold)  # the helmet's brow band
+        s.hline(4, 6, 3, gold_l)
+        s.dots([(3, 1), (2, 0), (12, 1), (13, 0)], gold)  # horns
+        s.dots([(3, 2), (12, 2)], gold)
+    else:
+        s.hline(4, 12, 3, gold)
+        s.dots([(5, 1), (4, 0), (11, 1), (12, 0), (5, 2), (11, 2)], gold)
+    if d == DOWN:
+        s.vline(6, 15, 21, gold); s.vline(9, 15, 21, gold)  # tunic straps
+        s.hline(5, 10, 22, gold)
+    elif d == RIGHT:
+        s.vline(8, 15, 21, gold); s.hline(6, 10, 22, gold)
+
+
 def agent_post(s: Sprite, d: str, f: int) -> None:
     shirt, tie, shades, wire = rgb(238, 238, 244), rgb(28, 28, 34), rgb(16, 16, 20), rgb(220, 220, 230)
     if d == DOWN:
@@ -529,6 +546,9 @@ def hero_list() -> list[Hero]:
         Hero("spidey", "Spidey", role="pr-writer", skin=rgb(200, 30, 40), hair_style="spidey",
              torso=rgb(200, 30, 40), arm=rgb(200, 30, 40), hand=rgb(200, 30, 40), pants=rgb(40, 70, 165),
              boots=rgb(200, 30, 40), post=spidey_post),
+        Hero("loki", "Loki", role="ui-coder", skin=rgb(236, 220, 205), hair=rgb(26, 26, 30), hair_style="short",
+             torso=rgb(30, 110, 60), arm=rgb(24, 24, 30), pants=rgb(24, 24, 30), boots=rgb(70, 50, 30),
+             cape=rgb(22, 84, 46), collar=True, post=loki_post),
     ]
     skins = [rgb(255, 222, 192), rgb(236, 192, 160), rgb(204, 152, 110), rgb(160, 110, 75), rgb(122, 82, 56), rgb(92, 62, 42)]
     hairs = [(rgb(50, 36, 28), "short"), (rgb(205, 172, 110), "short"), (rgb(26, 26, 30), "spiky"), (None, "bald"),

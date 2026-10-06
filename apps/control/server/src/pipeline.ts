@@ -23,7 +23,7 @@ import { getSettings, schema, usagePause, type Db } from './db/index.js';
 import type { Gate, GrillMode, Question, Repo, SkillPicks, Task } from './db/schema.js';
 import { attachmentsDir, cleanLinks, Uploads } from './attachments.js';
 import { answersMessage, BRIEFING_WAIT_MS, briefDoc, MAX_BAD_ROUNDS, parseRound, type Delivery, type RoundQuestion } from './briefing.js';
-import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, maxLane, type GateDecision, type Lane, type Role, type TaskKind, type TaskStatus } from './domain.js';
+import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, maxLane, stepRole, type GateDecision, type Lane, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
 import type { PrInfo, Publisher } from './github.js';
 import { matchesAnyGlob, realPath } from './guard.js';
@@ -169,7 +169,7 @@ export class Pipeline {
   setTaskSkills(taskId: number, role: Role, skills: string[]): Task {
     const task = this.getTask(taskId);
     if (TERMINAL_STATUSES.includes(task.status)) throw new Error(`The task is ${task.status}.`);
-    if (this.running.has(taskId) && AGENT_STEPS[task.status] === role) throw new Error(`The ${role} is working right now; change its skills when it finishes.`);
+    if (this.running.has(taskId) && stepRole(task.status, task) === role) throw new Error(`The ${role} is working right now; change its skills when it finishes.`);
     const picks = { ...task.skillPicks, ...this.ownerPicks({ [role]: skills }, task.skillPicks[role]?.skills) };
     const updated = this.update(taskId, { skillPicks: picks });
     this.deps.bus.emit(taskId, 'skills_changed', { role, skills, by: 'owner' });
@@ -448,7 +448,7 @@ export class Pipeline {
     const { db, bus, docs, runner, config, knowledge, graphs } = this.deps;
     let task = initial.status === 'queued' ? this.update(initial.id, { status: initial.kind === 'review' ? 'reviewing_pr' : 'intake' }) : initial;
     const step = task.status as ContractStep;
-    const role = AGENT_STEPS[step]!;
+    const role = stepRole(step, task)!;
     // This repo's extra skills for the role (my custom skills first, then the built-in ones).
     // Then the mission's own picks for the role. A skill deleted since it was picked is skipped, with an alert.
     const roleAgent = withSkills(
@@ -610,6 +610,7 @@ export class Pipeline {
           lane?: Lane;
           epic?: boolean;
           needs_debugger: boolean;
+          frontend?: boolean;
           needs_researcher: boolean;
           design_review: boolean;
           skills?: unknown;
@@ -622,6 +623,7 @@ export class Pipeline {
           kind: m.kind,
           size: m.size,
           needsDebugger: m.needs_debugger,
+          frontend: m.frontend ?? false,
           needsResearcher: m.needs_researcher,
           designFlag: m.design_review,
           skillPicks: this.managerPicks(task, m.skills, m.skills_why),

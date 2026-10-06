@@ -233,10 +233,7 @@ export function Office({
                 <Face entry={a} themed={themed} />
                 <div className="duty-text">
                   <div className="duty-name">
-                    <span className="duty-who">
-                      {a.label ?? a.name}
-                      {a.label && <span className="duty-role">{a.name}</span>}
-                    </span>
+                    <span className="duty-who">{a.label ?? a.name}</span>
                     <span className="duty-state">{STATE_LABELS[a.state]}</span>
                   </div>
                   {a.task && <div className="duty-task">{a.task}</div>}

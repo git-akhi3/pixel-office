@@ -34,7 +34,7 @@ export interface PromptContext {
 }
 
 /** Roles a mission can pick skills for (the manager's own intake has already started). */
-export const PICKABLE_ROLES: Role[] = ['architect', 'coder', 'reviewer', 'tester', 'debugger', 'researcher'];
+export const PICKABLE_ROLES: Role[] = ['architect', 'coder', 'ui-coder', 'reviewer', 'tester', 'debugger', 'researcher'];
 
 const JOBS: Record<ContractStep, string> = {
   intake:

@@ -891,6 +891,10 @@ input.mono {
   background: #173a66;
   color: #8cc4ff;
 }
+.role-ui-coder {
+  background: #1c4a30;
+  color: #9ff0b8;
+}
 .role-reviewer {
   background: #5a1f4a;
   color: var(--pink);
