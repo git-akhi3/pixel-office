@@ -11,6 +11,8 @@ export const STATUS_LABELS: Record<string, string> = {
   planning: 'Architect planning',
   awaiting_answer: 'Architect asks you',
   awaiting_plan_approval: 'Plan ready for you',
+  splitting: 'Architect splitting it into milestones',
+  awaiting_breakdown_approval: 'Milestones ready for you',
   coding: 'Coder working',
   reviewing: 'Reviewer checking',
   testing: 'Tester testing',
@@ -34,7 +36,7 @@ export const COLUMNS = ['Queued', 'Planning', 'Awaiting you', 'Building', 'Revie
 export type Tone = 'attention' | 'active' | 'done' | 'muted' | 'danger';
 
 export function statusTone(status: string): Tone {
-  if (['awaiting_answer', 'awaiting_plan_approval', 'awaiting_push_approval', 'awaiting_review_post'].includes(status)) return 'attention';
+  if (['awaiting_answer', 'awaiting_plan_approval', 'awaiting_breakdown_approval', 'awaiting_push_approval', 'awaiting_review_post'].includes(status)) return 'attention';
   if (['blocked', 'failed'].includes(status)) return 'danger';
   if (['paused', 'stopped', 'discarded', 'queued'].includes(status)) return 'muted';
   if (['done', 'pr_open'].includes(status)) return 'done';
@@ -47,6 +49,7 @@ const STATUS_ROLES: Record<string, string> = {
   debugging: 'debugger',
   researching: 'researcher',
   planning: 'architect',
+  splitting: 'architect',
   coding: 'coder',
   reviewing: 'reviewer',
   testing: 'tester',
@@ -82,6 +85,8 @@ const BUILD_POSITION: Record<string, number> = {
   planning: 1,
   awaiting_answer: 1,
   awaiting_plan_approval: 1,
+  splitting: 1,
+  awaiting_breakdown_approval: 1,
   coding: 2,
   reviewing: 3,
   testing: 4,

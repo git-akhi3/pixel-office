@@ -1,6 +1,6 @@
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
-import { and, desc, eq, gt } from 'drizzle-orm';
+import { and, asc, desc, eq, gt } from 'drizzle-orm';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -138,6 +138,14 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       docs: docs.list(taskId),
       reviewComments: task.kind === 'review' ? pipeline.reviewComments(taskId) : [],
       questions: pipeline.questions(taskId),
+      // Epics: the milestone tasks it was split into; milestones: the epic.
+      milestones: db
+        .select({ id: schema.tasks.id, title: schema.tasks.title, status: schema.tasks.status, dependsOn: schema.tasks.dependsOn })
+        .from(schema.tasks)
+        .where(eq(schema.tasks.parentId, taskId))
+        .orderBy(asc(schema.tasks.id))
+        .all(),
+      parent: task.parentId ? (({ id, title, status }) => ({ id, title, status }))(pipeline.getTask(task.parentId)) : null,
       alerts: db
         .select()
         .from(schema.events)

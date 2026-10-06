@@ -391,6 +391,12 @@ export class SlackBridge {
         return void (await this.say(`:tada: PR merged: ${String(event.payload.url)}`, task));
       case 'review_posted':
         return void (await this.say(`:memo: Review posted: ${String(event.payload.url)}`, task));
+      case 'epic_decided':
+        return void (await this.say(':world_map: This is too big for one task: the architect is splitting it into milestones for you to approve.', task));
+      case 'epic_split': {
+        const ids = (event.payload.children as number[]) ?? [];
+        return void (await this.say(`:white_check_mark: Split into ${ids.length} milestone tasks: ${ids.map((id) => `#${id}`).join(', ')}. Each gets its own thread and runs after the one before it opens its draft PR.`, task));
+      }
       case 'lane_decided': {
         const lane = String(event.payload.lane);
         if (lane === 'standard') return;
@@ -436,9 +442,11 @@ export class SlackBridge {
       body = `\`\`\`${clip(g.subject ?? '', 1500).replace(/```/g, "'''")}\`\`\``;
       buttons = [this.button(g.gateId, 'allow_once', 'Allow once', 'primary'), this.button(g.gateId, 'allow_always', 'Always for this repo'), this.button(g.gateId, 'deny', 'Deny', 'danger')];
     } else {
-      const label = g.kind === 'plan' ? 'Plan ready for approval' : g.kind === 'push' ? 'Ready to push and open a draft PR' : 'Draft review ready to post';
+      const label =
+        g.kind === 'plan' ? 'Plan ready for approval' : g.kind === 'breakdown' ? 'Milestones ready for approval (each becomes its own task)' : g.kind === 'push' ? 'Ready to push and open a draft PR' : 'Draft review ready to post';
       heading = `:raised_hand: *${label}*`;
-      const doc = g.kind === 'plan' ? this.deps.docs.latest(task.id, 'plan') : g.kind === 'review_post' ? this.deps.docs.latest(task.id, 'pr-review') : null;
+      const docName = ({ plan: 'plan', breakdown: 'breakdown', review_post: 'pr-review' } as const)[g.kind as 'plan' | 'breakdown' | 'review_post'];
+      const doc = docName ? this.deps.docs.latest(task.id, docName) : null;
       if (doc) body = esc(clip(doc.replace(/^---[\s\S]*?---\s*/, ''), 2000));
       buttons = [this.button(g.gateId, 'approve', g.kind === 'review_post' ? 'Post review' : 'Approve', 'primary'), this.button(g.gateId, 'reject', 'Reject…', 'danger')];
     }

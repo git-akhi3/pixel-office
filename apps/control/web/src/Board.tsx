@@ -74,6 +74,7 @@ export function Board({
                         {t.kind !== 'feature' && <span className={`kind kind-${t.kind}`}>{t.kind}</span>}
                         {t.size && <span className="size" title={`Size ${t.size}`}>{t.size}</span>}
                         {t.lane && t.lane !== 'standard' && <span className="tag" title={`${t.lane} lane: ${LANE_HINT[t.lane]}`}>{t.lane}</span>}
+                        {t.parentId && <span className="tag" title={`Milestone of #${t.parentId}`}>of #{t.parentId}</span>}
                       </div>
                       <div className="card-title">{t.title}</div>
                       <StageTrack task={t} />

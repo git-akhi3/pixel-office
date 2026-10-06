@@ -70,6 +70,8 @@ const REFRESH_ON = new Set([
   'skills_picked',
   'lane_decided',
   'lane_changed',
+  'epic_decided',
+  'epic_split',
 ]);
 
 export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: OfficeEvent | null; onError: (e: unknown) => void }) {
@@ -168,6 +170,28 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
           )}
         </div>
         {task.statusNote && <p className="note">{task.statusNote}</p>}
+        {detail.parent && (
+          <p className="note">
+            Milestone of <a href={`#/task/${detail.parent.id}`}>#{detail.parent.id} {detail.parent.title}</a>
+            {task.dependsOn ? (
+              <>
+                , after <a href={`#/task/${task.dependsOn}`}>#{task.dependsOn}</a>
+              </>
+            ) : null}
+          </p>
+        )}
+        {detail.milestones.length > 0 && (
+          <ol className="milestones">
+            {detail.milestones.map((m) => (
+              <li key={m.id}>
+                <a href={`#/task/${m.id}`}>
+                  #{m.id} {m.title}
+                </a>{' '}
+                <StatusBadge status={m.status} />
+              </li>
+            ))}
+          </ol>
+        )}
       </header>
 
       <Briefing task={task} questions={detail.questions} onChanged={load} onError={onError} />
@@ -334,12 +358,15 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
   const label =
     gate.kind === 'plan'
       ? 'Approve the plan?'
-      : gate.kind === 'review_post'
-        ? 'Post this review to GitHub?'
-        : 'Push the branch and open a draft PR?';
-  const approveLabel = gate.kind === 'plan' ? 'Approve plan' : gate.kind === 'review_post' ? 'Post review' : 'Push & open draft PR';
+      : gate.kind === 'breakdown'
+        ? 'Split this into these milestones?'
+        : gate.kind === 'review_post'
+          ? 'Post this review to GitHub?'
+          : 'Push the branch and open a draft PR?';
+  const approveLabel =
+    gate.kind === 'plan' ? 'Approve plan' : gate.kind === 'breakdown' ? 'Create milestone tasks' : gate.kind === 'review_post' ? 'Post review' : 'Push & open draft PR';
   const rejectHint =
-    gate.kind === 'plan'
+    gate.kind === 'plan' || gate.kind === 'breakdown'
       ? 'What should the architect change?'
       : gate.kind === 'review_post'
         ? 'What should the reviewer redo?'
@@ -350,6 +377,9 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
         <Icon name="warn" /> {label}
       </div>
       {gate.kind === 'plan' && <p className="gate-hint">Read the plan below. Approving starts the coder.</p>}
+      {gate.kind === 'breakdown' && (
+        <p className="gate-hint">Read breakdown.md below. Each milestone becomes its own task, run in order: each one starts when the one before opens its draft PR, and builds on its branch.</p>
+      )}
       {gate.kind === 'review_post' && <p className="gate-hint">Edit or delete comments below first. It posts under the repo's GitHub account.</p>}
       {rejecting && (
         <textarea

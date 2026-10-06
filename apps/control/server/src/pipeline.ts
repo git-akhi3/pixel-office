@@ -6,6 +6,10 @@
 // Lanes (lanes.ts): trivial tasks go intake → coding → awaiting_push_approval; small ones skip the
 // architect (intake → coding → reviewing → testing → …). The coder's diff can only raise the lane.
 //
+// Epics: intake flags a request far too big for one task → splitting (the architect writes
+// breakdown.md) → awaiting_breakdown_approval → one task per milestone, each waiting for the
+// previous one's draft PR and building on its branch. The epic itself is then done.
+//
 // Failures: review or test failures go back to the coder twice, then back to the architect.
 // A coder blocker goes back to the architect. A task is re-planned at most twice, then it is blocked for me.
 
@@ -22,7 +26,7 @@ import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, maxLane, type GateDecision
 import type { EventBus } from './events.js';
 import type { PrInfo, Publisher } from './github.js';
 import { matchesAnyGlob, realPath } from './guard.js';
-import { CONTRACTS, extractPr, normalizeOutput, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
+import { CONTRACTS, extractPr, normalizeOutput, parseMilestones, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
 import { laneAtIntake, laneOfDiff } from './lanes.js';
 import { buildPrompt, PICKABLE_ROLES } from './prompts.js';
 import { addToAllowlist, effectiveAllowlist, getRepo } from './repos.js';
@@ -78,6 +82,10 @@ export interface NewTask {
   /** Upload ids (from POST /api/uploads) and links I attached. */
   attachments?: string[];
   links?: string[];
+  /** Epic milestones: the epic, the milestone this one waits for, and the note shown while it waits. */
+  parentId?: number;
+  dependsOn?: number;
+  statusNote?: string;
 }
 
 export type TaskAction = 'stop' | 'resume' | 'discard' | 'done';
@@ -266,7 +274,19 @@ export class Pipeline {
     if (uploads.length) this.uploads.check(uploads);
     let task = this.deps.db
       .insert(schema.tasks)
-      .values({ repoId: input.repoId, input: text, title, kind: input.kind ?? 'feature', baseBranch: input.baseBranch ?? null, skillPicks, grillMode: input.grillMode ?? 'auto', links })
+      .values({
+        repoId: input.repoId,
+        input: text,
+        title,
+        kind: input.kind ?? 'feature',
+        baseBranch: input.baseBranch ?? null,
+        skillPicks,
+        grillMode: input.grillMode ?? 'auto',
+        links,
+        parentId: input.parentId ?? null,
+        dependsOn: input.dependsOn ?? null,
+        statusNote: input.statusNote ?? null,
+      })
       .returning()
       .get();
     // Moved in before the first tick, so intake already sees them. If that fails, no task is left behind.
@@ -350,9 +370,32 @@ export class Pipeline {
       .where(inArray(schema.tasks.status, Object.keys(AGENT_STEPS) as TaskStatus[]))
       .orderBy(asc(schema.tasks.updatedAt))
       .all()
-      .filter((t) => !this.running.has(t.id))
+      .filter((t) => !this.running.has(t.id) && this.dependencyReady(t))
       .slice(0, slots);
-    for (const t of runnable) this.launch(t);
+    for (const t of runnable) this.launch(this.startFromDependency(t));
+  }
+
+  /**
+   * A queued milestone starts once the milestone it builds on has its draft PR (or is finished).
+   * If that one was discarded or failed, this one is blocked: resuming starts it without it.
+   */
+  private dependencyReady(task: Task): boolean {
+    if (task.status !== 'queued' || !task.dependsOn) return true;
+    const dep = this.deps.db.select().from(schema.tasks).where(eq(schema.tasks.id, task.dependsOn)).get();
+    if (!dep || dep.status === 'discarded' || dep.status === 'failed') {
+      this.update(task.id, { dependsOn: null });
+      this.block(task, `Milestone #${task.dependsOn} it builds on was ${dep?.status ?? 'deleted'}. Resume to start this one from the default branch without it.`, 'queued');
+      return false;
+    }
+    return ['pr_open', 'retro', 'done'].includes(dep.status);
+  }
+
+  /** Stacks a milestone on the previous one's branch while that PR is open; after it merges, on the default branch. */
+  private startFromDependency(task: Task): Task {
+    if (task.status !== 'queued' || !task.dependsOn) return task;
+    const dep = this.getTask(task.dependsOn);
+    const baseBranch = dep.status === 'pr_open' && dep.branch ? dep.branch : null;
+    return this.update(task.id, { baseBranch, statusNote: null });
   }
 
   private launch(task: Task): void {
@@ -535,6 +578,7 @@ export class Pipeline {
           kind: TaskKind;
           size: 'S' | 'M' | 'L';
           lane?: Lane;
+          epic?: boolean;
           needs_debugger: boolean;
           needs_researcher: boolean;
           design_review: boolean;
@@ -561,6 +605,12 @@ export class Pipeline {
           designFlag: updated.designFlag,
           grill: updated.grill,
         });
+        // A request far too big for one task is split into milestones, not planned or debugged as one.
+        if (m.epic && m.size === 'L' && !task.parentId) {
+          this.deps.bus.emit(task.id, 'epic_decided', {});
+          this.update(task.id, { lane: 'standard', status: 'splitting' });
+          return;
+        }
         this.deps.bus.emit(task.id, 'lane_decided', { lane, said: m.lane ?? null, reason });
         const next: TaskStatus = updated.needsDebugger ? 'debugging' : updated.needsResearcher ? 'researching' : lane === 'standard' ? 'planning' : 'coding';
         this.update(task.id, { lane, status: next });
@@ -571,6 +621,10 @@ export class Pipeline {
         return;
       case 'researching':
         this.update(task.id, { status: 'planning' });
+        return;
+      case 'splitting':
+        this.update(task.id, { status: 'awaiting_breakdown_approval' });
+        this.openGate(task.id, 'breakdown');
         return;
       case 'planning': {
         const m = readMeta<{ files_in_scope: string[]; token_estimate: number }>('planning', text);
@@ -825,12 +879,15 @@ export class Pipeline {
 
     if (!['approve', 'reject'].includes(decision)) throw new Error('Use approve or reject.');
     if (decision === 'reject' && !comment?.trim()) throw new Error('Say what to change when rejecting.');
-    const expected = gate.kind === 'plan' ? 'awaiting_plan_approval' : gate.kind === 'push' ? 'awaiting_push_approval' : 'awaiting_review_post';
+    const expected = ({ plan: 'awaiting_plan_approval', push: 'awaiting_push_approval', breakdown: 'awaiting_breakdown_approval' } as Partial<Record<Gate['kind'], TaskStatus>>)[gate.kind] ?? 'awaiting_review_post';
     if (task.status !== expected) throw new Error(`The task is ${task.status}, not ${expected}.`);
     close(decision === 'approve' ? 'approved' : 'rejected');
     this.deps.bus.emit(task.id, 'gate_decided', { gateId, kind: gate.kind, decision, comment });
 
-    if (gate.kind === 'review_post') {
+    if (gate.kind === 'breakdown') {
+      if (decision === 'approve') this.splitEpic(task);
+      else this.update(task.id, { status: 'splitting', feedback: `The owner wants the milestones changed:\n\n${comment}\n\n### Previous breakdown\n${this.deps.docs.latest(task.id, 'breakdown') ?? ''}` });
+    } else if (gate.kind === 'review_post') {
       if (decision === 'approve') await this.postReview(task);
       else this.update(task.id, { status: 'reviewing_pr', feedback: `The owner wants the draft review redone:\n\n${comment}\n\n### Previous draft\n${this.deps.docs.latest(task.id, 'pr-review') ?? ''}` });
     } else if (gate.kind === 'plan') {
@@ -841,6 +898,46 @@ export class Pipeline {
       this.update(task.id, { status: 'coding', feedback: `The owner did not approve the push:\n\n${comment}` });
     }
     void this.tick();
+  }
+
+  /** The approved breakdown becomes one task per milestone, each built on the previous one. The epic is done. */
+  private splitEpic(epic: Task): void {
+    const milestones = parseMilestones(this.deps.docs.latest(epic.id, 'breakdown') ?? '');
+    if (milestones.length < 2) {
+      this.block(epic, 'The breakdown has fewer than two milestones. Reject it with a comment, or plan the task as one.', 'splitting');
+      return;
+    }
+    const ownerSkills = Object.fromEntries(
+      Object.entries(epic.skillPicks)
+        .filter(([, p]) => p?.by === 'owner')
+        .map(([role, p]) => [role, p!.skills]),
+    );
+    const ids: number[] = [];
+    milestones.forEach((m, i) => {
+      const n = i + 1;
+      const prev = ids.at(-1);
+      const context = [
+        `---`,
+        `Milestone ${n} of ${milestones.length} of #${epic.id}: ${epic.title}.`,
+        prev ? `It builds on milestone ${n - 1} (task #${prev}): that work is already on the branch this one starts from. Don't redo it.` : 'It is the first milestone.',
+        `The whole request was: ${epic.input}`,
+      ].join('\n');
+      const child = this.createTask({
+        repoId: epic.repoId,
+        title: m.title,
+        input: `${m.body}\n\n${context}`,
+        skills: ownerSkills,
+        grillMode: epic.grillMode,
+        links: epic.links,
+        parentId: epic.id,
+        dependsOn: prev,
+        statusNote: prev ? `Waits for milestone ${n - 1} (#${prev}) to open its draft PR.` : undefined,
+        baseBranch: epic.baseBranch ?? undefined,
+      });
+      ids.push(child.id);
+    });
+    this.update(epic.id, { status: 'done', doneAt: this.now(), statusNote: `Split into ${ids.length} milestones: ${ids.map((id) => `#${id}`).join(', ')}.` });
+    this.deps.bus.emit(epic.id, 'epic_split', { children: ids });
   }
 
   /** Where a finished task goes: a retrospective, except for reviews and trivial changes (nothing to learn). */
@@ -1088,6 +1185,7 @@ export class Pipeline {
   replanNow(taskId: number, reason: string): Task {
     const task = this.getTask(taskId);
     if ([...TERMINAL_STATUSES, 'pushing', 'pr_open', 'retro'].includes(task.status)) throw new Error(`The task is ${task.status}; it can't be re-planned.`);
+    if (task.status === 'splitting' || task.status === 'awaiting_breakdown_approval') throw new Error('This is an epic: reject its milestones with a comment instead.');
     this.cancelGates(taskId);
     const previous = this.deps.docs.latest(taskId, 'plan');
     const updated = this.update(taskId, {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { maxLane } from '../server/src/domain.js';
+import { parseMilestones, validateDoc } from '../server/src/handoffs.js';
 import { isDocFile, laneAtIntake, laneOfDiff, SMALL_MAX_FILES } from '../server/src/lanes.js';
 
 const facts = { size: 'S' as const, needsDebugger: false, needsResearcher: false, designFlag: false, grill: false };
@@ -51,5 +52,23 @@ describe('maxLane', () => {
   it('only goes up', () => {
     expect(maxLane('trivial', 'small')).toBe('small');
     expect(maxLane('standard', 'trivial')).toBe('standard');
+  });
+});
+
+describe('epic breakdowns', () => {
+  const doc = (said: number, headings: string[]) =>
+    `---\nmilestones: ${said}\n---\n## Overview\nx\n\n## Milestones\n${headings.map((h) => `### ${h}\nDo it.`).join('\n\n')}\n\n## Not in these milestones\n- nothing`;
+
+  it('reads the milestones in order', () => {
+    expect(parseMilestones(doc(2, ['1. Setup', '2. Chat']))).toEqual([
+      { title: 'Setup', body: 'Do it.' },
+      { title: 'Chat', body: 'Do it.' },
+    ]);
+  });
+
+  it('sends a breakdown back when the count and the headings disagree, or there are too many', () => {
+    expect(validateDoc('splitting', doc(2, ['1. Setup', '2. Chat']))).toBeNull();
+    expect(validateDoc('splitting', doc(3, ['1. Setup', '2. Chat']))).toContain('says 3 milestones but the Milestones section has 2');
+    expect(validateDoc('splitting', doc(9, Array.from({ length: 9 }, (_, i) => `${i + 1}. P${i}`)))).toContain('front matter does not match');
   });
 });

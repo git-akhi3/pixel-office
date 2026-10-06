@@ -23,8 +23,8 @@ const appDir = resolve(import.meta.dirname, '..');
 // ---------------------------------------------------------------- fakes
 
 const docs = {
-  task: (o: Partial<{ debugger: boolean; lane: string; size: string }> = {}) =>
-    `---\ntitle: Add greeting\nkind: feature\nsize: ${o.size ?? 'S'}\n${o.lane ? `lane: ${o.lane}\n` : ''}needs_debugger: ${!!o.debugger}\nneeds_researcher: false\ndesign_review: false\n---\n## Request\nAdd a greeting.\n\n## Draft acceptance criteria\n- greet() returns hello`,
+  task: (o: Partial<{ debugger: boolean; lane: string; size: string; epic: boolean }> = {}) =>
+    `---\ntitle: Add greeting\nkind: feature\nsize: ${o.size ?? 'S'}\n${o.lane ? `lane: ${o.lane}\n` : ''}${o.epic ? 'epic: true\n' : ''}needs_debugger: ${!!o.debugger}\nneeds_researcher: false\ndesign_review: false\n---\n## Request\nAdd a greeting.\n\n## Draft acceptance criteria\n- greet() returns hello`,
   diagnosis: '---\nreproduced: true\n---\n## Root cause\nx',
   plan: '---\nfiles_in_scope:\n  - src/**\ntoken_estimate: 1000\n---\n## Goal\nAdd greet().\n\n## Steps\n1. src/greet.ts: add greet()',
   changes: '---\nstatus: done\n---\n## Changes\n- Step 1: added src/greet.ts\n\n## PR\n**Title:** Add greet helper\n**Summary:**\n- adds greet()\n**How it was tested:** npm test',
@@ -372,6 +372,87 @@ describe('pipeline', () => {
       pipeline.createTask({ repoId: repo.id, input: 'b' });
       await settle();
       expect(modelOf('planning').model).toBe(OPUS);
+    });
+  });
+
+  describe('epics', () => {
+    const breakdown = (n = 2) =>
+      `---\nmilestones: ${n}\n---\n## Overview\nIn order.\n\n## Milestones\n${Array.from({ length: n }, (_, i) => `### ${i + 1}. Part ${i + 1}\nBuild part ${i + 1}.\n- it works`).join('\n\n')}\n\n## Not in these milestones\n- nothing`;
+    const startEpic = (n = 2) => {
+      runner.queue('intake', () => ({ text: docs.task({ size: 'L', epic: true }) }));
+      runner.queue('splitting', () => ({ text: breakdown(n) }));
+      return pipeline.createTask({ repoId: repo.id, input: 'Build a chat app' });
+    };
+    const gateOf = (t: Task, kind: string) => pipeline.pendingGates(t.id).find((g) => g.kind === kind)!;
+    const children = (epic: Task) => db.select().from(schema.tasks).where(eq(schema.tasks.parentId, epic.id)).all();
+
+    it('splits a huge request into milestone tasks that run in order, each on the previous branch', async () => {
+      const epic = startEpic();
+      await settle();
+      expect(statusOf(epic)).toBe('awaiting_breakdown_approval');
+      expect(steps()).toEqual(['intake', 'splitting']);
+
+      await pipeline.decideGate(gateOf(epic, 'breakdown').id, 'approve');
+      const [a, b] = children(epic);
+      expect(statusOf(epic)).toBe('done');
+      expect(pipeline.getTask(epic.id).statusNote).toBe(`Split into 2 milestones: #${a!.id}, #${b!.id}.`);
+      expect([a!.title, b!.title]).toEqual(['Part 1', 'Part 2']);
+      expect(a!.input).toContain('Milestone 1 of 2 of #' + epic.id);
+      expect(b!.dependsOn).toBe(a!.id);
+      expect(b!.statusNote).toContain('Waits for milestone 1');
+
+      await settle();
+      expect(statusOf(a!)).toBe('awaiting_plan_approval');
+      expect(statusOf(b!)).toBe('queued'); // waits for a's draft PR
+
+      await pipeline.decideGate(planGate(a!).id, 'approve');
+      await settle();
+      await pipeline.decideGate(pushGate(a!).id, 'approve');
+      expect(statusOf(a!)).toBe('pr_open');
+      await settle();
+      const started = pipeline.getTask(b!.id);
+      expect(started.status).toBe('awaiting_plan_approval');
+      expect(started.baseBranch).toBe(pipeline.getTask(a!.id).branch);
+      expect(started.statusNote).toBeNull();
+
+      await pipeline.decideGate(planGate(b!).id, 'approve');
+      await settle();
+      await pipeline.decideGate(pushGate(b!).id, 'approve');
+      expect(publisher.bases.at(-1)).toBe(pipeline.getTask(a!.id).branch); // a stacked draft PR
+    });
+
+    it('sends the milestones back to the architect with my comment', async () => {
+      const epic = startEpic();
+      await settle();
+      runner.queue('splitting', () => ({ text: breakdown(3) }));
+      await pipeline.decideGate(gateOf(epic, 'breakdown').id, 'reject', 'Do auth first');
+      await settle();
+      expect(statusOf(epic)).toBe('awaiting_breakdown_approval');
+      expect(runner.calls.filter((c) => c.step === 'splitting').at(-1)!.prompt).toContain('Do auth first');
+      expect(() => pipeline.replanNow(epic.id, 'x')).toThrow(/epic/);
+    });
+
+    it('blocks a milestone whose predecessor was discarded; resuming starts it without it', async () => {
+      const epic = startEpic();
+      await settle();
+      await pipeline.decideGate(gateOf(epic, 'breakdown').id, 'approve');
+      const [a, b] = children(epic);
+      await pipeline.action(a!.id, 'discard');
+      await settle();
+      expect(statusOf(b!)).toBe('blocked');
+      expect(pipeline.getTask(b!.id).statusNote).toContain(`#${a!.id} it builds on was discarded`);
+      await pipeline.action(b!.id, 'resume');
+      await settle();
+      expect(statusOf(b!)).toBe('awaiting_plan_approval');
+      expect(pipeline.getTask(b!.id).baseBranch).toBeNull();
+    });
+
+    it('only treats size L requests as epics', async () => {
+      runner.queue('intake', () => ({ text: docs.task({ size: 'M', epic: true }) }));
+      const t = pipeline.createTask({ repoId: repo.id, input: 'Medium thing' });
+      await settle();
+      expect(statusOf(t)).toBe('awaiting_plan_approval');
+      expect(steps()).not.toContain('splitting');
     });
   });
 

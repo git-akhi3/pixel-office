@@ -68,6 +68,8 @@ export function waitingOnYou(task: Task, gates: Gate[]): string | null {
   switch (task.status) {
     case 'awaiting_plan_approval':
       return 'approve or reject the plan';
+    case 'awaiting_breakdown_approval':
+      return 'approve or reject the milestone split';
     case 'awaiting_push_approval':
       return 'approve or reject the push (opens a draft PR)';
     case 'awaiting_review_post':
@@ -126,6 +128,7 @@ export function describeTask(task: Task, ctx: StatusContext): string {
   const alert = ['blocked', 'paused', 'stopped'].includes(task.status) ? latestAlert(ctx.db, task.id) : null;
   if (alert && alert !== task.statusNote) lines.push(`• Last alert: ${esc(clip(alert, 300))}`);
   if (task.prUrl) lines.push(`• PR: ${task.prUrl}`);
+  if (task.parentId) lines.push(`• Milestone of #${task.parentId}${task.dependsOn ? `, after #${task.dependsOn}` : ''}`);
   lines.push('• No time estimate: the office doesn\'t predict one. The stage count is a rough guide only.');
   lines.push(`<${ctx.publicUrl}/#/task/${task.id}|Open in office>`);
   return lines.join('\n');

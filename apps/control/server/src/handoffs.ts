@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 
-export type DocName = 'task' | 'diagnosis' | 'research' | 'brief' | 'plan' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro' | 'pr-review';
+export type DocName = 'task' | 'diagnosis' | 'research' | 'brief' | 'plan' | 'breakdown' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro' | 'pr-review';
 
 export interface Contract {
   doc: DocName;
@@ -14,6 +14,9 @@ export interface Contract {
   schema: z.ZodType;
   format: string;
 }
+
+/** An epic is split into at most this many milestone tasks. */
+export const MAX_MILESTONES = 8;
 
 const bool = z.union([z.boolean(), z.enum(['true', 'false']).transform((v) => v === 'true')]);
 
@@ -27,6 +30,8 @@ export const CONTRACTS = {
       size: z.enum(['S', 'M', 'L']),
       /** The route through the team. Missing or unknown means standard; the office checks it against the rest. */
       lane: z.enum(['trivial', 'small', 'standard']).optional().catch(undefined),
+      /** Far too big for one task: the architect splits it into milestone tasks instead of planning it. */
+      epic: bool.optional().catch(undefined),
       needs_debugger: bool,
       needs_researcher: bool,
       design_review: bool,
@@ -43,6 +48,7 @@ title: <short task title, under 60 characters>
 kind: feature | bug
 size: S | M | L          # S: under an hour of focused work, M: half a day, L: more
 lane: trivial | small | standard   # see "Route" below
+epic: true | false       # true only for size L requests that are several features or days of work (see "Route")
 needs_debugger: true | false    # true only for bugs whose cause is unclear
 needs_researcher: true | false  # true only if external docs/APIs must be checked first
 design_review: true | false     # true for UI or architecture changes: the plan gets a design section
@@ -92,6 +98,28 @@ reproduced: true | false
 
 ## Uncertain
 - <anything the sources disagree on or do not cover>`,
+  },
+  splitting: {
+    doc: 'breakdown',
+    maxLines: 120,
+    schema: z.object({ milestones: z.coerce.number().int().min(2).max(MAX_MILESTONES) }),
+    format: `---
+milestones: <how many, 2-${MAX_MILESTONES}>
+---
+## Overview
+<2-4 lines: the end state, and why the milestones come in this order>
+
+## Milestones
+### 1. <title, under 60 characters>
+<what this milestone delivers, written as a request to the team: scope, then acceptance criteria as bullets.
+Each milestone is planned, built, reviewed and opened as its own draft PR, on top of the previous one.
+Keep each one to a few days of work at most, and make the first one the foundation (setup, skeleton).>
+
+### 2. <title>
+<...>
+
+## Not in these milestones
+- <what is left out, or "nothing">`,
   },
   planning: {
     doc: 'plan',
@@ -254,6 +282,16 @@ export function parseDoc(text: string): ParsedDoc {
 }
 
 /** Returns a correction message for the agent, or null when the output meets its contract. */
+/** Milestones of an epic's breakdown.md, in order. */
+export function parseMilestones(text: string): Array<{ title: string; body: string }> {
+  const section = parseDoc(text).body.split(/^## Milestones\s*$/m)[1]?.split(/^## /m)[0] ?? '';
+  const parts = section.split(/^### \d+\.\s+/m).slice(1);
+  return parts.map((p) => {
+    const [first = '', ...rest] = p.split('\n');
+    return { title: first.trim().slice(0, 80), body: rest.join('\n').trim() };
+  }).filter((m) => m.title && m.body);
+}
+
 export function validateDoc(step: ContractStep, text: string): string | null {
   const contract: Contract = CONTRACTS[step];
   if (!text.trim()) return 'Your final message was empty. Reply with only the handoff document in the required format.';
@@ -267,6 +305,13 @@ export function validateDoc(step: ContractStep, text: string): string | null {
   if (!meta.success) {
     const issues = meta.error.issues.map((i) => `${i.path.join('.') || 'front matter'}: ${i.message}`).join('; ');
     return `The front matter does not match the required format (${issues}). Reply with the whole document again, fixed. Required format:\n\n${contract.format}`;
+  }
+  if (step === 'splitting') {
+    const found = parseMilestones(text).length;
+    const said = (meta.data as { milestones: number }).milestones;
+    if (found !== said) {
+      return `The front matter says ${said} milestones but the Milestones section has ${found} (each needs a "### <n>. <title>" heading and a description). Reply with the whole document again, fixed.`;
+    }
   }
   const lines = parsed.body.split('\n').length;
   if (lines > contract.maxLines) {

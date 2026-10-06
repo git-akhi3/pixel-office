@@ -39,6 +39,8 @@ const JOBS: Record<ContractStep, string> = {
     'Size and route this task. Skim the repo only as much as you need to judge it. Do not plan the implementation.',
   debugging: 'Find the root cause of this bug. Reproduce it first. Do not fix it.',
   researching: 'Answer the external questions this task depends on (libraries, APIs, docs), with sources.',
+  splitting:
+    "This request is far too big for one task. Don't plan the implementation: split it into milestones, each one a task the team can plan, build, review and open as a draft PR on its own, on top of the previous one. Read the repo first so the first milestone fits what is already there. The owner approves the split, then each milestone runs in order.",
   planning:
     'Write the implementation plan. Read the relevant code first. The coder will follow it exactly and may only touch "files_in_scope".',
   coding:
@@ -57,6 +59,7 @@ const INPUTS: Record<ContractStep, DocName[]> = {
   intake: [],
   debugging: ['task'],
   researching: ['task', 'diagnosis'],
+  splitting: ['task', 'research'],
   planning: ['task', 'diagnosis', 'research', 'brief'],
   coding: ['task', 'plan'],
   reviewing: ['plan', 'changes'],
@@ -101,6 +104,8 @@ const ROUTE_RULES = [
   '- standard: everything else, and whenever you are unsure. The architect plans it and the owner approves the plan.',
   "The office checks the coder's diff and moves a task up a lane when it turns out bigger, and anything that needs a debugger, research, a design review or a briefing is standard anyway.",
   "Don't pick skills for roles your lane skips (trivial: architect, reviewer, tester; small: architect).",
+  '',
+  'Epic: set epic: true (with size L and lane standard) only when the request is several features or more than a few days of work, such as a whole app or a large subsystem. The architect then splits it into milestone tasks for the owner to approve, instead of planning it as one.',
 ].join('\n');
 
 function repoNotes(worktree: string): string | null {

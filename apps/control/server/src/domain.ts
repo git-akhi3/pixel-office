@@ -11,6 +11,8 @@ export const TASK_STATUSES = [
   'planning', // architect writes plan.md
   'awaiting_answer', // the architect's briefing question waited 15 minutes: parked until I answer
   'awaiting_plan_approval',
+  'splitting', // epics: the architect splits the request into milestone tasks (breakdown.md)
+  'awaiting_breakdown_approval',
   'coding',
   'reviewing',
   'testing',
@@ -38,6 +40,7 @@ export const AGENT_STEPS: Record<string, Role> = {
   debugging: 'debugger',
   researching: 'researcher',
   planning: 'architect',
+  splitting: 'architect',
   coding: 'coder',
   reviewing: 'reviewer',
   testing: 'tester',
@@ -68,7 +71,7 @@ export function maxLane(a: Lane, b: Lane): Lane {
   return LANES.indexOf(a) >= LANES.indexOf(b) ? a : b;
 }
 
-export type GateKind = 'plan' | 'push' | 'command' | 'review_post' | 'question';
+export type GateKind = 'plan' | 'push' | 'command' | 'review_post' | 'question' | 'breakdown';
 export type GateStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 export type GateDecision = 'approve' | 'reject' | 'allow_once' | 'allow_always' | 'deny';
 
@@ -81,9 +84,11 @@ export function boardColumn(status: TaskStatus): string {
     case 'debugging':
     case 'researching':
     case 'planning':
+    case 'splitting':
       return 'Planning';
     case 'awaiting_answer':
     case 'awaiting_plan_approval':
+    case 'awaiting_breakdown_approval':
     case 'awaiting_push_approval':
     case 'awaiting_review_post':
     case 'blocked':

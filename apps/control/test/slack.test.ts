@@ -184,6 +184,17 @@ describe('SlackBridge', () => {
     expect(t.updated.at(-1)!.text).toContain('Approved');
   });
 
+  it('posts an epic\'s milestone split for approval, and the split', async () => {
+    const task = t.db.insert(schema.tasks).values({ repoId: t.repo.id, title: 'Chat app', input: 'x', status: 'awaiting_breakdown_approval', slackChannel: DM, slackThreadTs: '50.1' }).returning().get();
+    const gate = t.db.insert(schema.gates).values({ taskId: task.id, kind: 'breakdown' }).returning().get();
+    t.bus.emit(task.id, 'gate', { gateId: gate.id, kind: 'breakdown', subject: null, status: 'pending', auto: false });
+    t.bus.emit(task.id, 'epic_split', { children: [7, 8] });
+    await t.settle();
+    const texts = t.posted.map((p) => JSON.stringify(p.blocks ?? p.text));
+    expect(texts.some((x) => x.includes('Milestones ready for approval'))).toBe(true);
+    expect(t.posted.some((p) => p.text.includes('Split into 2 milestone tasks: #7, #8'))).toBe(true);
+  });
+
   it('only obeys button taps from the owner', async () => {
     expect(await t.bridge.onButton('U0STRANGER', 'office_gate:3:approve')).toBeNull();
     expect(t.calls).toEqual([]);

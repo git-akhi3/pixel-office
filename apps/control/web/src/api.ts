@@ -5,7 +5,7 @@ export type TaskStatus = string;
 export interface Gate {
   id: number;
   taskId: number;
-  kind: 'plan' | 'push' | 'command' | 'review_post' | 'question';
+  kind: 'plan' | 'push' | 'command' | 'review_post' | 'question' | 'breakdown';
   status: 'pending' | 'approved' | 'rejected' | 'cancelled';
   subject: string | null;
   decision: string | null;
@@ -125,6 +125,9 @@ export interface TaskDetail {
   alerts: OfficeEvent[];
   reviewComments: ReviewComment[];
   questions: Question[];
+  /** Epics: the milestone tasks it was split into. Milestones: their epic. */
+  milestones: Array<{ id: number; title: string; status: TaskStatus; dependsOn: number | null }>;
+  parent: { id: number; title: string; status: TaskStatus } | null;
 }
 
 export interface Repo {

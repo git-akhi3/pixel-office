@@ -1574,6 +1574,19 @@ input.mono {
   align-items: center;
   gap: 6px;
 }
+/* An epic's milestone tasks, in order. */
+.milestones {
+  margin: 12px 0 0;
+  padding-left: 24px;
+  font-size: var(--fs-sm);
+}
+.milestones li {
+  margin: 4px 0;
+}
+.milestones .badge {
+  vertical-align: middle;
+}
+
 .note {
   margin: 12px 0 0;
   padding: 8px 12px;
