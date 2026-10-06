@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { OfficeConfig } from './config.js';
 import { getSettings, schema, setSetting, usagePause, type Db } from './db/index.js';
 import { boardColumn, ROLES, TASK_STATUSES } from './domain.js';
+import { attachmentsDir, MAX_ATTACHMENT_BYTES, servedAs, Uploads } from './attachments.js';
 import { isWrapperSkill, listSkills, loadAgents, parseAgent, parseSkill, SKILL_NAME } from './agents.js';
 import { PICKABLE_ROLES } from './prompts.js';
 import { readSourceInfo, SkillImporter, updateAvailable } from './skillImport.js';
@@ -32,6 +33,7 @@ export interface ServerDeps {
   knowledge: Knowledge;
   graphs: Graphs;
   pixel?: () => PixelBridge;
+  uploads?: Uploads;
 }
 
 const id = z.coerce.number().int().positive();
@@ -117,6 +119,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         title: z.string().max(80).optional(),
         skills: z.partialRecord(z.enum(PICKABLE_ROLES as [string, ...string[]]), z.array(z.string().regex(SKILL_NAME)).max(10)).optional(),
         grillMode: z.enum(['auto', 'always', 'never']).optional(),
+        attachments: z.array(z.string().regex(/^[0-9a-f]{24}$/)).max(10).optional(),
+        links: z.array(z.string().max(2000)).max(10).optional(),
       })
       .parse(req.body);
     return summary(pipeline.createTask(body));
@@ -140,6 +144,36 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         .where(and(eq(schema.events.taskId, taskId), eq(schema.events.type, 'alert')))
         .all(),
     };
+  });
+
+  // ---------------------------------------------------------------- attachments
+
+  const uploads = deps.uploads ?? new Uploads(config.uploadsDir);
+  // Files arrive as raw bytes; the name comes in a header (URI-encoded).
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: MAX_ATTACHMENT_BYTES + 1024 }, (_req, body, done) => done(null, body));
+  app.post('/api/uploads', { bodyLimit: MAX_ATTACHMENT_BYTES + 1024 }, async (req) => {
+    const raw = req.headers['x-filename'];
+    const name = typeof raw === 'string' ? decodeURIComponent(raw) : '';
+    if (!name) throw new Error('Missing the file name (x-filename).');
+    if (!Buffer.isBuffer(req.body)) throw new Error('Send the file as application/octet-stream.');
+    return uploads.save(name, req.body);
+  });
+
+  app.get('/api/tasks/:id/attachments/:name', async (req, reply) => {
+    const p = req.params as { id: string; name: string };
+    const task = pipeline.getTask(id.parse(p.id));
+    const a = task.attachments.find((x) => x.name === p.name);
+    if (!a) return reply.code(404).send({ error: 'no such attachment' });
+    const file = join(attachmentsDir(docs.dir(task.id)), a.name);
+    if (!existsSync(file)) return reply.code(404).send({ error: 'the file is gone' });
+    const { type, inline } = servedAs(a.name);
+    return reply
+      .type(type)
+      .header('x-content-type-options', 'nosniff')
+      // Sandboxed, so an attachment can never run script on the board's origin (a PDF needs the viewer, which sandbox blocks).
+      .header('content-security-policy', type === 'application/pdf' ? "default-src 'none'; object-src 'self'; plugin-types application/pdf" : "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox")
+      .header('content-disposition', `${inline ? 'inline' : 'attachment'}; filename="${a.name}"`)
+      .send(readFileSync(file));
   });
 
   app.get('/api/tasks/:id/docs/:file', async (req, reply) => {

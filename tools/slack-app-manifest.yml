@@ -19,6 +19,7 @@ oauth_config:
       - im:history # read your DMs to the bot (new tasks, thread commands)
       - im:read
       - im:write # open the DM with you
+      - files:read # files you attach to a task message become its attachments
       - groups:history # read the private channel shared with an AI assistant (optional)
 settings:
   event_subscriptions:

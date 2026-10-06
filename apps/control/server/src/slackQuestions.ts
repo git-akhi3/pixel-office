@@ -122,7 +122,8 @@ export class SlackQuestions {
     ];
     const round = [...(answeredSoFar ? [button('send', "Send what I've answered")] : []), button('enough', 'Enough, start planning', 'danger')];
     return [
-      { type: 'section', text: { type: 'mrkdwn', text: `${head}\n${body.join('\n\n')}` } },
+      // Slack refuses a section over 3000 characters.
+      { type: 'section', text: { type: 'mrkdwn', text: clip(`${head}\n${body.join('\n\n')}`, 2900) } },
       { type: 'actions', elements: answers },
       { type: 'actions', elements: round },
       { type: 'context', elements: [{ type: 'mrkdwn', text: 'Or reply in this thread with your own answer.' }] },

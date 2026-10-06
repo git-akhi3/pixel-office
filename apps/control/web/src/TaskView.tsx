@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type Gate, type OfficeEvent, type TaskDetail } from './api';
+import { api, fileSize, type Gate, type OfficeEvent, type Task, type TaskDetail } from './api';
 import { flushReviewEdits, ReviewPanel } from './Review';
 import { Briefing } from './Briefing';
 import { TaskSkills } from './Skills';
@@ -191,6 +191,7 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
         )}
       </div>
 
+      <Attachments task={task} />
       <TaskSkills task={task} onChanged={load} onError={onError} />
 
       {task.kind === 'review' && <ReviewPanel task={task} comments={detail.reviewComments} onChanged={load} onError={onError} />}
@@ -232,6 +233,34 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
       {tab === 'activity' && <Activity events={events} />}
       {tab === 'runs' && <Runs runs={runs} />}
     </div>
+  );
+}
+
+/** Files and links I attached: every agent sees the list; the manager and architect read them. */
+function Attachments({ task }: { task: Task }) {
+  if (!task.attachments.length && !task.links.length) return null;
+  return (
+    <section className="attachments" aria-label="Attachments">
+      <Icon name="clip" />
+      <ul>
+        {task.attachments.map((a) => (
+          <li key={a.name}>
+            <a href={`/api/tasks/${task.id}/attachments/${encodeURIComponent(a.name)}`} target="_blank" rel="noreferrer">
+              {a.name}
+            </a>
+            <span className="hint">{fileSize(a.size)}</span>
+          </li>
+        ))}
+        {task.links.map((l) => (
+          <li key={l}>
+            <a href={l} target="_blank" rel="noreferrer noopener">
+              {l.replace(/^https?:\/\//, '').slice(0, 60)}
+              <Icon name="link" size={8} />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

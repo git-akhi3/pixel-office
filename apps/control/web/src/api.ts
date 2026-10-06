@@ -228,8 +228,26 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   tasks: () => request<Task[]>('GET', '/api/tasks'),
   task: (id: number) => request<TaskDetail>('GET', `/api/tasks/${id}`),
-  createTask: (body: { repoId: number; input: string; kind?: 'feature' | 'bug'; skills?: Partial<Record<Role, string[]>>; grillMode?: Task['grillMode'] }) =>
-    request<Task>('POST', '/api/tasks', body),
+  createTask: (body: {
+    repoId: number;
+    input: string;
+    kind?: 'feature' | 'bug';
+    skills?: Partial<Record<Role, string[]>>;
+    grillMode?: Task['grillMode'];
+    attachments?: string[];
+    links?: string[];
+  }) => request<Task>('POST', '/api/tasks', body),
+  /** Uploads one file for a mission; the returned id goes into createTask's attachments. */
+  upload: async (file: File): Promise<Upload> => {
+    const res = await fetch('/api/uploads', {
+      method: 'POST',
+      headers: { 'x-office': '1', 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent(file.name) },
+      body: file,
+    });
+    const data = (await res.json().catch(() => ({}))) as Upload & { error?: string; message?: string };
+    if (!res.ok) throw new Error(data.error === 'Payload Too Large' || res.status === 413 ? `${file.name} is over 10 MB.` : (data.error ?? `HTTP ${res.status}`));
+    return data;
+  },
   setTaskSkills: (id: number, role: Role, skills: string[]) => request<Task>('PUT', `/api/tasks/${id}/skills`, { role, skills }),
   answerQuestion: (id: number, answer: { answer?: string; delegate?: boolean }) => request<Question>('POST', `/api/questions/${id}`, answer),
   briefing: (taskId: number, action: 'send' | 'enough') => request('POST', `/api/tasks/${taskId}/briefing`, { action }),
@@ -271,6 +289,20 @@ export const api = {
   settings: () => request<Settings>('GET', '/api/settings'),
   saveSettings: (s: Partial<Settings>) => request<Settings>('PUT', '/api/settings', s),
 };
+
+export interface Upload {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+}
+
+export const ACCEPTED_FILES = '.md,.markdown,.txt,.log,.csv,.json,.yaml,.yml,.xml,.html,.pdf,.png,.jpg,.jpeg,.gif,.webp,.svg';
+export const MAX_MISSION_BYTES = 25 * 1024 * 1024;
+
+export function fileSize(n: number): string {
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
 
 export type LiveMessage = { type: 'task'; task: Task } | { type: 'event'; event: OfficeEvent };
 

@@ -16,11 +16,12 @@ const MAX_PER_ROUND = 8;
 
 export const ROUND_FORMAT = `---
 questions:
-  - title: <short title, under 60 characters>
-    question: <the question, with the context the owner needs to answer it>
-    options: [<option>, <option>]          # optional, 2 to 5 short choices
-    recommended: <your recommended answer, and why in a few words>
----`;
+  - title: "<short title, under 60 characters>"
+    question: "<the question, with the context the owner needs to answer it>"
+    options: ["<option>", "<option>"]          # optional, 2 to 5 short choices
+    recommended: "<your recommended answer, and why in a few words>"
+---
+Put every value in double quotes (escape a quote inside as \\"), so colons and # in the text can't break the YAML.`;
 
 const questionSchema = z.object({
   title: z.string().trim().min(1).max(80),
@@ -39,7 +40,12 @@ export function parseRound(text: string): RoundQuestion[] | string | null {
   let meta: Record<string, unknown>;
   try {
     meta = parseDoc(text).meta;
-  } catch {
+  } catch (e) {
+    // Broken YAML in what is clearly a round (an unquoted colon, a #): say so, rather than letting it
+    // fail as a malformed plan.
+    if (/^---\s*\n\s*questions\s*:/m.test(text.trim())) {
+      return `That question round isn't valid YAML (${(e as Error).message.split('\n')[0]}). Send it again with every value in double quotes:\n\n${ROUND_FORMAT}`;
+    }
     return null; // not valid YAML: let the plan's own validation explain it
   }
   if (!('questions' in meta)) return null;

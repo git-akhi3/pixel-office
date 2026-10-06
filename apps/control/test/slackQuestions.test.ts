@@ -158,6 +158,12 @@ describe('briefing questions through the bridge', () => {
     expect(t.calls).toEqual([]);
     await bridge.onMessage({ user: OWNER, channel: CH, ts: '9.4', thread_ts: '9.1', text: 'Per variant, with its own stock' });
     expect(t.calls).toEqual([`answer:${t.qs[0]!.id}:Per variant, with its own stock:slack`]);
+    // An answer that starts with a command word is still an answer.
+    t.calls.length = 0;
+    t.bus.emit(t.task.id, 'question_answered', { questionId: t.qs[0]!.id, gateId: t.gate.id });
+    await t.settle();
+    await bridge.onMessage({ user: OWNER, channel: CH, ts: '9.41', thread_ts: '9.1', text: 'Discard the per-item price, use the variant price' });
+    expect(t.calls).toEqual([`answer:${t.qs[1]!.id}:Discard the per-item price, use the variant price:slack`]);
     await bridge.onMessage({ user: OWNER, channel: CH, ts: '9.5', thread_ts: '9.1', text: 'send' });
     expect(t.calls.at(-1)).toBe(`briefing:${t.task.id}:send`);
     bridge.stop();

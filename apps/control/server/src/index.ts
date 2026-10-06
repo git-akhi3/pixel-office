@@ -12,6 +12,7 @@ import { TaskDocs } from './handoffs.js';
 import { Pipeline } from './pipeline.js';
 import { SdkRunner } from './runner.js';
 import { buildServer } from './server.js';
+import { Uploads } from './attachments.js';
 import { startSlack } from './slack.js';
 
 const config = loadConfig();
@@ -49,8 +50,9 @@ const runner = new SdkRunner(token, (snapshot) =>
   }),
 );
 const docs = new TaskDocs(config.tasksDir);
-const pipeline = new Pipeline({ db, bus, config, agents, runner, publisher: new GhPublisher(), docs, knowledge, graphs });
-const app = await buildServer({ db, bus, config, pipeline, docs, knowledge, graphs, pixel: () => bridge });
+const uploads = new Uploads(config.uploadsDir);
+const pipeline = new Pipeline({ db, bus, config, agents, runner, publisher: new GhPublisher(), docs, knowledge, graphs, uploads });
+const app = await buildServer({ db, bus, config, pipeline, docs, knowledge, graphs, uploads, pixel: () => bridge });
 
 // Show the office's agents in the Pixel Agents office (no-op while it isn't running).
 let pixelSessionId = getSettings(db).pixelSessionId;
@@ -76,7 +78,7 @@ try {
   const env = loadEnvFile(config.envFile);
   const slackSettings = slackConfig(env);
   if (slackSettings) {
-    slack = await startSlack(slackSettings, { db, bus, pipeline, docs, publicUrl: remoteConfig(config, env).publicUrl });
+    slack = await startSlack(slackSettings, { db, bus, pipeline, docs, uploads, publicUrl: remoteConfig(config, env).publicUrl });
     await slack.bridge.announce();
     console.log('Slack: connected. DM the bot to start a task.');
   }

@@ -8,7 +8,8 @@ import type { Gate, Task } from '../server/src/db/schema.js';
 import type { GateDecision } from '../server/src/domain.js';
 import { EventBus } from '../server/src/events.js';
 import type { Pipeline } from '../server/src/pipeline.js';
-import { esc, SlackBridge, type SlackApi } from '../server/src/slack.js';
+import { Uploads } from '../server/src/attachments.js';
+import { esc, isSlackFileUrl, SlackBridge, type SlackApi } from '../server/src/slack.js';
 
 const OWNER = 'U0OWNER0001';
 const DM = 'D0DM';
@@ -40,6 +41,10 @@ function setup(repoNames: string[] = ['alpha'], assistant = false) {
     },
     updateMessage: async (a) => void updated.push(a),
     openDm: async () => DM,
+    downloadFile: async (url: string) => {
+      if (url.includes('fail')) throw new Error('download failed (500)');
+      return Buffer.from(`# file from ${url}`);
+    },
   };
 
   const calls: string[] = [];
@@ -47,8 +52,8 @@ function setup(repoNames: string[] = ['alpha'], assistant = false) {
     getTask: (id: number) => db.select().from(schema.tasks).where(eq(schema.tasks.id, id)).get()!,
     tokensUsed: () => 1500,
     pendingGates: (taskId?: number): Gate[] => db.select().from(schema.gates).where(eq(schema.gates.status, 'pending')).all().filter((g) => taskId === undefined || g.taskId === taskId),
-    createTask: (input: { repoId: number; input: string }) => {
-      calls.push(`create:${input.repoId}:${input.input}`);
+    createTask: (input: { repoId: number; input: string; attachments?: string[] }) => {
+      calls.push(`create:${input.repoId}:${input.input}${input.attachments ? `:files=${input.attachments.length}` : ''}`);
       const task = db.insert(schema.tasks).values({ repoId: input.repoId, title: input.input.slice(0, 80), input: input.input }).returning().get();
       bus.emit(task.id, 'created', { title: task.title });
       return task;
@@ -67,7 +72,8 @@ function setup(repoNames: string[] = ['alpha'], assistant = false) {
   } as unknown as Pipeline;
 
   const docs = { latest: () => '---\nx: 1\n---\n## Goal\nAdd greet().' } as never;
-  const bridge = new SlackBridge({ db, bus, pipeline, docs, ownerId: OWNER, botUserId: 'U0BOT0001', ...(assistant ? { channelId: CH, assistantIds: [INSTINCT] } : {}), publicUrl: 'http://127.0.0.1:4100', api });
+  const uploads = new Uploads(join(mkdtempSync(join(tmpdir(), 'slack-up-')), 'uploads'));
+  const bridge = new SlackBridge({ db, bus, pipeline, docs, uploads, ownerId: OWNER, botUserId: 'U0BOT0001', ...(assistant ? { channelId: CH, assistantIds: [INSTINCT] } : {}), publicUrl: 'http://127.0.0.1:4100', api });
   const settle = () => new Promise((r) => setTimeout(r, 20));
   return { db, bus, bridge, posted, updated, calls, settle, repo };
 }
@@ -297,3 +303,30 @@ describe('SlackBridge with an assistant channel', () => {
 
 // Keeps the Task type honest for the stubs above.
 void (null as unknown as Task);
+
+describe('files on a Slack task message', () => {
+  it('become the new task\'s attachments; problems are reported, not fatal', async () => {
+    const t = setup();
+    await t.bridge.start();
+    const file = (name: string, url = `https://files.slack.com/files-pri/T1-F1/${name}`) => ({ name, size: 10, url_private_download: url });
+    await t.bridge.onMessage({
+      ...dm('alpha: match this mock-up'),
+      subtype: 'file_share',
+      files: [file('spec.md'), file('virus.exe'), file('evil.md', 'https://evil.example/spec.md'), file('broken.md', 'https://files.slack.com/fail.md')],
+    });
+    await t.settle();
+    expect(t.calls).toEqual([`create:${t.repo.id}:match this mock-up:files=1`]);
+    const reply = t.posted.find((p) => p.text.includes('queued'))!.text;
+    expect(reply).toContain('with 1 attachment');
+    expect(reply).toContain('virus.exe: only text, Markdown, PDF and image files');
+    expect(reply).toContain('evil.md: not a Slack file link');
+    expect(reply).toContain('broken.md: download failed (500)');
+  });
+
+  it('only fetches from files.slack.com over https', () => {
+    expect(isSlackFileUrl('https://files.slack.com/files-pri/T1/x.png')).toBe(true);
+    expect(isSlackFileUrl('http://files.slack.com/x')).toBe(false);
+    expect(isSlackFileUrl('https://files.slack.com.evil.example/x')).toBe(false);
+    expect(isSlackFileUrl('nope')).toBe(false);
+  });
+});

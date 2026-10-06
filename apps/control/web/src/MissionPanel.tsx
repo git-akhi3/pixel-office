@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type Repo, type Role, type Task } from './api';
+import { ACCEPTED_FILES, api, fileSize, MAX_MISSION_BYTES, type Repo, type Role, type Task, type Upload } from './api';
 import { Icon, RoleIcon } from './icons';
 import { MissionSkills, useCatalog } from './Skills';
 
@@ -40,6 +40,33 @@ export function MissionPanel({
   const [busy, setBusy] = useState(false);
   const [skills, setSkills] = useState<Partial<Record<Role, string[]>>>({});
   const [grillMode, setGrillMode] = useState<Task['grillMode']>('auto');
+  const [files, setFiles] = useState<Upload[]>([]);
+  const [uploading, setUploading] = useState(0);
+  const [links, setLinks] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // Files upload as soon as I pick them, so launching is instant; the task claims them.
+  const addFiles = async (list: FileList | File[]) => {
+    const picked = [...list];
+    let total = files.reduce((s, f) => s + f.size, 0);
+    for (const file of picked) {
+      if (total + file.size > MAX_MISSION_BYTES) {
+        onError(new Error(`${file.name}: the attachments would be over 25 MB together.`));
+        continue;
+      }
+      total += file.size;
+      setUploading((n) => n + 1);
+      try {
+        const up = await api.upload(file);
+        setFiles((prev) => [...prev, up]);
+      } catch (e) {
+        onError(e);
+      } finally {
+        setUploading((n) => n - 1);
+      }
+    }
+  };
   // Loaded once the panel is first opened, and again on each open (skills may have been imported since).
   const catalog = useCatalog(onError, open);
   const briefRef = useRef<HTMLTextAreaElement>(null);
@@ -59,17 +86,30 @@ export function MissionPanel({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  const ready = mode === 'review' ? !!prUrl.trim() : repoId !== '' && !!input.trim();
+  const ready = mode === 'review' ? !!prUrl.trim() : repoId !== '' && !!input.trim() && uploading === 0;
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!ready || busy) return;
     setBusy(true);
     try {
       const task =
-        mode === 'review' ? await api.createReview(prUrl.trim()) : await api.createTask({ repoId: repoId as number, input, kind, skills, grillMode });
+        mode === 'review' ? await api.createReview(prUrl.trim()) : await api.createTask({
+              repoId: repoId as number,
+              input,
+              kind,
+              skills,
+              grillMode,
+              attachments: files.map((f) => f.id),
+              links: links
+                .split(/\s+/)
+                .map((l) => l.trim())
+                .filter(Boolean),
+            });
       setInput('');
       setSkills({});
       setGrillMode('auto');
+      setFiles([]);
+      setLinks('');
       setPrUrl('');
       onCreated(task);
     } catch (err) {
@@ -167,6 +207,64 @@ export function MissionPanel({
                         placeholder="Describe the task as you would to a teammate: what, why, and anything they should know (links, error messages, files)."
                       />
                     </label>
+                    <div className="field">
+                      <span className="field-label">Attachments</span>
+                      <div
+                        className={`dropzone${dragging ? ' dragging' : ''}`}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          setDragging(true);
+                        }}
+                        onDragLeave={() => setDragging(false)}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          setDragging(false);
+                          void addFiles(e.dataTransfer.files);
+                        }}
+                      >
+                        <Icon name="clip" />
+                        <span>
+                          Drop a spec, screenshot or PDF here, or{' '}
+                          <button type="button" className="link" onClick={() => fileRef.current?.click()}>
+                            choose files
+                          </button>
+                        </span>
+                        <span className="hint">Markdown, text, PDF, images · 10 MB each, 25 MB per mission</span>
+                        <input
+                          ref={fileRef}
+                          type="file"
+                          multiple
+                          accept={ACCEPTED_FILES}
+                          hidden
+                          onChange={(e) => {
+                            if (e.target.files) void addFiles(e.target.files);
+                            e.target.value = '';
+                          }}
+                        />
+                      </div>
+                      {(files.length > 0 || uploading > 0) && (
+                        <ul className="file-list">
+                          {files.map((f) => (
+                            <li key={f.id}>
+                              <Icon name="clip" size={8} />
+                              <span className="file-name">{f.name}</span>
+                              <span className="hint">{fileSize(f.size)}</span>
+                              <button type="button" className="icon-btn" onClick={() => setFiles((prev) => prev.filter((x) => x.id !== f.id))} aria-label={`Remove ${f.name}`}>
+                                <Icon name="close" size={8} />
+                              </button>
+                            </li>
+                          ))}
+                          {uploading > 0 && <li className="hint">Uploading {uploading}…</li>}
+                        </ul>
+                      )}
+                      <input
+                        className="mono links-input"
+                        value={links}
+                        onChange={(e) => setLinks(e.target.value)}
+                        placeholder="Links (Figma, docs, issues), separated by spaces"
+                        aria-label="Links"
+                      />
+                    </div>
                     <div className="field">
                       <span className="field-label">Grill me first</span>
                       <div className="chips" role="radiogroup" aria-label="Grill me first">

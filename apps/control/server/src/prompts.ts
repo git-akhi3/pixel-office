@@ -27,6 +27,8 @@ export interface PromptContext {
   roleSkills?: Partial<Record<Role, string[]>>;
   /** Planning on a grilled mission: the rules for asking me, and whether the grilling skill is loaded. */
   briefing?: { hasSkill: boolean };
+  /** Where the task's attachments are (realpath), when it has any. */
+  attachmentsDir?: string;
 }
 
 /** Roles a mission can pick skills for (the manager's own intake has already started). */
@@ -101,6 +103,9 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
     parts.push(`## The request (owner's words)\n${task.input}`);
   }
 
+  const attachments = attachmentSection(step, task, ctx.attachmentsDir);
+  if (attachments) parts.push(attachments);
+
   const included = INPUTS[step]
     .map((name) => [name, docs.latest(task.id, name)] as const)
     .filter(([, text]) => text);
@@ -150,5 +155,27 @@ function skillCatalog(task: Task, catalog: Array<{ name: string; description: st
     '',
     `Pick only skills that clearly fit this task, for these roles: ${PICKABLE_ROLES.join(', ')}. Most tasks need none or one or two. Put them under "skills" with a one-line reason per role under "skills_why".`,
   );
+  return lines.join('\n');
+}
+
+/** Steps that must read the attachments; the others open one when they need it. */
+const READS_ATTACHMENTS: ContractStep[] = ['intake', 'planning', 'debugging', 'researching'];
+
+function attachmentSection(step: ContractStep, task: Task, dir: string | undefined): string | null {
+  if (!task.attachments.length && !task.links.length) return null;
+  const kb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+  const lines = ['## Attachments (from the owner)'];
+  if (task.attachments.length && dir) {
+    lines.push(
+      READS_ATTACHMENTS.includes(step)
+        ? 'Read these files before you start; they are part of the request. Use the Read tool (it opens text, PDFs and images); the shell cannot reach them.'
+        : 'Open one with the Read tool only when you need it (for example to check the work against a mock-up or spec). The shell cannot reach them.',
+    );
+    for (const a of task.attachments) lines.push(`- ${dir}/${a.name} (${a.type}, ${kb(a.size)})`);
+  }
+  if (task.links.length) {
+    lines.push('', 'Links the owner added (you may not be able to open them; ask or note it if one matters):');
+    for (const l of task.links) lines.push(`- ${l}`);
+  }
   return lines.join('\n');
 }

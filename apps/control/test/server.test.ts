@@ -188,3 +188,31 @@ describe('server', () => {
     expect(r.statusCode).toBe(404);
   });
 });
+
+describe('attachments', () => {
+  it('uploads a file, attaches it to a new task, and serves it back safely', async () => {
+    const repo = (await app.inject({ method: 'POST', url: '/api/repos', headers, payload: { name: 'app', path: repoPath } })).json() as { id: number };
+    const up = await app.inject({
+      method: 'POST',
+      url: '/api/uploads',
+      headers: { ...headers, 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent('Mock up.png') },
+      payload: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    });
+    expect(up.statusCode).toBe(200);
+    const { id: uploadId, name } = up.json() as { id: string; name: string };
+    expect(name).toBe('Mock-up.png');
+    const created = await app.inject({ method: 'POST', url: '/api/tasks', headers, payload: { repoId: repo.id, input: 'Match the mock-up', attachments: [uploadId], links: ['https://figma.com/file/x'] } });
+    expect(created.statusCode).toBe(200);
+    const task = created.json() as { id: number; attachments: Array<{ name: string }>; links: string[] };
+    expect(task.attachments.map((a) => a.name)).toEqual(['Mock-up.png']);
+    expect(task.links).toEqual(['https://figma.com/file/x']);
+    const file = await app.inject({ method: 'GET', url: `/api/tasks/${task.id}/attachments/Mock-up.png`, headers });
+    expect(file.headers['content-type']).toBe('image/png');
+    expect(file.headers['x-content-type-options']).toBe('nosniff');
+    expect(file.headers['content-security-policy']).toContain('sandbox');
+    expect((await app.inject({ method: 'GET', url: `/api/tasks/${task.id}/attachments/..%2Fplan.md`, headers })).statusCode).toBe(404);
+    // Uploads need the x-office header like every other change.
+    const csrf = await app.inject({ method: 'POST', url: '/api/uploads', headers: { host: '127.0.0.1:4100', 'content-type': 'application/octet-stream', 'x-filename': 'a.md' }, payload: 'x' });
+    expect(csrf.statusCode).toBe(403);
+  });
+});

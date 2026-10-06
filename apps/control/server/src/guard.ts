@@ -15,6 +15,8 @@ export interface GuardContext {
   write: WriteAccess;
   testGlobs: string[];
   allowlist: string[];
+  /** realpaths of extra folders this run may read (never write): the task's attachments. */
+  readRoots?: string[];
 }
 
 export type GuardDecision =
@@ -88,13 +90,15 @@ export function matchesAnyGlob(relPath: string, globs: string[]): boolean {
  * lives under ~/.office, which must not make every file look secret.
  */
 function isSecretFor(ctx: GuardContext, real: string): boolean {
-  return isSecretPath(isInside(ctx.worktree, real) ? `/${relative(ctx.worktree, real)}` : real);
+  // The worktree and the attachment folders live under ~/.office: judge their files by their own path.
+  const root = [ctx.worktree, ...(ctx.readRoots ?? [])].find((r) => isInside(r, real));
+  return isSecretPath(root ? `/${relative(root, real)}` : real);
 }
 
 function checkRead(ctx: GuardContext, p: string): GuardDecision {
   const real = realPath(isAbsolute(p) ? p : join(ctx.worktree, p));
   if (isSecretFor(ctx, real)) return deny(`secrets are off-limits: ${p}`);
-  if (!isInside(ctx.worktree, real) && !isInside(realPath(tmpdir()), real)) {
+  if (!isInside(ctx.worktree, real) && !isInside(realPath(tmpdir()), real) && !(ctx.readRoots ?? []).some((r) => isInside(r, real))) {
     return deny(`reads are limited to the task's worktree: ${p}`);
   }
   return allow();

@@ -13,6 +13,7 @@ import { proposalFromRetro, type Knowledge } from './knowledge.js';
 import type { OfficeConfig } from './config.js';
 import { getSettings, schema, usagePause, type Db } from './db/index.js';
 import type { Gate, GrillMode, Question, Repo, SkillPicks, Task } from './db/schema.js';
+import { attachmentsDir, cleanLinks, Uploads } from './attachments.js';
 import { answersMessage, BRIEFING_WAIT_MS, briefDoc, MAX_BAD_ROUNDS, parseRound, type Delivery, type RoundQuestion } from './briefing.js';
 import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, type GateDecision, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
@@ -54,6 +55,8 @@ export interface PipelineDeps {
   slugOf?: (repo: Repo) => Promise<string | null>;
   /** How long a planning session waits for a question round's answers before parking. */
   briefingWaitMs?: number;
+  /** Files uploaded for missions, claimed when a task is created. */
+  uploads?: Uploads;
 }
 
 export interface NewTask {
@@ -66,6 +69,9 @@ export interface NewTask {
   /** My skill picks per role; these roles are locked for the manager. */
   skills?: Partial<Record<Role, string[]>>;
   grillMode?: GrillMode;
+  /** Upload ids (from POST /api/uploads) and links I attached. */
+  attachments?: string[];
+  links?: string[];
 }
 
 export type TaskAction = 'stop' | 'resume' | 'discard' | 'done';
@@ -85,8 +91,10 @@ export class Pipeline {
   private pending = new Map<number, PendingPermission>();
   /** Planning sessions waiting for my answers to a question round, by task. */
   private waiting = new Map<number, { gateId: number; resolve(delivery: Delivery | null): void }>();
-  /** "Send" or "Enough" pressed while a session was between waiting and parking. */
-  private queuedDelivery = new Map<number, Delivery>();
+  /** "Send", "Enough" or a completed round while no session was waiting for it, by task (for one gate). */
+  private queuedDelivery = new Map<number, { gateId: number; delivery: Delivery }>();
+  /** Tasks I sent back for a new plan while a step ran: that step's interruption isn't a stop. */
+  private replanned = new Set<number>();
   /** Malformed question rounds per task, sent back for a fix up to MAX_BAD_ROUNDS times. */
   private badRounds = new Map<number, number>();
   private timers: NodeJS.Timeout[] = [];
@@ -97,10 +105,13 @@ export class Pipeline {
   private now: () => number;
 
   private agents: Record<Role, AgentDef>;
+  private uploads: Uploads;
 
   constructor(private deps: PipelineDeps) {
     this.now = deps.now ?? Date.now;
     this.agents = deps.agents;
+    // Same folder as the server's upload route, whichever made it.
+    this.uploads = deps.uploads ?? new Uploads(deps.config.uploadsDir);
   }
 
 
@@ -232,6 +243,8 @@ export class Pipeline {
       .set({ status: 'cancelled', decidedAt: this.now() })
       .where(and(eq(schema.gates.kind, 'command'), eq(schema.gates.status, 'pending')))
       .run();
+    // A round answered completely before the restart goes on to the architect.
+    for (const t of db.select().from(schema.tasks).where(eq(schema.tasks.status, 'awaiting_answer')).all()) this.deliverIfReady(t.id);
   }
 
   // ------------------------------------------------------------ tasks
@@ -242,11 +255,19 @@ export class Pipeline {
     if (!text) throw new Error('Describe the task.');
     const title = (input.title?.trim() || text.split('\n')[0]!).slice(0, 80);
     const skillPicks = this.ownerPicks(input.skills);
-    const task = this.deps.db
+    const links = cleanLinks(input.links ?? []);
+    const uploads = input.attachments ?? [];
+    if (uploads.length) this.uploads.check(uploads);
+    let task = this.deps.db
       .insert(schema.tasks)
-      .values({ repoId: input.repoId, input: text, title, kind: input.kind ?? 'feature', baseBranch: input.baseBranch ?? null, skillPicks, grillMode: input.grillMode ?? 'auto' })
+      .values({ repoId: input.repoId, input: text, title, kind: input.kind ?? 'feature', baseBranch: input.baseBranch ?? null, skillPicks, grillMode: input.grillMode ?? 'auto', links })
       .returning()
       .get();
+    // Moved in before the first tick, so intake already sees them.
+    if (uploads.length) {
+      const attachments = this.uploads.claim(uploads, attachmentsDir(this.deps.docs.dir(task.id)));
+      task = this.deps.db.update(schema.tasks).set({ attachments }).where(eq(schema.tasks.id, task.id)).returning().get();
+    }
     this.deps.bus.emit(task.id, 'created', { title });
     this.deps.bus.taskChanged(task);
     void this.tick();
@@ -395,6 +416,7 @@ export class Pipeline {
         ? { catalog: this.skillCatalog(), roleSkills: Object.fromEntries(PICKABLE_ROLES.map((r) => [r, this.agents[r].skills])) }
         : {}),
       ...(grilling ? { briefing: { hasSkill: withGrill !== roleAgent } } : {}),
+      attachmentsDir: realPath(attachmentsDir(docs.dir(task.id))),
     });
 
     const run = db
@@ -414,7 +436,13 @@ export class Pipeline {
       cwd: worktree,
       mcpServers,
       // No shell for PR reviews (see above); the empty allow-list makes any Bash call that slips through ask me.
-      guard: { worktree, write: agent.write, testGlobs: repo.testGlobs, allowlist: step === 'reviewing_pr' ? [] : effectiveAllowlist(repo) },
+      guard: {
+        worktree,
+        write: agent.write,
+        testGlobs: repo.testGlobs,
+        allowlist: step === 'reviewing_pr' ? [] : effectiveAllowlist(repo),
+        ...(task.attachments.length ? { readRoots: [realPath(attachmentsDir(docs.dir(task.id)))] } : {}),
+      },
       signal: abort.signal,
       onEvent: (type, payload) => bus.emit(task.id, type, payload, run.id),
       askPermission: (subject, unmatched) => this.requestPermission(task.id, subject, unmatched),
@@ -425,6 +453,8 @@ export class Pipeline {
     bus.emit(task.id, 'step_end', { step, role, status: outcome.status, error: outcome.error, usage: outcome.usage }, run.id);
 
     task = this.getTask(task.id);
+    // Sent back for a new plan while running: replanNow already set the next step.
+    if (this.replanned.delete(task.id) && outcome.status === 'interrupted') return;
     if (task.status !== step) return; // stopped or discarded while running
 
     if (step === 'retro' && outcome.status !== 'ok' && outcome.status !== 'interrupted') {
@@ -629,6 +659,7 @@ export class Pipeline {
       return;
     }
     const previous = this.deps.docs.latest(task.id, 'plan');
+    this.deps.bus.emit(task.id, 'replanned', { count: task.replanCount + 1 });
     this.update(task.id, {
       replanCount: task.replanCount + 1,
       loopCount: 0,
@@ -795,12 +826,15 @@ export class Pipeline {
     return `The architect is waiting for your answers${open ? ` (${open} open question${open === 1 ? '' : 's'})` : ''}. Planning continues when you answer.`;
   }
 
+  /** "Enough" holds until the plan is sent back (a re-plan may need new answers). */
   private briefingEnded(taskId: number): boolean {
-    return this.deps.db
+    const events = this.deps.db
       .select()
       .from(schema.events)
-      .where(and(eq(schema.events.taskId, taskId), eq(schema.events.type, 'briefing_ended')))
-      .all().length > 0;
+      .where(and(eq(schema.events.taskId, taskId), inArray(schema.events.type, ['briefing_ended', 'replanned', 'replan_requested'])))
+      .orderBy(asc(schema.events.id))
+      .all();
+    return events.at(-1)?.type === 'briefing_ended';
   }
 
   /**
@@ -816,10 +850,13 @@ export class Pipeline {
       this.badRounds.set(taskId, bad);
       return bad <= MAX_BAD_ROUNDS ? round : null; // then it fails as a plan, with the plan's own correction
     }
-    this.badRounds.delete(taskId);
     if (this.briefingEnded(taskId)) {
-      return 'The owner already said that is enough questions. Write the plan now; put anything still open under Risks as an assumption.';
+      // Asked again after "enough": remind it, but not forever.
+      const bad = (this.badRounds.get(taskId) ?? 0) + 1;
+      this.badRounds.set(taskId, bad);
+      return bad <= MAX_BAD_ROUNDS ? 'The owner already said that is enough questions. Write the plan now; put anything still open under Risks as an assumption.' : null;
     }
+    this.badRounds.delete(taskId);
     const gate = this.openRound(taskId, runId, round);
     const delivery = await this.waitForRound(taskId, gate.id, signal);
     if (delivery === null) return 'park';
@@ -827,6 +864,11 @@ export class Pipeline {
   }
 
   private openRound(taskId: number, runId: number, round: RoundQuestion[]): Gate {
+    // A round left open by an earlier session (a failed step, then resume) is replaced, not stacked.
+    for (const old of this.pendingGates(taskId).filter((g) => g.kind === 'question')) {
+      this.deps.db.update(schema.gates).set({ status: 'cancelled', decidedAt: this.now() }).where(eq(schema.gates.id, old.id)).run();
+    }
+    if (this.queuedDelivery.get(taskId)) this.queuedDelivery.delete(taskId);
     const number = Math.max(0, ...this.questions(taskId).map((q) => q.round)) + 1;
     const gate = this.openGate(taskId, 'question', `Round ${number}: ${round.length} question${round.length === 1 ? '' : 's'}`);
     this.deps.db
@@ -867,9 +909,9 @@ export class Pipeline {
       this.waiting.set(taskId, { gateId, resolve: done });
       // Answered already (fast, or before a restart): deliver straight away.
       const queued = this.queuedDelivery.get(taskId);
-      if (queued) {
+      if (queued?.gateId === gateId) {
         this.queuedDelivery.delete(taskId);
-        done(queued);
+        done(queued.delivery);
       } else if (this.roundComplete(gateId)) done('complete');
     });
   }
@@ -886,6 +928,7 @@ export class Pipeline {
     const task = this.getTask(taskId);
     // Messages I sent while the round was open were held back, so the architect gets them with the answers.
     const notes = task.feedback ? [task.feedback] : [];
+    if (this.queuedDelivery.get(taskId)?.gateId === gateId) this.queuedDelivery.delete(taskId);
     db.update(schema.gates).set({ status: 'approved', decision: delivery, decidedAt: this.now() }).where(eq(schema.gates.id, gateId)).run();
     docs.save(taskId, 'brief', briefDoc(this.questions(taskId)));
     this.update(taskId, { feedback: null, statusNote: null });
@@ -911,6 +954,8 @@ export class Pipeline {
       .returning()
       .get();
     bus.emit(q.taskId, 'question_answered', { questionId, gateId: gate.id, via, delegated: !!answer.delegate, answer: updated.answer });
+    // brief.md is kept current, so answers survive even a round that gets cancelled.
+    this.deps.docs.save(q.taskId, 'brief', briefDoc(this.questions(q.taskId)));
     if (this.roundComplete(gate.id)) this.deliver(q.taskId, gate.id, 'complete');
     else this.update(q.taskId, { statusNote: this.waitingNote(q.taskId) });
     return updated;
@@ -932,7 +977,7 @@ export class Pipeline {
     const task = this.getTask(taskId);
     if (task.status !== 'awaiting_answer') {
       // Between the session's wait and its parking (or stopped): delivered once it parks or resumes.
-      this.queuedDelivery.set(taskId, delivery);
+      this.queuedDelivery.set(taskId, { gateId, delivery });
       return;
     }
     const message = this.closeRound(taskId, gateId, delivery);
@@ -951,7 +996,7 @@ export class Pipeline {
     }
     const queued = this.queuedDelivery.get(taskId);
     this.queuedDelivery.delete(taskId);
-    if (queued) this.deliver(taskId, gate.id, queued);
+    if (queued?.gateId === gate.id) this.deliver(taskId, gate.id, queued.delivery);
     else if (this.roundComplete(gate.id)) this.deliver(taskId, gate.id, 'complete');
   }
 
@@ -986,6 +1031,7 @@ export class Pipeline {
       loopCount: 0,
       feedback: `The owner asked for a new plan: ${reason}${previous ? `\n\n### Previous plan (revise it)\n${previous}` : ''}`,
     });
+    if (this.running.has(taskId)) this.replanned.add(taskId);
     this.running.get(taskId)?.abort();
     this.deps.bus.emit(taskId, 'replan_requested', { reason });
     void this.tick();

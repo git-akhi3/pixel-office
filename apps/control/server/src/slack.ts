@@ -15,6 +15,7 @@ import type { TaskDocs } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
 import { listRepos } from './repos.js';
 import { SlackQuestions } from './slackQuestions.js';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type Uploads } from './attachments.js';
 import type { SlackConfig } from './config.js';
 
 /** The slice of Slack's Web API the bridge uses (so tests can fake it). */
@@ -22,6 +23,26 @@ export interface SlackApi {
   postMessage(args: { channel: string; text: string; thread_ts?: string; blocks?: unknown[] }): Promise<{ ts?: string }>;
   updateMessage(args: { channel: string; ts: string; text: string; blocks?: unknown[] }): Promise<unknown>;
   openDm(userId: string): Promise<string>;
+  /** Downloads a file shared in Slack (needs the files:read scope). */
+  downloadFile?(url: string): Promise<Buffer>;
+}
+
+/** A file attached to a Slack message (the fields the office uses). */
+export interface SlackFile {
+  name?: string;
+  size?: number;
+  url_private_download?: string;
+  url_private?: string;
+}
+
+/** Shared files are only ever fetched from Slack itself, with the bot token. */
+export function isSlackFileUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && u.hostname === 'files.slack.com';
+  } catch {
+    return false;
+  }
 }
 
 export interface SlackBridgeDeps {
@@ -39,6 +60,8 @@ export interface SlackBridgeDeps {
   publicUrl: string;
   api: SlackApi;
   now?: () => number;
+  /** Where files attached to a Slack task message are stored until the task claims them. */
+  uploads?: Uploads;
 }
 
 const STATUS_REFRESH_MS = 10_000;
@@ -77,8 +100,12 @@ export const HELP = [
   "*When the architect asks you something:* tap a button, or reply in the thread with your answer. `send` sends what you've answered so far; `enough` lets it plan now.",
 ].join('\n');
 
-/** Words that are thread commands; any other reply from the owner answers the architect's open question. */
-const COMMANDS = new Set(['status', 'pause', 'stop', 'resume', 'discard', 'done', 'steer', 'replan', 'approve', 'reject', 'send', 'enough', 'help']);
+/** While the architect has a question open, only these count as commands; anything else answers it. */
+const BARE_COMMANDS = new Set(['status', 'pause', 'stop', 'resume', 'discard', 'send', 'enough', 'help']);
+function isExplicitCommand(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return BARE_COMMANDS.has(t.replace(/[.!]$/, '')) || /^(steer|replan)\s*:/.test(t);
+}
 
 export class SlackBridge {
   private dm: string | null = null;
@@ -126,7 +153,7 @@ export class SlackBridge {
    * A message in the owner's DM, or in the shared assistant channel. The owner may do anything.
    * An assistant (Instinct) may start tasks, ask for status, steer, pause and resume, only in that channel.
    */
-  async onMessage(msg: { user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string }): Promise<void> {
+  async onMessage(msg: { user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string; files?: SlackFile[] }): Promise<void> {
     const sender = this.senderOf(msg);
     if (!sender) return;
     let text = (msg.text ?? '').trim();
@@ -139,7 +166,7 @@ export class SlackBridge {
     if (!text) return;
     try {
       if (msg.thread_ts && msg.thread_ts !== msg.ts) await this.onThreadMessage(msg.channel, msg.thread_ts, text, sender);
-      else await this.onNewTask(msg.channel, msg.ts, text, sender);
+      else await this.onNewTask(msg.channel, msg.ts, text, sender, sender === 'owner' ? (msg.files ?? []) : []);
     } catch (e) {
       await this.reply(msg.channel, msg.thread_ts ?? msg.ts, `:warning: ${esc((e as Error).message)}`);
     }
@@ -149,13 +176,14 @@ export class SlackBridge {
     const { ownerId, channelId, assistantIds = [] } = this.deps;
     const where = msg.channel === this.dm || (!!channelId && msg.channel === channelId);
     if (!where) return null;
-    if (msg.user === ownerId && !msg.subtype && !msg.bot_id) return 'owner';
+    // file_share: my message with files attached (they become the task's attachments).
+    if (msg.user === ownerId && (!msg.subtype || msg.subtype === 'file_share') && !msg.bot_id) return 'owner';
     const named = (msg.user && assistantIds.includes(msg.user)) || (msg.bot_id && assistantIds.includes(msg.bot_id));
     if (named && channelId && msg.channel === channelId && (!msg.subtype || msg.subtype === 'bot_message')) return 'assistant';
     return null;
   }
 
-  private async onNewTask(channel: string, ts: string, text: string, sender: Sender): Promise<void> {
+  private async onNewTask(channel: string, ts: string, text: string, sender: Sender, files: SlackFile[] = []): Promise<void> {
     const assistant = sender === 'assistant';
     if (/^(help|\?)$/i.test(text)) return void (await this.reply(channel, ts, HELP));
     const pr = text.match(PR_URL)?.[0];
@@ -172,11 +200,41 @@ export class SlackBridge {
         await this.reply(channel, ts, `Reviewing PR as task #${task.id}. I'll post the draft here when it's ready.`);
         return;
       }
-      const task = this.deps.pipeline.createTask({ repoId: parsed!.repoId!, input: parsed!.input! });
-      await this.reply(channel, ts, `Task #${task.id} queued. Updates will appear in this thread.`);
+      const { ids, problems } = await this.fetchFiles(files);
+      const task = this.deps.pipeline.createTask({ repoId: parsed!.repoId!, input: parsed!.input!, ...(ids.length ? { attachments: ids } : {}) });
+      const attached = ids.length ? ` with ${ids.length} attachment${ids.length === 1 ? '' : 's'}` : '';
+      await this.reply(channel, ts, `Task #${task.id} queued${attached}. Updates will appear in this thread.${problems.length ? `\n:warning: Not attached: ${esc(problems.join('; '))}` : ''}`);
     } finally {
       this.claim = null;
     }
+  }
+
+  /** Downloads the files on my task message into the office's uploads, for the new task to claim. */
+  private async fetchFiles(files: SlackFile[]): Promise<{ ids: string[]; problems: string[] }> {
+    const ids: string[] = [];
+    const problems: string[] = [];
+    if (!files.length) return { ids, problems };
+    const { uploads, api } = this.deps;
+    if (!uploads || !api.downloadFile) return { ids, problems: ['attachments from Slack are not set up'] };
+    for (const f of files.slice(0, MAX_ATTACHMENTS)) {
+      const name = f.name ?? 'file';
+      const url = f.url_private_download ?? f.url_private ?? '';
+      try {
+        if (!isSlackFileUrl(url)) throw new Error('not a Slack file link');
+        if ((f.size ?? 0) > MAX_ATTACHMENT_BYTES) throw new Error('over 10 MB');
+        ids.push(uploads.save(name, await api.downloadFile(url)).id);
+      } catch (e) {
+        problems.push(`${name}: ${(e as Error).message}`);
+      }
+    }
+    if (files.length > MAX_ATTACHMENTS) problems.push(`only the first ${MAX_ATTACHMENTS} files`);
+    // Together over the mission limit: drop them all rather than a surprising subset.
+    try {
+      if (ids.length) uploads.check(ids);
+    } catch (e) {
+      return { ids: [], problems: [...problems, (e as Error).message] };
+    }
+    return { ids, problems };
   }
 
   private assistantMayStart(): boolean {
@@ -221,8 +279,9 @@ export class SlackBridge {
     }
     // An assistant's chatter that isn't a command is ignored, not answered, so two bots never loop.
     if (sender === 'assistant' && !['status', 'pause', 'stop', 'resume', 'steer'].includes(command)) return;
-    // Only the owner answers the architect: a reply that isn't a command answers its open question.
-    if (sender === 'owner' && !COMMANDS.has(command) && this.questions.onThreadReply(task.id, text)) return;
+    // Only the owner answers the architect. While a question is open, a reply is an answer unless it is
+    // a bare command word ("stop") or an explicit "steer:" / "replan:": "Discard the legacy table" is an answer.
+    if (sender === 'owner' && this.questions.openQuestion(task.id) && !isExplicitCommand(text) && this.questions.onThreadReply(task.id, text)) return;
     switch (command) {
       case 'status': {
         const t = pipeline.getTask(task.id);
@@ -498,12 +557,22 @@ export async function startSlack(config: SlackConfig, deps: Omit<SlackBridgeDeps
       if (!res.channel?.id) throw new Error('Slack did not open a DM with you.');
       return res.channel.id;
     },
+    downloadFile: async (url) => {
+      if (!isSlackFileUrl(url)) throw new Error('not a Slack file link');
+      const res = await fetch(url, { headers: { authorization: `Bearer ${config.botToken}` }, redirect: 'error' });
+      if (!res.ok) throw new Error(res.status === 403 ? 'the Slack app needs the files:read permission (reinstall it)' : `download failed (${res.status})`);
+      const data = Buffer.from(await res.arrayBuffer());
+      if (data.length > MAX_ATTACHMENT_BYTES) throw new Error('over 10 MB');
+      // Without files:read Slack answers with its HTML login page instead of the file.
+      if ((res.headers.get('content-type') ?? '').startsWith('text/html') && !url.toLowerCase().endsWith('.html')) throw new Error('Slack sent a login page: the app needs files:read');
+      return data;
+    },
   };
   const botUserId = (await app.client.auth.test()).user_id;
   const bridge = new SlackBridge({ ...deps, ownerId: config.ownerId, channelId: config.channelId, assistantIds: config.assistantIds, botUserId, api });
 
   app.message(async ({ message }) => {
-    const m = message as { channel_type?: string; user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string };
+    const m = message as { channel_type?: string; user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string; files?: SlackFile[] };
     // The owner's DM with the bot, or the one private channel shared with the assistant.
     if (m.channel_type !== 'im' && !(config.channelId && m.channel === config.channelId)) return;
     await bridge.onMessage(m);

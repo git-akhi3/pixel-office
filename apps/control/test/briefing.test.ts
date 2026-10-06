@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadAgents, systemPromptFor } from '../server/src/agents.js';
+import { Uploads } from '../server/src/attachments.js';
 import { answersMessage, briefDoc, parseRound } from '../server/src/briefing.js';
 import { ensureDirs, loadConfig, type OfficeConfig } from '../server/src/config.js';
 import { openDb, schema, type Db } from '../server/src/db/index.js';
@@ -31,7 +32,7 @@ const round = (...titles: string[]) =>
  * final message; interject's reply is "sent" as the next user message.
  */
 class SessionRunner implements AgentRunner {
-  runs: Array<{ step: string; prompt: string; system: string; sent: string[]; outcome?: string }> = [];
+  runs: Array<{ step: string; prompt: string; system: string; sent: string[]; outcome?: string; readRoots?: string[] }> = [];
   scripts: Record<string, string[][]> = {};
   intakeText = intake();
   constructor(private stepOf: (id: number) => string) {}
@@ -40,7 +41,13 @@ class SessionRunner implements AgentRunner {
   }
   async run(req: RunRequest): Promise<RunOutcome> {
     const step = this.stepOf(req.taskId);
-    const record: { step: string; prompt: string; system: string; sent: string[]; outcome?: string } = { step, prompt: req.prompt, system: systemPromptFor(req.agent), sent: [] };
+    const record: { step: string; prompt: string; system: string; sent: string[]; outcome?: string; readRoots?: string[] } = {
+      step,
+      prompt: req.prompt,
+      system: systemPromptFor(req.agent),
+      sent: [],
+      readRoots: req.guard.readRoots,
+    };
     this.runs.push(record);
     const outputs = step === 'planning' ? (this.scripts.planning?.shift() ?? [plan]) : [step === 'intake' ? this.intakeText : ''];
     for (const text of outputs) {
@@ -279,5 +286,95 @@ describe('briefing in planning', () => {
     await settle();
     expect(() => pipeline.answerQuestion(q.id, { text: 'x' }, 'board')).toThrow(/round is closed/);
     await expect(pipeline.decideGate(q.gateId!, 'approve')).rejects.toThrow();
+  });
+});
+
+describe('briefing: review fixes', () => {
+  it('asks for quotes when a round breaks the YAML', () => {
+    expect(parseRound('---\nquestions:\n  - title: Store\n    question: Which store: shared or per-variant?\n---')).toMatch(/isn't valid YAML.*double quotes/s);
+    expect(parseRound('---\nquestions:\n  - title: "Store"\n    question: "Which store: shared or per-variant?"\n---')).toEqual([
+      { title: 'Store', question: 'Which store: shared or per-variant?', options: [] },
+    ]);
+  });
+
+  it('after a restart, a fully answered round goes straight on to the architect', async () => {
+    runner.scripts.planning = [[round('Stock')], [plan]];
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add variants', grillMode: 'always' });
+    await until(() => openQs(task).length === 1);
+    await pipeline.action(task.id, 'stop');
+    await settle();
+    pipeline.answerQuestion(openQs(task)[0]!.id, { text: 'Shared' }, 'board');
+    // The process dies here (the stopped task's queued delivery was in memory only).
+    await pipeline.shutdown();
+    db.update(schema.tasks).set({ status: 'awaiting_answer' }).run();
+    pipeline = makePipeline();
+    pipeline.recover();
+    expect(get(task).status).toBe('planning');
+    await settle();
+    expect(get(task).status).toBe('awaiting_plan_approval');
+  });
+
+  it('re-planning while the architect waits plans again instead of stopping', async () => {
+    runner.scripts.planning = [[round('Stock'), plan]];
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add variants', grillMode: 'always' });
+    await until(() => openQs(task).length === 1);
+    pipeline.answerQuestion(openQs(task)[0]!.id, { text: 'Hold on' }, 'board').id;
+    await settle();
+    expect(get(task).status).toBe('awaiting_plan_approval');
+    runner.scripts.planning = [[round('Images')], [plan]];
+    pipeline.replanNow(task.id, 'the spec changed');
+    await until(() => openQs(task).length === 1);
+    pipeline.replanNow(task.id, 'changed again');
+    await settle();
+    expect([get(task).status, get(task).statusNote]).toEqual(['awaiting_plan_approval', null]);
+    expect(runner.runs.filter((r) => r.step === 'planning').map((r) => r.outcome)).toEqual(['ok', 'interrupted', 'ok']);
+    expect(pipeline.pendingGates(task.id).map((g) => g.kind)).toEqual(['plan']);
+  });
+
+  it('a new round replaces a stale open one instead of stacking', async () => {
+    runner.scripts.planning = [[round('Stock')]];
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add variants', grillMode: 'always' });
+    await until(() => openQs(task).length === 1);
+    const firstGate = openQs(task)[0]!.gateId!;
+    // The step dies without closing its round, then a new session asks again.
+    await pipeline.action(task.id, 'stop');
+    await settle();
+    db.update(schema.tasks).set({ status: 'planning', resumeStatus: null }).run();
+    runner.scripts.planning = [[round('Pricing'), plan]];
+    await until(() => pipeline.pendingGates(task.id).some((g) => g.kind === 'question' && g.id !== firstGate));
+    expect(pipeline.pendingGates(task.id).filter((g) => g.kind === 'question')).toHaveLength(1);
+    pipeline.answerQuestion(openQs(task).find((q) => q.title === 'Pricing')!.id, { text: 'Per variant' }, 'board');
+    await settle();
+    expect(get(task).status).toBe('awaiting_plan_approval');
+  });
+
+  it('keeps brief.md current with every answer', async () => {
+    runner.scripts.planning = [[round('Stock', 'Pricing')]];
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add variants', grillMode: 'always' });
+    await until(() => openQs(task).length === 2);
+    pipeline.answerQuestion(openQs(task)[0]!.id, { text: 'Shared' }, 'board');
+    expect(new TaskDocs(config.tasksDir).latest(task.id, 'brief')).toContain('- **Stock:** Shared');
+  });
+});
+
+describe('attachments reach the agents', () => {
+  it('moves uploads into the task, lists them in every prompt, and opens only that folder', async () => {
+    const uploads = new Uploads(config.uploadsDir);
+    const spec = uploads.save('spec.md', Buffer.from('# Variants spec'));
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add variants', grillMode: 'never', attachments: [spec.id], links: ['https://example.com/prd'] });
+    expect(get(task).attachments).toEqual([{ name: 'spec.md', size: 15, type: 'text/markdown' }]);
+    await settle();
+    const intakeRun = runner.runs.find((r) => r.step === 'intake')!;
+    const planning = runner.runs.find((r) => r.step === 'planning')!;
+    const dir = realpathSync(join(config.tasksDir, String(task.id), 'attachments'));
+    expect(intakeRun.prompt).toContain(`- ${dir}/spec.md (text/markdown, 1 KB)`);
+    expect(intakeRun.prompt).toContain('Read these files before you start');
+    expect(planning.prompt).toContain('- https://example.com/prd');
+    expect(planning.readRoots).toEqual([dir]);
+    // A task without attachments gets no extra folder.
+    const plain = pipeline.createTask({ repoId: repo.id, input: 'Other', grillMode: 'never' });
+    await settle();
+    expect(runner.runs.filter((r) => r.step === 'intake').at(-1)!.readRoots).toBeUndefined();
+    expect(get(plain).attachments).toEqual([]);
   });
 });
