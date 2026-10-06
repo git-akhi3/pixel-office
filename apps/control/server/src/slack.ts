@@ -33,6 +33,8 @@ export interface SlackBridgeDeps {
   /** A private channel shared with an AI assistant (e.g. Instinct), and the user or bot ids allowed to speak in it. */
   channelId?: string;
   assistantIds?: string[];
+  /** This bot's own Slack user id, so a leading @mention of it can be told from one meant for someone else. */
+  botUserId?: string;
   /** Where "Open in office" links point. */
   publicUrl: string;
   api: SlackApi;
@@ -127,7 +129,13 @@ export class SlackBridge {
   async onMessage(msg: { user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string }): Promise<void> {
     const sender = this.senderOf(msg);
     if (!sender) return;
-    const text = (msg.text ?? '').trim();
+    let text = (msg.text ?? '').trim();
+    // "@Instinct what's the status?" is for someone else: stay out of it. "@Pixel Office <command>" is for me.
+    const lead = text.match(/^<@([UW][A-Z0-9]+)(?:\|[^>]*)?>[\s,:]*/);
+    if (lead) {
+      if (lead[1] !== this.deps.botUserId) return;
+      text = text.slice(lead[0].length).trim();
+    }
     if (!text) return;
     try {
       if (msg.thread_ts && msg.thread_ts !== msg.ts) await this.onThreadMessage(msg.channel, msg.thread_ts, text, sender);
@@ -199,7 +207,11 @@ export class SlackBridge {
 
   private async onThreadMessage(channel: string, threadTs: string, text: string, sender: Sender): Promise<void> {
     const task = this.taskForThread(channel, threadTs);
-    if (!task) return void (sender === 'owner' ? await this.reply(channel, threadTs, 'This thread has no task. Start one with a new message.') : undefined);
+    if (!task) {
+      // A reply in a thread that has no task (say, under the bot's help message): an explicit task starts one here.
+      if (PR_URL.test(text) || this.parseTask(text, false).repoId) return void (await this.onNewTask(channel, threadTs, text, sender));
+      return void (sender === 'owner' ? await this.reply(channel, threadTs, 'This thread has no task. Start one with a new message, or reply here with `<repo>: what to do`.') : undefined);
+    }
     const say = (t: string) => this.reply(channel, threadTs, t);
     const { pipeline } = this.deps;
     const [, word = '', rest = ''] = text.match(/^(\w+)\s*:?\s*([\s\S]*)$/) ?? [];
@@ -487,7 +499,8 @@ export async function startSlack(config: SlackConfig, deps: Omit<SlackBridgeDeps
       return res.channel.id;
     },
   };
-  const bridge = new SlackBridge({ ...deps, ownerId: config.ownerId, channelId: config.channelId, assistantIds: config.assistantIds, api });
+  const botUserId = (await app.client.auth.test()).user_id;
+  const bridge = new SlackBridge({ ...deps, ownerId: config.ownerId, channelId: config.channelId, assistantIds: config.assistantIds, botUserId, api });
 
   app.message(async ({ message }) => {
     const m = message as { channel_type?: string; user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string };

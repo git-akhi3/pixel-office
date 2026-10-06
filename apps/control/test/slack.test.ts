@@ -67,7 +67,7 @@ function setup(repoNames: string[] = ['alpha'], assistant = false) {
   } as unknown as Pipeline;
 
   const docs = { latest: () => '---\nx: 1\n---\n## Goal\nAdd greet().' } as never;
-  const bridge = new SlackBridge({ db, bus, pipeline, docs, ownerId: OWNER, ...(assistant ? { channelId: CH, assistantIds: [INSTINCT] } : {}), publicUrl: 'http://127.0.0.1:4100', api });
+  const bridge = new SlackBridge({ db, bus, pipeline, docs, ownerId: OWNER, botUserId: 'U0BOT0001', ...(assistant ? { channelId: CH, assistantIds: [INSTINCT] } : {}), publicUrl: 'http://127.0.0.1:4100', api });
   const settle = () => new Promise((r) => setTimeout(r, 20));
   return { db, bus, bridge, posted, updated, calls, settle, repo };
 }
@@ -114,6 +114,25 @@ describe('SlackBridge', () => {
     await many.bridge.onMessage(dm('fix the footer', { ts: '51.1' }));
     expect(many.calls).toHaveLength(1);
     expect(many.posted.at(-1)!.text).toContain('Which repo?');
+  });
+
+  it('starts a task from a reply in a thread that has none, using that thread', async () => {
+    await t.bridge.onMessage(dm('alpha: add a greeting', { ts: '55.1', thread_ts: '50.1' }));
+    await t.settle();
+    expect(t.calls).toEqual([`create:${t.repo.id}:add a greeting`]);
+    const task = t.db.select().from(schema.tasks).get()!;
+    expect([task.slackChannel, task.slackThreadTs]).toEqual([DM, '50.1']);
+    await t.bridge.onMessage(dm('just chatting', { ts: '56.1', thread_ts: '50.2' }));
+    expect(t.calls).toHaveLength(1);
+    expect(t.posted.at(-1)!.text).toContain('no task');
+  });
+
+  it('ignores a message that starts by mentioning someone else, and accepts one that mentions the bot', async () => {
+    await t.bridge.onMessage(dm('<@U0INSTINCT1> whats the status and eta on the existing tasks'));
+    expect(t.calls).toEqual([]);
+    expect(t.posted).toEqual([]);
+    await t.bridge.onMessage(dm('<@U0BOT0001> alpha: add a greeting', { ts: '58.1' }));
+    expect(t.calls).toEqual([`create:${t.repo.id}:add a greeting`]);
   });
 
   it('starts a PR review from a pasted link', async () => {
