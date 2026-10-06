@@ -22,7 +22,7 @@ import type { OfficeConfig } from './config.js';
 import { getSettings, schema, usagePause, type Db } from './db/index.js';
 import type { Gate, GrillMode, Question, Repo, SkillPicks, Task } from './db/schema.js';
 import { attachmentsDir, cleanLinks, Uploads } from './attachments.js';
-import { answersMessage, BRIEFING_WAIT_MS, briefDoc, MAX_BAD_ROUNDS, parseRound, type Delivery, type RoundQuestion } from './briefing.js';
+import { answersMessage, BRIEFING_WAIT_MS, briefDoc, MAX_BAD_ROUNDS, parseRound, type BriefingOutput, type Delivery, type RoundQuestion } from './briefing.js';
 import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, maxLane, stepRole, type GateDecision, type Lane, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
 import type { PrInfo, Publisher } from './github.js';
@@ -250,7 +250,7 @@ export class Pipeline {
       .all()
       .filter((t) => (isAgentStep(t.status) && t.status !== 'queued') || t.status === 'pushing' || t.status === 'posting_review');
     for (const t of active) {
-      if (t.status === 'planning' && this.openRoundGate(t.id)) {
+      if ((t.status === 'planning' || t.status === 'splitting') && this.openRoundGate(t.id)) {
         // The architect was waiting for my answers: keep the questions, wait for me without a session.
         this.update(t.id, { status: 'awaiting_answer', resumeStatus: null, statusNote: this.waitingNote(t.id) });
         continue;
@@ -457,8 +457,9 @@ export class Pipeline {
       this.skillDirs(),
       (name) => this.alert(task, 'skills', `The ${role}'s skill "${name}" no longer exists; running without it.`),
     );
-    // A grilled mission's architect also follows the grilling skill, when the catalog has it.
-    const grilling = step === 'planning' && task.grill;
+    // A grilled mission's architect also follows the grilling skill, when the catalog has it. An epic's
+    // briefing happens before the split, so the milestones start from my answers.
+    const grilling = (step === 'planning' || step === 'splitting') && task.grill;
     const grillSkill = getSettings(db).grillSkill;
     const withGrill = grilling && this.skillCatalog().some((s) => s.name === grillSkill) ? withSkills(roleAgent, [grillSkill], this.skillDirs()) : roleAgent;
     // A PR under review is untrusted code (and untrusted text): its reviewer gets exactly Read/Grep/Glob,
@@ -640,7 +641,10 @@ export class Pipeline {
         // A request far too big for one task is split into milestones, not planned or debugged as one.
         if (m.epic && m.size === 'L' && !task.parentId) {
           this.deps.bus.emit(task.id, 'epic_decided', {});
-          this.update(task.id, { lane: 'standard', status: 'splitting' });
+          // On Auto an epic is always briefed: a split made without me is the expensive kind of guess.
+          const brief = task.grillMode === 'auto' && !updated.grill ? { grill: true, grillReason: 'Epics get a briefing before they are split.' } : {};
+          if (brief.grill) this.deps.bus.emit(task.id, 'briefing_decided', { grill: true, reason: brief.grillReason, mode: task.grillMode });
+          this.update(task.id, { ...brief, lane: 'standard', status: 'splitting' });
           return;
         }
         this.deps.bus.emit(task.id, 'lane_decided', { lane, said: m.lane ?? null, reason });
@@ -944,6 +948,8 @@ export class Pipeline {
         .filter(([, p]) => p?.by === 'owner')
         .map(([role, p]) => [role, p!.skills]),
     );
+    // The epic's briefing answers go to every milestone, so their architects don't ask them again.
+    const decisions = this.deps.docs.latest(epic.id, 'brief')?.replace(/^---[\s\S]*?---\s*/, '').replace(/^## Decisions from the briefing\s*/, '').trim();
     const ids: number[] = [];
     milestones.forEach((m, i) => {
       const n = i + 1;
@@ -953,6 +959,7 @@ export class Pipeline {
         `Milestone ${n} of ${milestones.length} of #${epic.id}: ${epic.title}.`,
         prev ? `It builds on milestone ${n - 1} (task #${prev}): that work is already on the branch this one starts from. Don't redo it.` : 'It is the first milestone.',
         `The whole request was: ${epic.input}`,
+        ...(decisions ? ['', "Decisions the owner already made for the whole epic (settled: don't ask them again):", decisions] : []),
       ].join('\n');
       const child = this.createTask({
         repoId: epic.repoId,
@@ -1017,10 +1024,26 @@ export class Pipeline {
     return this.pendingGates(taskId).find((g) => g.kind === 'question');
   }
 
+  /** The step a briefing belongs to: an epic not yet split is briefed before its split, anything else before its plan. */
+  briefingStep(taskId: number): 'splitting' | 'planning' {
+    const types = this.deps.db
+      .select({ type: schema.events.type })
+      .from(schema.events)
+      .where(and(eq(schema.events.taskId, taskId), inArray(schema.events.type, ['epic_decided', 'epic_split'])))
+      .all()
+      .map((e) => e.type);
+    return types.includes('epic_decided') && !types.includes('epic_split') ? 'splitting' : 'planning';
+  }
+
+  private briefingOutput(taskId: number): BriefingOutput {
+    return this.briefingStep(taskId) === 'splitting' ? 'breakdown' : 'plan';
+  }
+
   private waitingNote(taskId: number): string {
     const gate = this.openRoundGate(taskId);
     const open = gate ? this.questions(taskId).filter((q) => q.gateId === gate.id && q.answer === null && !q.delegated).length : 0;
-    return `The architect is waiting for your answers${open ? ` (${open} open question${open === 1 ? '' : 's'})` : ''}. Planning continues when you answer.`;
+    const next = this.briefingStep(taskId) === 'splitting' ? 'The split into milestones' : 'Planning';
+    return `The architect is waiting for your answers${open ? ` (${open} open question${open === 1 ? '' : 's'})` : ''}. ${next} continues when you answer.`;
   }
 
   /** "Enough" holds until the plan is sent back (a re-plan may need new answers). */
@@ -1051,7 +1074,11 @@ export class Pipeline {
       // Asked again after "enough": remind it, but not forever.
       const bad = (this.badRounds.get(taskId) ?? 0) + 1;
       this.badRounds.set(taskId, bad);
-      return bad <= MAX_BAD_ROUNDS ? 'The owner already said that is enough questions. Write the plan now; put anything still open under Risks as an assumption.' : null;
+      const reminder =
+        this.briefingOutput(taskId) === 'breakdown'
+          ? 'The owner already said that is enough questions. Write the breakdown now; note anything still open in the Overview as an assumption.'
+          : 'The owner already said that is enough questions. Write the plan now; put anything still open under Risks as an assumption.';
+      return bad <= MAX_BAD_ROUNDS ? reminder : null;
     }
     this.badRounds.delete(taskId);
     const gate = this.openRound(taskId, runId, round);
@@ -1131,7 +1158,7 @@ export class Pipeline {
     this.update(taskId, { feedback: null, statusNote: null });
     bus.emit(taskId, 'gate_decided', { gateId, kind: 'question', decision: delivery });
     if (delivery === 'enough') bus.emit(taskId, 'briefing_ended', {});
-    return answersMessage(qs[0]?.round ?? 0, qs, delivery, notes);
+    return answersMessage(qs[0]?.round ?? 0, qs, delivery, notes, this.briefingOutput(taskId));
   }
 
   /** My answer to one question, from the board or Slack. The first answer counts. */
@@ -1158,7 +1185,7 @@ export class Pipeline {
     return updated;
   }
 
-  /** "Send what I've answered" or "Enough, start planning", for the open round. */
+  /** "Send what I've answered" or "Enough", for the open round. */
   briefingAction(taskId: number, action: 'send' | 'enough'): void {
     const gate = this.openRoundGate(taskId);
     if (!gate) throw new Error('No questions are waiting.');
@@ -1178,7 +1205,7 @@ export class Pipeline {
       return;
     }
     const message = this.closeRound(taskId, gateId, delivery);
-    this.update(taskId, { status: 'planning', resumeStatus: null, statusNote: null, feedback: message });
+    this.update(taskId, { status: this.briefingStep(taskId), resumeStatus: null, statusNote: null, feedback: message });
     this.deps.bus.emit(taskId, 'briefing_resumed', { delivery });
     void this.tick();
   }
@@ -1188,7 +1215,7 @@ export class Pipeline {
     const gate = this.openRoundGate(taskId);
     if (!gate) {
       // Parked with no open round (it was cancelled): plan again.
-      if (this.getTask(taskId).status === 'awaiting_answer') this.update(taskId, { status: 'planning', statusNote: null });
+      if (this.getTask(taskId).status === 'awaiting_answer') this.update(taskId, { status: this.briefingStep(taskId), statusNote: null });
       return;
     }
     const queued = this.queuedDelivery.get(taskId);
@@ -1247,7 +1274,7 @@ export class Pipeline {
         this.cancelPermissions(taskId);
         // Stopped while the architect waits for my answers: resuming goes back to waiting for them.
         const resumeStatus =
-          task.status === 'planning' && this.openRoundGate(taskId)
+          (task.status === 'planning' || task.status === 'splitting') && this.openRoundGate(taskId)
             ? 'awaiting_answer'
             : task.status === 'paused' || task.status === 'blocked'
               ? task.resumeStatus

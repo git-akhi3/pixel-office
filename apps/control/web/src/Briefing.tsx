@@ -45,10 +45,10 @@ export function Briefing({ task, questions, onChanged, onError }: { task: Task; 
           <h2>Briefing</h2>
           <p className="hint">
             {current
-              ? `The architect has questions before it plans. Answer here or in Slack.`
+              ? `The architect has questions before it ${task.status === 'splitting' ? 'splits this into milestones' : 'goes on'}. Answer here or in Slack.`
               : questions.length
-                ? `${questions.filter(answered).length} answered${task.status === 'planning' && task.running ? ' · the architect is planning' : ''}`
-                : (task.grillReason ?? 'The architect will interview you before it plans.')}
+                ? `${questions.filter(answered).length} answered${task.running && task.status === 'planning' ? ' · the architect is planning' : task.running && task.status === 'splitting' ? ' · the architect is splitting it into milestones' : ''}`
+                : (task.grillReason ?? 'The architect will interview you first.')}
           </p>
         </div>
         {questions.some(answered) && (
@@ -129,7 +129,7 @@ export function Briefing({ task, questions, onChanged, onError }: { task: Task; 
               </button>
             )}
             <button className="link danger-link" disabled={busy} onClick={() => void run(() => api.briefing(task.id, 'enough'))}>
-              Enough, start planning
+              {task.status === 'splitting' ? 'Enough, split it now' : 'Enough, start planning'}
             </button>
           </div>
         </div>

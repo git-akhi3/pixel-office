@@ -20,7 +20,7 @@ export interface QuestionsSlackApi {
 export interface SlackQuestionsDeps {
   db: Db;
   bus: EventBus;
-  pipeline: Pick<Pipeline, 'answerQuestion' | 'briefingAction' | 'getTask'>;
+  pipeline: Pick<Pipeline, 'answerQuestion' | 'briefingAction' | 'getTask'> & Partial<Pick<Pipeline, 'briefingStep'>>;
   api: QuestionsSlackApi;
   ownerId: string;
   publicUrl: string;
@@ -104,6 +104,11 @@ export class SlackQuestions {
     if (res.ts) this.deps.db.update(schema.questions).set({ slackTs: res.ts }).where(eq(schema.questions.id, next.id)).run();
   }
 
+  /** Whether the open briefing is an epic's, before its split (else before a plan). */
+  private splitting(taskId: number): boolean {
+    return this.deps.pipeline.briefingStep?.(taskId) === 'splitting';
+  }
+
   questionBlocks(task: Task, q: Question, total: number, answeredSoFar: boolean): unknown[] {
     const head = `:question: *Question ${q.idx + 1} of ${total}* · round ${q.round} · <${this.deps.publicUrl}/#/task/${task.id}|#${task.id} ${esc(clip(task.title, 60))}>`;
     const body = [`*${esc(q.title)}*`, esc(clip(q.body, 2400))];
@@ -120,7 +125,8 @@ export class SlackQuestions {
       ...q.options.slice(0, 5).map((o, i) => button(`opt${i}`, o)),
       button('decide', 'You decide'),
     ];
-    const round = [...(answeredSoFar ? [button('send', "Send what I've answered")] : []), button('enough', 'Enough, start planning', 'danger')];
+    const enough = this.splitting(task.id) ? 'Enough, split it now' : 'Enough, start planning';
+    const round = [...(answeredSoFar ? [button('send', "Send what I've answered")] : []), button('enough', enough, 'danger')];
     return [
       // Slack refuses a section over 3000 characters.
       { type: 'section', text: { type: 'mrkdwn', text: clip(`${head}\n${body.join('\n\n')}`, 2900) } },
@@ -153,7 +159,7 @@ export class SlackQuestions {
     if (!thread) return;
     const note =
       decision === 'enough'
-        ? ':memo: Enough questions: the architect writes the plan now.'
+        ? `:memo: Enough questions: the architect writes the ${this.splitting(taskId) ? 'milestone split' : 'plan'} now.`
         : decision === 'send'
           ? ':envelope: Sent your answers so far to the architect.'
           : ':envelope: All answered: sent to the architect.';

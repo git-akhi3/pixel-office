@@ -24,6 +24,7 @@ const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), 'office-briefing-')));
 const intake = (extra = '') =>
   `---\ntitle: Add variants\nkind: feature\nsize: L\nneeds_debugger: false\nneeds_researcher: false\ndesign_review: false\n${extra}---\n## Request\nAdd variants.`;
 const plan = '---\nfiles_in_scope:\n  - src/**\ntoken_estimate: 1000\n---\n## Goal\nVariants.';
+const breakdown = '---\nmilestones: 2\n---\n## Overview\nIn order.\n\n## Milestones\n### 1. Auth\nSign in.\n- works\n\n### 2. Search\nSearch items.\n- works\n\n## Not in these milestones\n- nothing';
 const round = (...titles: string[]) =>
   `---\nquestions:\n${titles.map((t) => `  - title: ${t}\n    question: What about ${t}?\n    options: [A, B]\n    recommended: A, because it is simpler\n`).join('')}---`;
 
@@ -49,7 +50,10 @@ class SessionRunner implements AgentRunner {
       readRoots: req.guard.readRoots,
     };
     this.runs.push(record);
-    const outputs = step === 'planning' ? (this.scripts.planning?.shift() ?? [plan]) : [step === 'intake' ? this.intakeText : ''];
+    const outputs =
+      step === 'planning' || step === 'splitting'
+        ? (this.scripts[step]?.shift() ?? [step === 'planning' ? plan : breakdown])
+        : [step === 'intake' ? this.intakeText : ''];
     for (const text of outputs) {
       if (req.interject) {
         const reply = await req.interject(text);
@@ -376,5 +380,63 @@ describe('attachments reach the agents', () => {
     await settle();
     expect(runner.runs.filter((r) => r.step === 'intake').at(-1)!.readRoots).toBeUndefined();
     expect(get(plain).attachments).toEqual([]);
+  });
+});
+
+describe('briefing before an epic is split', () => {
+  const epicIntake = (extra = '') => intake(`epic: true\n${extra}`);
+  const milestones = (t: Task) => db.select().from(schema.tasks).all().filter((x) => x.parentId === t.id);
+
+  it('asks before the split, splits with my answers, and hands the answers to every milestone', async () => {
+    runner.intakeText = epicIntake('grill: false\n'); // on Auto the manager said no; epics are briefed anyway
+    runner.scripts.splitting = [[round('Auth', 'Backend'), breakdown]];
+    const epic = pipeline.createTask({ repoId: repo.id, input: 'Build the app' });
+    await until(() => openQs(epic).length === 2);
+    expect(get(epic)).toMatchObject({ status: 'splitting', grill: true, grillReason: 'Epics get a briefing before they are split.' });
+    const split = runner.runs.find((r) => r.step === 'splitting')!;
+    expect(split.prompt).toContain('## Asking the owner (briefing)');
+    expect(split.prompt).toContain('This is an epic');
+    expect(split.system).toContain('## Skill: grilling');
+    expect(get(epic).statusNote).toContain('The split into milestones continues when you answer');
+
+    const [auth, backend] = openQs(epic);
+    pipeline.answerQuestion(auth!.id, { text: 'Same as galaxy' }, 'board');
+    pipeline.answerQuestion(backend!.id, { text: 'Staging' }, 'slack');
+    await settle();
+    expect(split.sent[0]).toContain('1. Auth: Same as galaxy');
+    expect(split.sent[0]).toContain('Otherwise write the breakdown.');
+    expect(get(epic).status).toBe('awaiting_breakdown_approval');
+
+    await pipeline.decideGate(pipeline.pendingGates(epic.id).find((g) => g.kind === 'breakdown')!.id, 'approve');
+    const kids = milestones(epic);
+    expect(kids).toHaveLength(2);
+    for (const k of kids) {
+      expect(k.input).toContain("Decisions the owner already made for the whole epic (settled: don't ask them again):");
+      expect(k.input).toContain('- **Auth:** Same as galaxy');
+      expect(k.input).toContain('- **Backend:** Staging');
+    }
+  });
+
+  it('parks, and goes back to the split (not to planning) once I answer', async () => {
+    await pipeline.shutdown();
+    pipeline = makePipeline(40);
+    runner.intakeText = epicIntake();
+    runner.scripts.splitting = [[round('Auth')], [breakdown]];
+    const epic = pipeline.createTask({ repoId: repo.id, input: 'Build the app', grillMode: 'always' });
+    await until(() => get(epic).status === 'awaiting_answer');
+    pipeline.answerQuestion(openQs(epic)[0]!.id, { text: 'Same as galaxy' }, 'board');
+    await settle();
+    const second = runner.runs.filter((r) => r.step === 'splitting')[1]!;
+    expect(second.prompt).toContain('### brief.md');
+    expect(get(epic).status).toBe('awaiting_breakdown_approval');
+    expect(runner.runs.some((r) => r.step === 'planning')).toBe(false);
+  });
+
+  it('respects Never: the split runs without questions', async () => {
+    runner.intakeText = epicIntake();
+    const epic = pipeline.createTask({ repoId: repo.id, input: 'Build the app', grillMode: 'never' });
+    await settle();
+    expect(get(epic)).toMatchObject({ grill: false, status: 'awaiting_breakdown_approval' });
+    expect(runner.runs.find((r) => r.step === 'splitting')!.prompt).not.toContain('Asking the owner');
   });
 });

@@ -25,7 +25,7 @@ export interface PromptContext {
   /** Intake: the skills the manager may pick from, and each role's built-in skills. */
   catalog?: Array<{ name: string; description: string }>;
   roleSkills?: Partial<Record<Role, string[]>>;
-  /** Planning on a grilled mission: the rules for asking me, and whether the grilling skill is loaded. */
+  /** Planning (or an epic's split) on a grilled mission: the rules for asking me, and whether the grilling skill is loaded. */
   briefing?: { hasSkill: boolean };
   /** Where the task's attachments are (realpath), when it has any. */
   attachmentsDir?: string;
@@ -61,7 +61,7 @@ const INPUTS: Record<ContractStep, DocName[]> = {
   intake: [],
   debugging: ['task'],
   researching: ['task', 'diagnosis'],
-  splitting: ['task', 'research'],
+  splitting: ['task', 'research', 'brief'],
   planning: ['task', 'diagnosis', 'research', 'brief'],
   coding: ['task', 'plan'],
   reviewing: ['plan', 'changes'],
@@ -181,7 +181,7 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
       '## Briefing\nDecide whether the architect should interview the owner before planning (grill: true). Say true when the task is size L, when it is design or architecture work, or whenever the request leaves open choices that would change the plan and you would otherwise be guessing. Say false for small, clear tasks. Give the reason in grill_reason.',
     );
   }
-  if (step === 'planning' && ctx.briefing) parts.push(briefingRules(ctx.briefing.hasSkill));
+  if ((step === 'planning' || step === 'splitting') && ctx.briefing) parts.push(briefingRules(ctx.briefing.hasSkill, step === 'splitting' ? 'breakdown' : 'plan'));
   if (step === 'intake' && task.kind !== 'review') parts.push(ROUTE_RULES);
   parts.push(`## Your job now\n${jobFor(step, task)}`);
   parts.push(

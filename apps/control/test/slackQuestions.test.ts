@@ -10,7 +10,7 @@ import { SlackQuestions } from '../server/src/slackQuestions.js';
 
 const OWNER = 'U0OWNER0001';
 
-function setup() {
+function setup(step: 'planning' | 'splitting' = 'planning') {
   const db: Db = openDb(join(mkdtempSync(join(tmpdir(), 'slackq-')), 'office.db'));
   const bus = new EventBus(db);
   const repo = db.insert(schema.repos).values({ name: 'alpha', path: '/tmp/alpha' }).returning().get();
@@ -40,6 +40,7 @@ function setup() {
       bus.emit(q.taskId, 'question_answered', { questionId: id, gateId: q.gateId, via });
       return row;
     },
+    briefingStep: () => step,
     briefingAction: (taskId: number, action: string) => {
       calls.push(`briefing:${taskId}:${action}`);
       db.update(schema.gates).set({ status: 'approved' }).where(eq(schema.gates.id, gate.id)).run();
@@ -69,6 +70,16 @@ function setup() {
 }
 
 describe('briefing questions in Slack', () => {
+  it("says it will split, not plan, when it's an epic's briefing", async () => {
+    const t = setup('splitting');
+    t.bus.emit(t.task.id, 'question_round', { gateId: t.gate.id, round: 1, count: 2 });
+    await t.settle();
+    expect(t.actions(0).map((e) => e.text.text).at(-1)).toBe('Enough, split it now');
+    t.bus.emit(t.task.id, 'gate_decided', { gateId: t.gate.id, kind: 'question', decision: 'enough' });
+    await t.settle();
+    expect(t.posted.at(-1)!.text).toContain('the architect writes the milestone split now');
+  });
+
   it('posts one question at a time with the recommendation, options and round buttons', async () => {
     const t = setup();
     t.bus.emit(t.task.id, 'question_round', { gateId: t.gate.id, round: 1, count: 2 });

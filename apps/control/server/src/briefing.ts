@@ -64,8 +64,11 @@ export function answerText(q: Pick<Question, 'answer' | 'delegated' | 'recommend
 
 export type Delivery = 'complete' | 'send' | 'enough';
 
+/** What the architect writes once the briefing is done: a plan, or an epic's milestone breakdown. */
+export type BriefingOutput = 'plan' | 'breakdown';
+
 /** The message the architect gets with my answers to a round. */
-export function answersMessage(round: number, questions: Question[], delivery: Delivery, notes: string[] = []): string {
+export function answersMessage(round: number, questions: Question[], delivery: Delivery, notes: string[] = [], output: BriefingOutput = 'plan'): string {
   const lines = [`The owner's answers to round ${round}:`];
   questions.forEach((q, i) => {
     const a = q.answer !== null || q.delegated ? answerText(q) : delivery === 'enough' ? 'not answered: use your recommendation and list it under Risks as an assumption' : 'not answered yet: ask again in a later round if it still matters';
@@ -75,8 +78,10 @@ export function answersMessage(round: number, questions: Question[], delivery: D
   lines.push(
     '',
     delivery === 'enough'
-      ? 'The owner says that is enough questions. Write the plan now. Put anything still open under Risks as an assumption, with the conservative choice.'
-      : 'Ask the next round if anything that changes the plan is still unclear. Otherwise write the plan.',
+      ? output === 'breakdown'
+        ? 'The owner says that is enough questions. Write the breakdown now. Note anything still open in the Overview as an assumption, with the conservative choice.'
+        : 'The owner says that is enough questions. Write the plan now. Put anything still open under Risks as an assumption, with the conservative choice.'
+      : `Ask the next round if anything that changes the ${output} is still unclear. Otherwise write the ${output}.`,
   );
   return lines.join('\n');
 }
@@ -96,15 +101,21 @@ export function briefDoc(questions: Question[]): string {
 }
 
 /** The architect's instructions when the mission is grilled. */
-export function briefingRules(hasSkill: boolean): string {
+export function briefingRules(hasSkill: boolean, output: BriefingOutput = 'plan'): string {
+  const epic = output === 'breakdown';
   return [
     '## Asking the owner (briefing)',
-    "This task gets a briefing: before you plan, interview the owner until you understand what they want. The owner isn't in a live chat; instead:",
+    `This task gets a briefing: before you ${epic ? 'split it' : 'plan'}, read the code (and any reference repos) first, then interview the owner until you understand what they want. The owner isn't in a live chat; instead:`,
     `- To ask, end your turn with ONLY a question round in this format:\n\n${ROUND_FORMAT}`,
-    '- Put every question you can ask now, without waiting on another answer, into one round. Give each a recommended answer. Ask only what would change the plan, never facts you can look up in the code yourself.',
-    "- The office shows the round to the owner and sends their answers back to you as the next message. Then ask the next round, or write the plan once nothing that changes it is unclear. There's no question limit.",
+    `- Put every question you can ask now, without waiting on another answer, into one round. Give each a recommended answer. Ask only what would change the ${output}, never facts you can look up in the code yourself.`,
+    ...(epic
+      ? [
+          "- This is an epic: ask about the decisions that shape the whole effort and how it splits (approach, scope, environments, what to reuse, what comes first). Each milestone plans its own details later and gets your answers, so don't ask about details only one milestone needs.",
+        ]
+      : []),
+    `- The office shows the round to the owner and sends their answers back to you as the next message. Then ask the next round, or write the ${output} once nothing that changes it is unclear. There's no question limit.`,
     '- Answers are also saved in brief.md. If brief.md is in your handoff documents, those questions are settled: do not ask them again.',
-    '- When you write the plan, reply with the plan only, in its own format.',
+    `- When you write the ${output}, reply with the ${output} only, in its own format.`,
     hasSkill ? '- Follow the grilling skill for how to interview; these rules decide how to ask in this office.' : '- Work the open decisions like a tree: settle the ones others depend on first.',
   ].join('\n');
 }
