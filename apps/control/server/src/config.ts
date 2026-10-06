@@ -112,6 +112,9 @@ export interface SlackConfig {
   botToken: string;
   appToken: string;
   ownerId: string;
+  /** Optional: a private channel shared with an AI assistant, and the ids (U… user or B… bot) allowed to speak in it. */
+  channelId?: string;
+  assistantIds: string[];
 }
 
 export function remoteConfig(config: OfficeConfig, env: Record<string, string>): RemoteConfig {
@@ -131,5 +134,10 @@ export function slackConfig(env: Record<string, string>): SlackConfig | null {
   if (!botToken?.startsWith('xoxb-')) throw new Error('SLACK_BOT_TOKEN must be the xoxb- bot token.');
   if (!appToken?.startsWith('xapp-')) throw new Error('SLACK_APP_TOKEN must be the xapp- app-level token (connections:write).');
   if (!ownerId?.match(/^[UW][A-Z0-9]+$/)) throw new Error('SLACK_OWNER_ID must be your Slack member ID (starts with U).');
-  return { botToken, appToken, ownerId };
+  const assistantIds = (env.SLACK_ASSISTANT_IDS ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+  for (const id of assistantIds) if (!/^[UWB][A-Z0-9]+$/.test(id)) throw new Error(`SLACK_ASSISTANT_IDS: "${id}" is not a Slack user or bot id (U…, W… or B…).`);
+  const channelId = env.SLACK_CHANNEL_ID || undefined;
+  if (channelId && !/^[CG][A-Z0-9]+$/.test(channelId)) throw new Error('SLACK_CHANNEL_ID must be a channel id (starts with C or G). Copy it from the channel details in Slack.');
+  if (assistantIds.length && !channelId) throw new Error('SLACK_ASSISTANT_IDS needs SLACK_CHANNEL_ID: assistants only speak in that one private channel.');
+  return { botToken, appToken, ownerId, channelId, assistantIds };
 }

@@ -12,6 +12,8 @@ import { esc, SlackBridge, type SlackApi } from '../server/src/slack.js';
 
 const OWNER = 'U0OWNER0001';
 const DM = 'D0DM';
+const CH = 'C0SHARED1';
+const INSTINCT = 'U0INSTINCT1';
 
 interface Posted {
   channel: string;
@@ -21,7 +23,7 @@ interface Posted {
   ts: string;
 }
 
-function setup(repoNames: string[] = ['alpha']) {
+function setup(repoNames: string[] = ['alpha'], assistant = false) {
   const db: Db = openDb(join(mkdtempSync(join(tmpdir(), 'slack-')), 'office.db'));
   const bus = new EventBus(db);
   for (const name of repoNames) db.insert(schema.repos).values({ name, path: `/tmp/${name}`, defaultBranch: 'main' }).run();
@@ -65,7 +67,7 @@ function setup(repoNames: string[] = ['alpha']) {
   } as unknown as Pipeline;
 
   const docs = { latest: () => '---\nx: 1\n---\n## Goal\nAdd greet().' } as never;
-  const bridge = new SlackBridge({ db, bus, pipeline, docs, ownerId: OWNER, publicUrl: 'http://127.0.0.1:4100', api });
+  const bridge = new SlackBridge({ db, bus, pipeline, docs, ownerId: OWNER, ...(assistant ? { channelId: CH, assistantIds: [INSTINCT] } : {}), publicUrl: 'http://127.0.0.1:4100', api });
   const settle = () => new Promise((r) => setTimeout(r, 20));
   return { db, bus, bridge, posted, updated, calls, settle, repo };
 }
@@ -214,6 +216,63 @@ describe('SlackBridge', () => {
     expect(texts.some((x) => x.includes('Used 9 tokens &lt;a&gt;'))).toBe(true);
     expect(texts.some((x) => x.includes('pull/9'))).toBe(true);
     expect(t.posted.every((p) => p.thread_ts === '50.1')).toBe(true);
+  });
+});
+
+describe('SlackBridge with an assistant channel', () => {
+  let t: ReturnType<typeof setup>;
+  const fromInstinct = (text: string, extra: Record<string, unknown> = {}) => ({ user: INSTINCT, bot_id: 'B0INSTINCT', channel: CH, ts: '70.1', text, ...extra });
+  beforeEach(async () => {
+    t = setup(['alpha'], true);
+    await t.bridge.start();
+  });
+
+  it('lets the assistant start a named-repo task in the shared channel, with that message as the thread', async () => {
+    await t.bridge.onMessage(fromInstinct('alpha: add a greeting'));
+    await t.settle();
+    expect(t.calls).toEqual([`create:${t.repo.id}:add a greeting`]);
+    const task = t.db.select().from(schema.tasks).get()!;
+    expect([task.slackChannel, task.slackThreadTs]).toEqual([CH, '70.1']);
+  });
+
+  it('ignores assistant chatter that is not an explicit task', async () => {
+    await t.bridge.onMessage(fromInstinct('Thanks! Anything else?'));
+    await t.bridge.onMessage(fromInstinct('add a greeting'));
+    expect(t.calls).toEqual([]);
+    expect(t.posted).toEqual([]);
+  });
+
+  it('ignores the assistant outside the shared channel and strangers inside it', async () => {
+    await t.bridge.onMessage(fromInstinct('alpha: x', { channel: DM }));
+    await t.bridge.onMessage(fromInstinct('alpha: x', { channel: 'C0OTHER', user: 'U0SOMEONE', bot_id: undefined }));
+    await t.bridge.onMessage(fromInstinct('alpha: x', { user: 'U0IMPOSTOR', bot_id: 'B0IMPOSTOR' }));
+    expect(t.calls).toEqual([]);
+  });
+
+  it('limits how many tasks the assistant can start per hour', async () => {
+    for (let i = 0; i < 7; i++) await t.bridge.onMessage(fromInstinct(`alpha: job ${i}`, { ts: `80.${i}` }));
+    expect(t.calls).toHaveLength(5);
+    expect(t.posted.at(-1)!.text).toContain('Limit reached');
+  });
+
+  it('lets the assistant steer and pause, but never approve, reject, discard or replan', async () => {
+    const task = t.db.insert(schema.tasks).values({ repoId: t.repo.id, title: 'x', input: 'x', slackChannel: CH, slackThreadTs: '70.1' }).returning().get();
+    const say = (text: string) => t.bridge.onMessage(fromInstinct(text, { ts: '71.1', thread_ts: '70.1' }));
+    await say('steer: keep it small');
+    await say('pause');
+    await say('approve');
+    await say('reject: no');
+    await say('discard');
+    await say('replan: again');
+    await say('ok great');
+    expect(t.calls).toEqual([`steer:${task.id}:keep it small`, `action:${task.id}:stop`]);
+    expect(t.posted.filter((p) => p.text.includes('needs the owner'))).toHaveLength(4);
+  });
+
+  it('keeps the owner able to do everything in the shared channel', async () => {
+    const task = t.db.insert(schema.tasks).values({ repoId: t.repo.id, title: 'x', input: 'x', slackChannel: CH, slackThreadTs: '70.1' }).returning().get();
+    await t.bridge.onMessage({ user: OWNER, channel: CH, ts: '72.1', thread_ts: '70.1', text: 'discard' });
+    expect(t.calls).toEqual([`action:${task.id}:discard`]);
   });
 });
 

@@ -29,6 +29,9 @@ export interface SlackBridgeDeps {
   pipeline: Pipeline;
   docs: TaskDocs;
   ownerId: string;
+  /** A private channel shared with an AI assistant (e.g. Instinct), and the user or bot ids allowed to speak in it. */
+  channelId?: string;
+  assistantIds?: string[];
   /** Where "Open in office" links point. */
   publicUrl: string;
   api: SlackApi;
@@ -38,6 +41,12 @@ export interface SlackBridgeDeps {
 const STATUS_REFRESH_MS = 10_000;
 const PR_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
 const MAX_SECTION = 2800;
+/** An assistant may start this many tasks per hour: a loop or a chatty assistant must not queue unlimited work. */
+export const ASSISTANT_TASKS_PER_HOUR = 5;
+/** Commands only the owner may give: they approve work, discard it or let commands run. */
+const OWNER_ONLY = new Set(['approve', 'reject', 'discard', 'done', 'replan']);
+
+type Sender = 'owner' | 'assistant';
 
 /** Slack mrkdwn treats & < > as markup. */
 export function esc(text: string): string {
@@ -74,6 +83,7 @@ export class SlackBridge {
   private lastStatusText = new Map<number, string>();
   private lastStatus = new Map<number, string>();
   private threadLocks = new Map<number, Promise<unknown>>();
+  private assistantStarts: number[] = [];
 
   constructor(private deps: SlackBridgeDeps) {}
 
@@ -99,22 +109,43 @@ export class SlackBridge {
 
   // ------------------------------------------------------------ incoming: messages
 
-  /** A message the owner sent in the bot's DM. */
+  /**
+   * A message in the owner's DM, or in the shared assistant channel. The owner may do anything.
+   * An assistant (Instinct) may start tasks, ask for status, steer, pause and resume, only in that channel.
+   */
   async onMessage(msg: { user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string }): Promise<void> {
-    if (msg.user !== this.deps.ownerId || msg.subtype || msg.bot_id) return;
+    const sender = this.senderOf(msg);
+    if (!sender) return;
     const text = (msg.text ?? '').trim();
     if (!text) return;
     try {
-      if (msg.thread_ts && msg.thread_ts !== msg.ts) await this.onThreadMessage(msg.channel, msg.thread_ts, text);
-      else await this.onNewTask(msg.channel, msg.ts, text);
+      if (msg.thread_ts && msg.thread_ts !== msg.ts) await this.onThreadMessage(msg.channel, msg.thread_ts, text, sender);
+      else await this.onNewTask(msg.channel, msg.ts, text, sender);
     } catch (e) {
       await this.reply(msg.channel, msg.thread_ts ?? msg.ts, `:warning: ${esc((e as Error).message)}`);
     }
   }
 
-  private async onNewTask(channel: string, ts: string, text: string): Promise<void> {
+  private senderOf(msg: { user?: string; channel: string; subtype?: string; bot_id?: string }): Sender | null {
+    const { ownerId, channelId, assistantIds = [] } = this.deps;
+    const where = msg.channel === this.dm || (!!channelId && msg.channel === channelId);
+    if (!where) return null;
+    if (msg.user === ownerId && !msg.subtype && !msg.bot_id) return 'owner';
+    const named = (msg.user && assistantIds.includes(msg.user)) || (msg.bot_id && assistantIds.includes(msg.bot_id));
+    if (named && channelId && msg.channel === channelId && (!msg.subtype || msg.subtype === 'bot_message')) return 'assistant';
+    return null;
+  }
+
+  private async onNewTask(channel: string, ts: string, text: string, sender: Sender): Promise<void> {
+    const assistant = sender === 'assistant';
     if (/^(help|\?)$/i.test(text)) return void (await this.reply(channel, ts, HELP));
     const pr = text.match(PR_URL)?.[0];
+    // An assistant must be explicit (`repo: ...` or a PR link). A stray "thanks!" must never become a task.
+    const parsed = pr ? null : this.parseTask(text, !assistant);
+    if (!pr && !parsed?.repoId) return void (parsed?.error && !assistant ? await this.reply(channel, ts, parsed.error) : undefined);
+    if (assistant && !this.assistantMayStart()) {
+      return void (await this.reply(channel, ts, `:no_entry: Limit reached: an assistant can start ${ASSISTANT_TASKS_PER_HOUR} tasks an hour. Ask the owner.`));
+    }
     this.claim = { channel, ts };
     try {
       if (pr) {
@@ -122,22 +153,28 @@ export class SlackBridge {
         await this.reply(channel, ts, `Reviewing PR as task #${task.id}. I'll post the draft here when it's ready.`);
         return;
       }
-      const { repoId, input, error } = this.parseTask(text);
-      if (error) return void (await this.reply(channel, ts, error));
-      const task = this.deps.pipeline.createTask({ repoId: repoId!, input: input! });
+      const task = this.deps.pipeline.createTask({ repoId: parsed!.repoId!, input: parsed!.input! });
       await this.reply(channel, ts, `Task #${task.id} queued. Updates will appear in this thread.`);
     } finally {
       this.claim = null;
     }
   }
 
-  private parseTask(text: string): { repoId?: number; input?: string; error?: string } {
+  private assistantMayStart(): boolean {
+    const hourAgo = this.now() - 60 * 60 * 1000;
+    this.assistantStarts = this.assistantStarts.filter((t) => t > hourAgo);
+    if (this.assistantStarts.length >= ASSISTANT_TASKS_PER_HOUR) return false;
+    this.assistantStarts.push(this.now());
+    return true;
+  }
+
+  private parseTask(text: string, allowDefaultRepo = true): { repoId?: number; input?: string; error?: string } {
     const repos = listRepos(this.deps.db);
     if (repos.length === 0) return { error: 'No repos registered yet. Add one on the board under Repos first.' };
     const m = text.match(/^([\w.-]+)\s*:\s*([\s\S]+)$/);
     const named = m && repos.find((r) => r.name.toLowerCase() === m[1]!.toLowerCase());
     if (named) return { repoId: named.id, input: m![2]!.trim() };
-    if (repos.length === 1) return { repoId: repos[0]!.id, input: text };
+    if (repos.length === 1 && allowDefaultRepo) return { repoId: repos[0]!.id, input: text };
     return { error: `Which repo? Start with \`<repo>: ...\`. Registered: ${repos.map((r) => `\`${esc(r.name)}\``).join(', ')}.` };
   }
 
@@ -149,13 +186,19 @@ export class SlackBridge {
       .get();
   }
 
-  private async onThreadMessage(channel: string, threadTs: string, text: string): Promise<void> {
+  private async onThreadMessage(channel: string, threadTs: string, text: string, sender: Sender): Promise<void> {
     const task = this.taskForThread(channel, threadTs);
-    if (!task) return void (await this.reply(channel, threadTs, 'This thread has no task. Start one with a new message.'));
+    if (!task) return void (sender === 'owner' ? await this.reply(channel, threadTs, 'This thread has no task. Start one with a new message.') : undefined);
     const say = (t: string) => this.reply(channel, threadTs, t);
     const { pipeline } = this.deps;
     const [, word = '', rest = ''] = text.match(/^(\w+)\s*:?\s*([\s\S]*)$/) ?? [];
-    switch (word.toLowerCase()) {
+    const command = word.toLowerCase();
+    if (sender === 'assistant' && OWNER_ONLY.has(command)) {
+      return void (await say(`:no_entry: \`${command}\` needs the owner. Ask them to do it in this thread or on the board.`));
+    }
+    // An assistant's chatter that isn't a command is ignored, not answered, so two bots never loop.
+    if (sender === 'assistant' && !['status', 'pause', 'stop', 'resume', 'steer'].includes(command)) return;
+    switch (command) {
       case 'status': {
         const t = pipeline.getTask(task.id);
         return void (await say(this.statusText(t, false)));
@@ -425,11 +468,12 @@ export async function startSlack(config: SlackConfig, deps: Omit<SlackBridgeDeps
       return res.channel.id;
     },
   };
-  const bridge = new SlackBridge({ ...deps, ownerId: config.ownerId, api });
+  const bridge = new SlackBridge({ ...deps, ownerId: config.ownerId, channelId: config.channelId, assistantIds: config.assistantIds, api });
 
   app.message(async ({ message }) => {
     const m = message as { channel_type?: string; user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string };
-    if (m.channel_type !== 'im') return;
+    // The owner's DM with the bot, or the one private channel shared with the assistant.
+    if (m.channel_type !== 'im' && !(config.channelId && m.channel === config.channelId)) return;
     await bridge.onMessage(m);
   });
 

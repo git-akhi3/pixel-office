@@ -8,12 +8,6 @@
       "port": 4100
     },
     {
-      "name": "pixel",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": ["/Users/akhil/Documents/zobaze workspace/pixel-office/start.sh"],
-      "port": 3100
-    },
-    {
       "name": "board-dev",
       "runtimeExecutable": "npx",
       "runtimeArgs": ["vite", "--config", "apps/control/web/vite.config.ts"],
