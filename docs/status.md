@@ -12,7 +12,7 @@ Updated 2026-10-05. Design: [design.md](design.md). Phase 1 detail: [phase-1-pla
 
 ## Using it
 
-**Build or fix something.** Board → New task → pick the repo and describe it. The manager sizes it, the architect writes a plan, and you approve the plan (or send it back with a comment) before any code is written. The coder, reviewer and tester then run in their own git worktree. You approve the push, which opens a draft PR. Mark it done (or merge it) and the manager writes a short retrospective.
+**Build or fix something.** Assign mission (top right on every page, bottom right in the office) → pick the repo and describe it in the side panel. The manager sizes it, the architect writes a plan, and you approve the plan (or send it back with a comment) before any code is written. The coder, reviewer and tester then run in their own git worktree. You approve the push, which opens a draft PR. Mark it done (or merge it) and the manager writes a short retrospective.
 
 **While it runs.** "Message the agent" sends a note to the agent that's working (or the next step). "New plan" stops and sends it back to the architect. Commands outside the repo's allow-list stop and ask you (allow once / always for this repo / deny).
 
@@ -26,7 +26,7 @@ Updated 2026-10-05. Design: [design.md](design.md). Phase 1 detail: [phase-1-pla
 
 **Usage.** No new steps start above 90% (adjustable) of the 5-hour or 7-day limit; they resume after the reset.
 
-**Office.** The Office tab shows the pixel office: residents work at their desks with the task they're on; a waiting bubble means a gate needs you.
+**Office.** The Office tab is the pixel office, filling the page (the corner button makes it full screen). Each working character carries a small name tag; the Live panel on the left lists the missions in flight and who is on duty with what they are doing right now. Hover a row to point out the character, or hover a character for its full label. A waiting bubble means a gate needs you.
 
 ## Safety model, in one paragraph
 

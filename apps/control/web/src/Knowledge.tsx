@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type Proposal, type Repo } from './api';
+import { Icon } from './icons';
 import { timeAgo } from './ui';
 
 /** Repo knowledge files: notes every agent reads. Retrospectives propose notes; I decide. */
@@ -46,7 +47,9 @@ export function KnowledgePage({ repos, onError, onChanged }: { repos: Repo[]; on
 
   return (
     <div className="panel panel-wide">
-      <h1>Knowledge</h1>
+      <h1>
+        <Icon name="book" size={24} /> Knowledge
+      </h1>
       <p className="hint">
         Short notes about each repo that every agent reads at the start of every step: conventions, gotchas, lessons from past tasks. They
         live in the office, not in the repo.

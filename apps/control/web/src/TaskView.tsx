@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type Gate, type OfficeEvent, type TaskDetail } from './api';
 import { flushReviewEdits, ReviewPanel } from './Review';
-import { DiffView, Doc, duration, formatTokens, StatusBadge, timeAgo } from './ui';
+import { Icon, RoleIcon } from './icons';
+import { DiffView, Doc, duration, formatTokens, StageTrack, StatusBadge, timeAgo } from './ui';
 
 type Tab = 'docs' | 'diff' | 'activity' | 'runs';
 
@@ -38,7 +39,7 @@ function Steer({ taskId, running, onError, onReplanned }: { taskId: number; runn
         placeholder={running ? 'Message the agent that is working now…' : 'Note for the next agent step…'}
       />
       <button disabled={!text.trim()} onClick={() => send('steer')}>
-        Send
+        <Icon name="play" size={8} /> Send
       </button>
       <button disabled={!text.trim()} onClick={() => send('replan')} title="Stop and ask the architect for a new plan, with this as the reason">
         New plan
@@ -114,27 +115,30 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
   return (
     <div className="task-view">
       <a href="#/" className="back">
-        ← Board
+        <Icon name="left" size={8} /> Mission board
       </a>
       <header className="task-header">
         <div className="card-top">
-          <span className="task-id">#{task.id}</span>
+          <span className="task-id">Mission #{task.id}</span>
           <span className="repo-chip">{repo.name}</span>
-          {task.size && <span className="size">{task.size}</span>}
-          <span className="kind">{task.kind}</span>
+          {task.size && <span className="size" title={`Size ${task.size}`}>{task.size}</span>}
+          <span className={`kind kind-${task.kind}`}>{task.kind}</span>
         </div>
         <h1>{task.title}</h1>
+        <StageTrack task={task} labels />
         <div className="task-facts">
           <StatusBadge status={task.status} running={task.running} />
           {task.branch && <code>{task.branch}</code>}
           {task.prUrl && (
             <a href={task.prUrl} target="_blank" rel="noreferrer">
-              Draft PR ↗
+              Draft PR <Icon name="link" size={8} />
             </a>
           )}
-          <span>{formatTokens(task.tokens)} tokens{task.tokenEstimate ? ` / est. ${formatTokens(task.tokenEstimate)}` : ''}</span>
-          {task.loopCount > 0 && <span>fix loop {task.loopCount}/2</span>}
-          {task.replanCount > 0 && <span>re-plan {task.replanCount}/2</span>}
+          <span className="fact">
+            <Icon name="gem" size={8} /> {formatTokens(task.tokens)} tokens{task.tokenEstimate ? ` / est. ${formatTokens(task.tokenEstimate)}` : ''}
+          </span>
+          {task.loopCount > 0 && <span className="fact">fix loop {task.loopCount}/2</span>}
+          {task.replanCount > 0 && <span className="fact">re-plan {task.replanCount}/2</span>}
         </div>
         {task.statusNote && <p className="note">{task.statusNote}</p>}
       </header>
@@ -147,7 +151,7 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
         {canStop && <button onClick={() => act('stop')}>Stop</button>}
         {canResume && (
           <button className="primary" onClick={() => act('resume')}>
-            Resume{task.resumeStatus ? ` (${task.resumeStatus.replace(/_/g, ' ')})` : ''}
+            <Icon name="play" size={8} /> Resume{task.resumeStatus ? ` (${task.resumeStatus.replace(/_/g, ' ')})` : ''}
           </button>
         )}
         {canDone && <button onClick={() => act('done')}>Mark done</button>}
@@ -163,16 +167,7 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
 
       {!TERMINAL.includes(task.status) && task.kind !== 'review' && <Steer taskId={id} running={task.running} onError={onError} onReplanned={load} />}
 
-      {alerts.length > 0 && (
-        <ul className="alerts">
-          {alerts.slice(-5).map((a) => (
-            <li key={a.id} className={`alert alert-${String(a.payload.kind)}`}>
-              <strong>{String(a.payload.kind).replace(/_/g, ' ')}</strong> {String(a.payload.message ?? '')}
-              <span className="when">{timeAgo(a.at)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <Alerts alerts={alerts} />
 
       <nav className="tabs">
         {(['docs', 'diff', 'activity', 'runs'] as Tab[]).map((t) => (
@@ -210,6 +205,31 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
   );
 }
 
+/** What went sideways. The newest two; the rest on request, so old alerts don't bury the page. */
+function Alerts({ alerts }: { alerts: OfficeEvent[] }) {
+  const [all, setAll] = useState(false);
+  if (alerts.length === 0) return null;
+  const shown = all ? alerts : alerts.slice(-2);
+  return (
+    <div className="alerts">
+      <ul>
+        {shown.map((a) => (
+          <li key={a.id} className={`alert alert-${String(a.payload.kind)}${all ? '' : ' alert-clamped'}`}>
+            <strong>{String(a.payload.kind).replace(/_/g, ' ')}</strong>
+            <span className="alert-msg">{String(a.payload.message ?? '')}</span>
+            <span className="when">{timeAgo(a.at)}</span>
+          </li>
+        ))}
+      </ul>
+      {alerts.length > 2 && (
+        <button className="link" onClick={() => setAll(!all)}>
+          {all ? 'Show only the latest' : `Show all ${alerts.length} alerts`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; onError: (e: unknown) => void }) {
   const [comment, setComment] = useState('');
   const [rejecting, setRejecting] = useState(false);
@@ -230,7 +250,9 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
   if (gate.kind === 'command') {
     return (
       <div className="gate gate-command">
-        <div className="gate-title">An agent wants to run a command that isn't on the allow-list</div>
+        <div className="gate-title">
+          <Icon name="warn" /> An agent wants to run a command that isn't on the allow-list
+        </div>
         <pre>{gate.subject}</pre>
         <div className="gate-buttons">
           <button disabled={busy} onClick={() => decide('allow_once')}>
@@ -262,7 +284,9 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
         : 'What should the coder fix before pushing?';
   return (
     <div className="gate">
-      <div className="gate-title">{label}</div>
+      <div className="gate-title">
+        <Icon name="warn" /> {label}
+      </div>
       {gate.kind === 'plan' && <p className="gate-hint">Read the plan below. Approving starts the coder.</p>}
       {gate.kind === 'review_post' && <p className="gate-hint">Edit or delete comments below first. It posts under the repo's GitHub account.</p>}
       {rejecting && (
@@ -362,12 +386,18 @@ function Runs({ runs }: { runs: TaskDetail['runs'] }) {
         <tbody>
           {runs.map((r) => (
             <tr key={r.id}>
-              <td>{r.role}</td>
+              <td>
+                <span className="run-role">
+                  <RoleIcon role={r.role} /> {r.role}
+                </span>
+              </td>
               <td>
                 {r.model.replace('claude-', '')}
                 {r.effort ? ` · ${r.effort}` : ''}
               </td>
-              <td title={r.error ?? ''}>{r.status}</td>
+              <td title={r.error ?? ''}>
+                <span className={`run-status run-${r.status}`}>{r.status}</span>
+              </td>
               <td>{formatTokens(r.inputTokens)}</td>
               <td>{formatTokens(r.outputTokens)}</td>
               <td>

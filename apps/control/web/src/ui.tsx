@@ -1,5 +1,7 @@
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { Task } from './api';
+import { Icon, roleIconName } from './icons';
 
 export const STATUS_LABELS: Record<string, string> = {
   queued: 'Queued',
@@ -28,7 +30,9 @@ export const STATUS_LABELS: Record<string, string> = {
 
 export const COLUMNS = ['Queued', 'Planning', 'Awaiting you', 'Building', 'Review/Test', 'Done'];
 
-export function statusTone(status: string): 'attention' | 'active' | 'done' | 'muted' | 'danger' {
+export type Tone = 'attention' | 'active' | 'done' | 'muted' | 'danger';
+
+export function statusTone(status: string): Tone {
   if (['awaiting_plan_approval', 'awaiting_push_approval', 'awaiting_review_post'].includes(status)) return 'attention';
   if (['blocked', 'failed'].includes(status)) return 'danger';
   if (['paused', 'stopped', 'discarded', 'queued'].includes(status)) return 'muted';
@@ -36,11 +40,115 @@ export function statusTone(status: string): 'attention' | 'active' | 'done' | 'm
   return 'active';
 }
 
+/** The agent that works a status, mirroring AGENT_STEPS on the server. */
+const STATUS_ROLES: Record<string, string> = {
+  intake: 'manager',
+  debugging: 'debugger',
+  researching: 'researcher',
+  planning: 'architect',
+  coding: 'coder',
+  reviewing: 'reviewer',
+  testing: 'tester',
+  retro: 'manager',
+  reviewing_pr: 'reviewer',
+};
+
+export function roleOf(status: string): string | null {
+  return STATUS_ROLES[status] ?? null;
+}
+
 export function StatusBadge({ status, running }: { status: string; running?: boolean }) {
+  const role = roleOf(status);
   return (
     <span className={`badge badge-${statusTone(status)}`}>
       {running && <span className="pulse" aria-hidden />}
+      {role && <Icon name={roleIconName(role)} size={16} />}
       {STATUS_LABELS[status] ?? status}
+    </span>
+  );
+}
+
+// ------------------------------------------------------------------ mission stages
+
+const BUILD_STAGES = ['Intake', 'Plan', 'Build', 'Review', 'Test', 'Ship'];
+const REVIEW_STAGES = ['Read', 'Draft', 'Post'];
+
+/** Where each status sits on the stage track. A position past the last stage means all done. */
+const BUILD_POSITION: Record<string, number> = {
+  intake: 0,
+  debugging: 0,
+  researching: 0,
+  planning: 1,
+  awaiting_plan_approval: 1,
+  coding: 2,
+  reviewing: 3,
+  testing: 4,
+  awaiting_push_approval: 5,
+  pushing: 5,
+  pr_open: 6,
+  retro: 6,
+  done: 6,
+};
+const REVIEW_POSITION: Record<string, number> = {
+  reviewing_pr: 0,
+  awaiting_review_post: 1,
+  posting_review: 2,
+  done: 3,
+};
+
+export interface Stage {
+  stages: string[];
+  /** Index of the current stage; -1 before the first, stages.length when all are done. */
+  index: number;
+  tone: Tone;
+}
+
+export function stageOf(task: Pick<Task, 'status' | 'resumeStatus' | 'kind'>): Stage {
+  const review = task.kind === 'review';
+  const stages = review ? REVIEW_STAGES : BUILD_STAGES;
+  const position = review ? REVIEW_POSITION : BUILD_POSITION;
+  // A parked task (paused, stopped, blocked) keeps its place: where it resumes from.
+  const at = position[task.status] ?? (task.resumeStatus ? position[task.resumeStatus] : undefined) ?? -1;
+  return { stages, index: at, tone: statusTone(task.status) };
+}
+
+/** The mission's stages as a row of pips: done, current (in the status colour), still to come. */
+export function StageTrack({ task, labels }: { task: Pick<Task, 'status' | 'resumeStatus' | 'kind' | 'running'>; labels?: boolean }) {
+  const { stages, index, tone } = stageOf(task);
+  const current = stages[index];
+  return (
+    <div
+      className={`stages${labels ? ' stages-labelled' : ''}`}
+      role="img"
+      aria-label={index >= stages.length ? 'All stages done' : current ? `Stage ${index + 1} of ${stages.length}: ${current}` : 'Not started'}
+    >
+      {stages.map((name, i) => (
+        <span
+          key={name}
+          className={`stage ${i < index ? 'stage-done' : i === index ? `stage-now stage-${tone}${task.running ? ' stage-live' : ''}` : 'stage-todo'}`}
+          title={name}
+        >
+          <span className="pip" />
+          {labels && <span className="stage-name">{name}</span>}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** A segmented meter, like a health bar. `value` is 0 to 1. */
+export function Meter({ value, segments = 10, label, title }: { value: number; segments?: number; label?: string; title?: string }) {
+  const filled = Math.max(0, Math.min(segments, Math.round(value * segments)));
+  const level = value >= 0.9 ? 'high' : value >= 0.7 ? 'mid' : 'low';
+  return (
+    <span className={`meter meter-${level}`} title={title} role="img" aria-label={title ?? `${label ?? ''} ${Math.round(value * 100)}%`}>
+      {label && <span className="meter-label">{label}</span>}
+      <span className="meter-bar">
+        {Array.from({ length: segments }, (_, i) => (
+          <span key={i} className={i < filled ? 'on' : ''} />
+        ))}
+      </span>
+      <span className="meter-value">{Math.round(value * 100)}%</span>
     </span>
   );
 }

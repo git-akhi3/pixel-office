@@ -15,6 +15,7 @@ import { VersionIndicator } from './components/VersionIndicator.js';
 import { ZoomControls } from './components/ZoomControls.js';
 import { TILE_SIZE } from './constants.js';
 import { fitView, labelScaleFor, readEmbedMode } from './embed.js';
+import { BOARD_SOURCE, buildRoster, EMBED_SOURCE, embedParentOrigin } from './embedRoster.js';
 import { useEditorActions } from './hooks/useEditorActions.js';
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js';
 import { useExtensionMessages } from './hooks/useExtensionMessages.js';
@@ -44,6 +45,8 @@ if (isE2E) installTestHooks(officeStateRef);
 
 /** `?embed`: shown inside another page. No toolbars; the office scales to fill the frame. */
 const embedMode = readEmbedMode(window.location.search);
+/** The page embedding the office (`?parent=`): it lists who is on duty and can point at a character. */
+const embedParent = embedMode ? embedParentOrigin(window.location.search) : null;
 
 function getOfficeState(): OfficeState {
   if (!officeStateRef.current) {
@@ -277,6 +280,49 @@ function App() {
 
   const officeState = getOfficeState();
 
+  // Embedded view: tell the embedding page who is on duty. Characters change state outside React,
+  // so this polls; a message goes out only when the roster changed.
+  const lastRosterRef = useRef('');
+  useEffect(() => {
+    if (!embedParent || window.parent === window) return;
+    const post = () => {
+      const roster = buildRoster({
+        characters: officeState.characters,
+        residentIds: officeState.residentIds,
+        agents,
+        agentTools,
+        subagentCharacters,
+        subagentTools,
+      });
+      const serialized = JSON.stringify(roster);
+      if (serialized === lastRosterRef.current) return;
+      lastRosterRef.current = serialized;
+      window.parent.postMessage(
+        { source: EMBED_SOURCE, type: 'roster', agents: roster },
+        embedParent,
+      );
+    };
+    post();
+    const timer = window.setInterval(post, 500);
+    return () => window.clearInterval(timer);
+  }, [officeState, agents, agentTools, subagentCharacters, subagentTools]);
+  useEffect(() => {
+    if (!embedParent) return;
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== embedParent || e.source !== window.parent) return;
+      const data = e.data as { source?: unknown; type?: unknown; id?: unknown } | null;
+      if (data?.source !== BOARD_SOURCE) return;
+      if (data.type === 'highlight') {
+        // Same as hovering the character: outlined, with its full label.
+        officeState.hoveredAgentId = typeof data.id === 'number' ? data.id : null;
+      } else if (data.type === 'hello') {
+        lastRosterRef.current = ''; // the page (re)attached: send the roster again
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [officeState]);
+
   // Merged set of folders the Areas dropdown can map: real workspace folders plus
   // every distinct folder an agent has run in this session (deduped by name; name
   // is the areaMappings key / seat-bias identity, path is only the React list key).
@@ -421,6 +467,7 @@ function App() {
         panRef={embedPanRef}
         alwaysShowOverlay={false}
         workingOnly
+        compact
         labelScale={labelScaleFor(view)}
       />
     </div>

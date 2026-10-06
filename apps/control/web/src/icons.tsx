@@ -1,0 +1,96 @@
+// Pixel-art icons: each one is an 8x8 bitmap ('#' = filled), drawn as crisp SVG rects in the
+// current text colour. Sizes should be multiples of 8 so every bitmap pixel lands on whole pixels.
+
+const BITMAPS = {
+  board: ['##.##.##', '##.##.##', '##.##.##', '##.##.##', '##.##...', '##.##...', '##......', '##......'],
+  office: ['########', '#......#', '#......#', '#......#', '########', '...##...', '..####..', '........'],
+  repo: ['.###....', '########', '#......#', '#......#', '#......#', '#......#', '########', '........'],
+  team: ['.##..##.', '.##..##.', '........', '###.###.', '###.###.', '###.###.', '###.###.', '........'],
+  book: ['########', '#.#....#', '#.#.##.#', '#.#....#', '#.#.##.#', '#.#....#', '########', '........'],
+  gear: ['...##...', '.#.##.#.', '..####..', '###..###', '###..###', '..####..', '.#.##.#.', '...##...'],
+  flag: ['.#......', '.#####..', '.######.', '.#####..', '.#......', '.#......', '.#......', '###.....'],
+  expand: ['###..###', '#......#', '#......#', '........', '........', '#......#', '#......#', '###..###'],
+  shrink: ['..#..#..', '..#..#..', '###..###', '........', '........', '###..###', '..#..#..', '..#..#..'],
+  bolt: ['....##..', '...##...', '..##....', '.######.', '....##..', '...##...', '..##....', '.##.....'],
+  gem: ['...##...', '..####..', '.######.', '########', '.######.', '..####..', '...##...', '........'],
+  warn: ['..###...', '..###...', '..###...', '..###...', '..###...', '........', '..###...', '..###...'],
+  check: ['........', '.......#', '......##', '#....##.', '##..##..', '.####...', '..##....', '........'],
+  close: ['##....##', '.##..##.', '..####..', '...##...', '..####..', '.##..##.', '##....##', '........'],
+  play: ['.##.....', '.####...', '.######.', '.#######', '.######.', '.####...', '.##.....', '........'],
+  clock: ['..####..', '.#.#..#.', '#..#...#', '#..###.#', '#......#', '.#....#.', '..####..', '........'],
+  left: ['....##..', '...##...', '..##....', '.##.....', '..##....', '...##...', '....##..', '........'],
+  right: ['..##....', '...##...', '....##..', '.....##.', '....##..', '...##...', '..##....', '........'],
+  link: ['...#####', '.....###', '....##.#', '...##..#', '#.##....', '#.#.....', '#.......', '######..'],
+  // crew
+  manager: ['........', '#..##..#', '#..##..#', '##.##.##', '########', '########', '........', '########'],
+  architect: ['#.......', '##......', '#.#.....', '#..#....', '#...#...', '#....#..', '#.....#.', '########'],
+  coder: ['........', '..#..#..', '.#....#.', '#......#', '.#....#.', '..#..#..', '........', '........'],
+  reviewer: ['........', '..####..', '.#....#.', '#..##..#', '#..##..#', '.#....#.', '..####..', '........'],
+  tester: ['..####..', '...##...', '...##...', '..#..#..', '.#....#.', '.######.', '########', '.######.'],
+  debugger: ['#..##..#', '.#.##.#.', '..####..', '########', '..####..', '########', '..####..', '.#....#.'],
+  researcher: ['.####...', '#....#..', '#....#..', '#....#..', '.####...', '....###.', '.....###', '......##'],
+  agent: ['..####..', '.######.', '.#.##.#.', '.######.', '..####..', '.######.', '########', '########'],
+} as const;
+
+export type IconName = keyof typeof BITMAPS;
+
+const PATHS = Object.fromEntries(
+  Object.entries(BITMAPS).map(([name, rows]) => [
+    name,
+    rows
+      .flatMap((row, y) => {
+        // One rect per horizontal run of filled pixels.
+        const runs: string[] = [];
+        for (let x = 0; x < row.length; x++) {
+          if (row[x] !== '#') continue;
+          let end = x;
+          while (row[end + 1] === '#') end++;
+          runs.push(`M${x} ${y}h${end - x + 1}v1h-${end - x + 1}z`);
+          x = end;
+        }
+        return runs;
+      })
+      .join(''),
+  ]),
+) as Record<IconName, string>;
+
+export function Icon({ name, size = 16, className }: { name: IconName; size?: number; className?: string }) {
+  return (
+    <svg
+      className={`icon${className ? ` ${className}` : ''}`}
+      width={size}
+      height={size}
+      viewBox="0 0 8 8"
+      shapeRendering="crispEdges"
+      fill="currentColor"
+      aria-hidden
+    >
+      <path d={PATHS[name]} />
+    </svg>
+  );
+}
+
+const ROLE_ICONS: Record<string, IconName> = {
+  manager: 'manager',
+  architect: 'architect',
+  designer: 'architect',
+  coder: 'coder',
+  reviewer: 'reviewer',
+  tester: 'tester',
+  debugger: 'debugger',
+  researcher: 'researcher',
+};
+
+export function roleIconName(role: string): IconName {
+  return ROLE_ICONS[role] ?? 'agent';
+}
+
+/** A crew member's emblem: the role's icon on its colour. Unknown names get the generic agent. */
+export function RoleIcon({ role, size = 16 }: { role: string; size?: number }) {
+  const known = role in ROLE_ICONS;
+  return (
+    <span className={`role-icon role-${known ? (role === 'designer' ? 'architect' : role) : 'agent'}`} title={role}>
+      <Icon name={ROLE_ICONS[role] ?? 'agent'} size={size} />
+    </span>
+  );
+}

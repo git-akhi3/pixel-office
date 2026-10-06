@@ -1,122 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type GraphInfo, type Repo, type Settings } from './api';
-import { timeAgo } from './ui';
-
-export function NewTask({ repos, onError }: { repos: Repo[]; onError: (e: unknown) => void }) {
-  const [repoId, setRepoId] = useState<number | ''>(repos[0]?.id ?? '');
-  const [input, setInput] = useState('');
-  const [kind, setKind] = useState<'feature' | 'bug'>('feature');
-  const [mode, setMode] = useState<'task' | 'review'>('task');
-  const [prUrl, setPrUrl] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (repoId === '' && repos[0]) setRepoId(repos[0].id);
-  }, [repos, repoId]);
-
-  if (!repos.length) {
-    return (
-      <div className="panel">
-        <h1>New task</h1>
-        <p>
-          Add a repository first. <a href="#/repos">Go to repositories →</a>
-        </p>
-      </div>
-    );
-  }
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (mode === 'review' ? !prUrl.trim() : repoId === '' || !input.trim()) return;
-    setBusy(true);
-    try {
-      const task =
-        mode === 'review'
-          ? await api.createReview(prUrl.trim())
-          : await api.createTask({ repoId: repoId as number, input, kind });
-      location.hash = `#/task/${task.id}`;
-    } catch (err) {
-      onError(err);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form className="panel" onSubmit={submit}>
-      <h1>New task</h1>
-      <fieldset className="segmented">
-        <legend>What kind of work?</legend>
-        <label className={mode === 'task' ? 'active' : ''}>
-          <input type="radio" name="mode" checked={mode === 'task'} onChange={() => setMode('task')} />
-          Build or fix something
-        </label>
-        <label className={mode === 'review' ? 'active' : ''}>
-          <input type="radio" name="mode" checked={mode === 'review'} onChange={() => setMode('review')} />
-          Review a PR
-        </label>
-      </fieldset>
-      {mode === 'review' ? (
-        <>
-          <label>
-            Pull request link
-            <input
-              value={prUrl}
-              onChange={(e) => setPrUrl(e.target.value)}
-              placeholder="https://github.com/owner/repo/pull/123"
-            />
-          </label>
-          <p className="hint">
-            The PR's repo must be registered under Repos. The reviewer drafts comments; you edit them and
-            decide whether to post.
-          </p>
-          <button className="primary" disabled={busy || !prUrl.trim()}>
-            {busy ? 'Creating…' : 'Review it'}
-          </button>
-        </>
-      ) : (
-        <>
-          <label>
-            Repository
-            <select value={repoId} onChange={(e) => setRepoId(Number(e.target.value))}>
-              {repos.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <fieldset className="segmented">
-            <legend>Kind</legend>
-            {(['feature', 'bug'] as const).map((k) => (
-              <label key={k} className={kind === k ? 'active' : ''}>
-                <input type="radio" name="kind" checked={kind === k} onChange={() => setKind(k)} />
-                {k === 'feature' ? 'Feature / change' : 'Bug'}
-              </label>
-            ))}
-          </fieldset>
-          <label>
-            What should be done?
-            <textarea
-              rows={8}
-              required
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Describe the task as you would to a teammate: what, why, and anything they should know (links, error messages, files)."
-            />
-          </label>
-          <p className="hint">
-            The manager sizes it, the architect writes a plan, and you approve the plan before any code is
-            written.
-          </p>
-          <button className="primary" disabled={busy || !input.trim()}>
-            {busy ? 'Creating…' : 'Hand it to the team'}
-          </button>
-        </>
-      )}
-    </form>
-  );
-}
+import { Icon } from './icons';
+import { Meter, timeAgo } from './ui';
 
 const EMPTY: Partial<Repo> = {
   name: '',
@@ -250,6 +135,7 @@ export function Repos({
         <label>
           Local path (repository root)
           <input
+            className="mono"
             required
             value={editing.path ?? ''}
             onChange={(e) => set('path', e.target.value)}
@@ -259,6 +145,7 @@ export function Repos({
         <label>
           Worktree setup command (run by the office in each new worktree; $REPO_PATH is this checkout)
           <input
+            className="mono"
             value={editing.setupCmd ?? ''}
             onChange={(e) => set('setupCmd', e.target.value)}
             placeholder={'npm ci   or   ln -s "$REPO_PATH/.venv" .venv'}
@@ -268,6 +155,7 @@ export function Repos({
           <label>
             Build command
             <input
+              className="mono"
               value={editing.buildCmd ?? ''}
               onChange={(e) => set('buildCmd', e.target.value)}
               placeholder="npm run build"
@@ -276,6 +164,7 @@ export function Repos({
           <label>
             Test command
             <input
+              className="mono"
               value={editing.testCmd ?? ''}
               onChange={(e) => set('testCmd', e.target.value)}
               placeholder="npm test"
@@ -284,6 +173,7 @@ export function Repos({
           <label>
             Lint command
             <input
+              className="mono"
               value={editing.lintCmd ?? ''}
               onChange={(e) => set('lintCmd', e.target.value)}
               placeholder="npm run lint"
@@ -360,7 +250,9 @@ export function Repos({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h1>Repositories</h1>
+        <h1>
+          <Icon name="repo" size={24} /> Repositories
+        </h1>
         <button className="primary" onClick={() => setEditing({ ...EMPTY })}>
           Add repository
         </button>
@@ -372,9 +264,10 @@ export function Repos({
             <div>
               <strong>{r.name}</strong> <code>{r.defaultBranch}</code>
               {r.ghAccount && <span className="repo-chip">{r.ghAccount}</span>}
-              <div className="hint">{r.path}</div>
+              <div className="hint mono">{r.path}</div>
               <div className="hint">
-                test: {r.testCmd ?? '–'} · lint: {r.lintCmd ?? '–'} · {r.allowlist.length} approved command(s)
+                test: <span className="mono">{r.testCmd ?? '–'}</span> · lint: <span className="mono">{r.lintCmd ?? '–'}</span> · {r.allowlist.length} approved
+                command(s)
               </div>
               {r.graphify && <GraphLine info={graph} repoId={r.id} onBuild={() => buildGraph(r)} />}
             </div>
@@ -431,11 +324,12 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
       onError(e);
     }
   };
-  const pct = (n?: number) => (n === undefined ? '–' : `${Math.round(n * 100)}%`);
 
   return (
     <div className="panel">
-      <h1>Settings</h1>
+      <h1>
+        <Icon name="gear" size={24} /> Settings
+      </h1>
       <label className="switch">
         <input
           type="checkbox"
@@ -508,9 +402,9 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
         <span className="hint">Running steps always finish. Paused work starts again when the window resets.</span>
       </label>
       {s.rateLimit ? (
-        <p>
-          5-hour window: <strong>{pct(s.rateLimit.fiveHour)}</strong> · 7-day:{' '}
-          <strong>{pct(s.rateLimit.sevenDay)}</strong>
+        <div className="usage-rows">
+          {s.rateLimit.fiveHour !== undefined && <Meter value={s.rateLimit.fiveHour} segments={20} label="5-hour window" />}
+          {s.rateLimit.sevenDay !== undefined && <Meter value={s.rateLimit.sevenDay} segments={20} label="7-day window" />}
           <span className="hint">
             {' '}
             (as of {timeAgo(s.rateLimit.at)}
@@ -519,7 +413,7 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
               : ''}
             )
           </span>
-        </p>
+        </div>
       ) : (
         <p className="hint">Shown after the first agent run.</p>
       )}

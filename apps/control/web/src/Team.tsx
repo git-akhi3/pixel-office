@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type AgentInfo, type SkillInfo } from './api';
+import { Icon, RoleIcon } from './icons';
 
 const NEW_SKILL = (name: string) => `---
 name: ${name}
@@ -68,51 +69,58 @@ export function Team({ onError }: { onError: (e: unknown) => void }) {
 
   return (
     <div className="panel panel-wide">
-      <h1>Team</h1>
+      <h1>
+        <Icon name="team" size={24} /> Team
+      </h1>
       <p className="hint">Changes are saved in ~/.office and override the built-in definitions. "Reset" goes back to the built-in version.</p>
-      <table className="team">
-        <thead>
-          <tr>
-            <th>Agent</th>
-            <th>Model</th>
-            <th>Tools</th>
-            <th>Skills</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {agents.map((a) => (
-            <tr key={a.role}>
-              <td>
-                <strong>{a.role}</strong>
-                {a.custom && <span className="kind kind-review">edited</span>}
-                <div className="hint">{a.description}</div>
-                {a.error && <div className="hint over">Your file is invalid, so the built-in {a.role} is used: {a.error}</div>}
-              </td>
-              <td>
-                {a.model.replace('claude-', '')}
-                {a.effort ? ` · ${a.effort}` : ''}
-              </td>
-              <td>
-                <span className="hint">{a.tools.join(', ')}</span>
-              </td>
-              <td>
-                <span className="hint">{a.skills.join(', ') || '–'}</span>
-              </td>
-              <td>
-                <div className="row-buttons">
-                  <button onClick={() => setEditing({ kind: 'agent', key: a.role, text: a.text })}>Edit</button>
-                  {a.custom && (
-                    <button onClick={() => act(() => api.resetAgent(a.role), `Reset ${a.role} to the built-in version?`)}>Reset</button>
-                  )}
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="crew">
+        {agents.map((a) => (
+          <article key={a.role} className={`crew-card role-tint-${a.role}`}>
+            <header>
+              <RoleIcon role={a.role} size={24} />
+              <div>
+                <h3>
+                  {a.role}
+                  {a.custom && <span className="kind kind-review">edited</span>}
+                </h3>
+                <span className="crew-model">
+                  {a.model.replace('claude-', '')}
+                  {a.effort ? ` · ${a.effort} effort` : ''}
+                </span>
+              </div>
+            </header>
+            <p className="crew-desc">{a.description}</p>
+            {a.error && <p className="hint over">Your file is invalid, so the built-in {a.role} is used: {a.error}</p>}
+            <dl>
+              <dt>Tools</dt>
+              <dd>
+                {a.tools.map((t) => (
+                  <span key={t} className="tag">
+                    {t}
+                  </span>
+                ))}
+              </dd>
+              <dt>Skills</dt>
+              <dd>
+                {a.skills.length === 0 && <span className="hint">none</span>}
+                {a.skills.map((sk) => (
+                  <span key={sk} className="tag tag-skill">
+                    {sk}
+                  </span>
+                ))}
+              </dd>
+            </dl>
+            <div className="row-buttons">
+              <button onClick={() => setEditing({ kind: 'agent', key: a.role, text: a.text })}>Edit</button>
+              {a.custom && <button onClick={() => act(() => api.resetAgent(a.role), `Reset ${a.role} to the built-in version?`)}>Reset</button>}
+            </div>
+          </article>
+        ))}
+      </div>
 
-      <h2>Skills</h2>
+      <h2>
+        <Icon name="book" /> Skills
+      </h2>
       <ul className="repo-list">
         {skills.map((s) => (
           <li key={s.name}>

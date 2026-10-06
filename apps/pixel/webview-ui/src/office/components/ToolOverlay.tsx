@@ -17,6 +17,7 @@ import {
   TEAM_ROLE_COLOR,
   TOOL_OVERLAY_VERTICAL_OFFSET,
 } from '../../constants.js';
+import { characterName, stackTags, tagWidth } from '../../embedRoster.js';
 import type { SubagentCharacter } from '../../hooks/useExtensionMessages.js';
 import type { OfficeState } from '../engine/officeState.js';
 import { overlayProjection } from '../projection.js';
@@ -45,7 +46,14 @@ interface ToolOverlayProps {
   workingOnly?: boolean;
   /** Embedded view: shrink labels with the scene on small frames (1 = normal size). */
   labelScale?: number;
+  /** Embedded view: a small name tag per working character instead of a label bar each (bars
+   *  overlap in a busy office). Hovering or selecting a character still shows its full label. */
+  compact?: boolean;
 }
+
+/** Longest name shown on a tag; the full name is on the hover label. */
+const TAG_NAME_MAX = 14;
+const TAG_HEIGHT_PX = 22;
 
 /** Derive a short human-readable activity string from tools/status */
 function getActivityText(
@@ -99,6 +107,7 @@ export function ToolOverlay({
   alwaysShowOverlay,
   workingOnly = false,
   labelScale = 1,
+  compact = false,
 }: ToolOverlayProps) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -129,6 +138,39 @@ export function ToolOverlay({
   const allIds = [...agents, ...subagentCharacters.map((s) => s.id)];
   for (const rid of officeState.residentIds.values()) if (!allIds.includes(rid)) allIds.push(rid);
 
+  const labelAnchor = (ch: { x: number; y: number; state: CharacterState }) => ({
+    x: project.toScreenX(ch.x),
+    y: project.toScreenY(
+      ch.y +
+        (ch.state === CharacterState.TYPE ? CHARACTER_SITTING_OFFSET_PX : 0) -
+        TOOL_OVERLAY_VERTICAL_OFFSET,
+    ),
+  });
+  const tagName = (id: number) => {
+    const ch = officeState.characters.get(id);
+    if (!ch) return '';
+    const sub = subagentCharacters.find((s) => s.id === id);
+    return characterName(id, ch, officeState.residentIds, sub);
+  };
+  // Name tags, moved apart where two would overlap.
+  const tagBottoms = compact
+    ? stackTags(
+        allIds.flatMap((id) => {
+          const ch = officeState.characters.get(id);
+          if (!ch || !ch.isActive || id === selectedId || id === hoveredId) return [];
+          const anchor = labelAnchor(ch);
+          return [
+            {
+              id,
+              ...anchor,
+              width: tagWidth(tagName(id).slice(0, TAG_NAME_MAX)) * labelScale,
+              height: TAG_HEIGHT_PX * labelScale,
+            },
+          ];
+        }),
+      )
+    : null;
+
   return (
     <>
       {allIds.map((id) => {
@@ -148,9 +190,45 @@ export function ToolOverlay({
         if (!shown) return null;
 
         // Position above character
-        const sittingOffset = ch.state === CharacterState.TYPE ? CHARACTER_SITTING_OFFSET_PX : 0;
-        const screenX = project.toScreenX(ch.x);
-        const screenY = project.toScreenY(ch.y + sittingOffset - TOOL_OVERLAY_VERTICAL_OFFSET);
+        const { x: screenX, y: screenY } = labelAnchor(ch);
+
+        if (tagBottoms && !isSelected && !isHovered) {
+          const sub = subagentCharacters.find((s) => s.id === id);
+          const ownTools = sub
+            ? subagentTools[sub.parentAgentId]?.[sub.parentToolId]
+            : agentTools[id];
+          const needsApproval =
+            ch.bubbleType === 'permission' || !!ownTools?.some((t) => t.permissionWait && !t.done);
+          const name = tagName(id);
+          return (
+            <div
+              key={id}
+              className="absolute flex items-center gap-4 border-border px-5 pt-1 pb-2 pixel-panel whitespace-nowrap text-2xs leading-none -translate-x-1/2 -translate-y-full"
+              style={{
+                left: screenX,
+                top: tagBottoms.get(id) ?? screenY,
+                pointerEvents: 'none',
+                opacity: 0.92,
+                zIndex: 41,
+                ...(labelScale !== 1
+                  ? { scale: String(labelScale), transformOrigin: 'bottom center' }
+                  : {}),
+              }}
+              data-testid="agent-tag"
+              data-agent-id={id}
+            >
+              <span
+                className={`w-6 h-6 shrink-0 ${needsApproval ? '' : 'pixel-pulse'}`}
+                style={{
+                  background: needsApproval
+                    ? 'var(--color-status-permission)'
+                    : 'var(--color-status-active)',
+                }}
+              />
+              {name.length > TAG_NAME_MAX ? `${name.slice(0, TAG_NAME_MAX - 1)}…` : name}
+            </div>
+          );
+        }
 
         // A "Done" agent (finished turn: waiting bubble without awaitingInput)
         // shows ONLY its floating green checkmark bubble, never the label panel
@@ -218,7 +296,9 @@ export function ToolOverlay({
         }
 
         // Team info
-        const teamRoleLabel = ch.isTeamLead ? 'LEAD' : ch.agentName || null;
+        const teamRoleLabel = ch.isTeamLead
+          ? 'LEAD'
+          : ch.agentName || (compact && ch.isResident ? tagName(id) : null);
         const hasExtraLines = !!(ch.folderName || teamRoleLabel);
 
         // Context gauge. Every agent gets one — lead, teammate, adopted,
@@ -236,7 +316,7 @@ export function ToolOverlay({
               top: screenY - (hasExtraLines ? 34 : 28),
               pointerEvents: isSelected ? 'auto' : 'none',
               opacity: alwaysShowOverlay && !isSelected && !isHovered ? (isSub ? 0.5 : 0.75) : 1,
-              zIndex: isSelected ? 42 : 41,
+              zIndex: isSelected || (compact && isHovered) ? 42 : 41,
               ...(labelScale !== 1
                 ? { scale: String(labelScale), transformOrigin: 'bottom center' }
                 : {}),
