@@ -232,6 +232,16 @@ describe('SlackBridge', () => {
     expect(task.id).toBe(1);
   });
 
+  it('says in the thread when a task takes a shorter route', async () => {
+    const task = t.db.insert(schema.tasks).values({ repoId: t.repo.id, title: 'x', input: 'x', slackChannel: DM, slackThreadTs: '50.1' }).returning().get();
+    t.bus.emit(task.id, 'lane_decided', { lane: 'trivial', said: 'trivial', reason: 'docs' });
+    t.bus.emit(task.id, 'lane_decided', { lane: 'standard', said: null, reason: 'none' });
+    await t.settle();
+    const routes = t.posted.filter((p) => p.text.includes('Route:'));
+    expect(routes).toHaveLength(1);
+    expect(routes[0]!.text).toContain('*trivial*');
+  });
+
   it('posts milestones and alerts in the task thread', async () => {
     const task = t.db.insert(schema.tasks).values({ repoId: t.repo.id, title: 'x', input: 'x', status: 'pr_open', slackChannel: DM, slackThreadTs: '50.1' }).returning().get();
     t.bus.emit(task.id, 'alert', { kind: 'tokens', message: 'Used 9 tokens <a>' });

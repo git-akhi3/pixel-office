@@ -65,6 +65,44 @@ const INPUTS: Record<ContractStep, DocName[]> = {
   reviewing_pr: [],
 };
 
+/** Trivial and small tasks have no architect: the coder works from the manager's task.md instead of a plan. */
+const unplanned = (task: Task) => task.lane === 'trivial' || task.lane === 'small';
+
+function inputsFor(step: ContractStep, task: Task): DocName[] {
+  if (!unplanned(task)) return INPUTS[step];
+  return [...new Set(INPUTS[step].map((d): DocName => (d === 'plan' ? 'task' : d)))];
+}
+
+const UNPLANNED_JOBS: Partial<Record<ContractStep, (task: Task) => string>> = {
+  coding: (task) =>
+    [
+      `There is no separate plan: the manager routed this as a ${task.lane} change. Make the change that the request and the draft acceptance criteria in task.md describe, as small as it can be, touching only what it needs.`,
+      task.lane === 'trivial'
+        ? 'This lane goes straight to the owner after you, with no review or tests, so keep to docs, comments and wording. If the change really needs code, make it and run the tests: the office will then send it through review.'
+        : 'Run the lint, typecheck and test commands before you finish.',
+      'If it turns out bigger than that, or needs a decision, report status: blocked and the architect will plan it. In the Changes section, list what you changed instead of plan steps.',
+    ].join(' '),
+  reviewing: () =>
+    'Review the changes (the diff below, and the code around it) against the request and the draft acceptance criteria in task.md: there is no separate plan for this small task. Run the tests if useful. You did not write this code.',
+  testing: () =>
+    "Write tests for behaviour this change adds or alters, mapped to the draft acceptance criteria in task.md; a change with no behaviour (docs, comments, wording, formatting) gets no new tests. Then run the full test suite. Only create or change test files.",
+};
+
+function jobFor(step: ContractStep, task: Task): string {
+  const unplannedJob = unplanned(task) ? UNPLANNED_JOBS[step] : undefined;
+  return unplannedJob ? unplannedJob(task) : JOBS[step];
+}
+
+const ROUTE_RULES = [
+  '## Route',
+  'Pick the lane, which decides how much of the team this task gets:',
+  '- trivial: docs, README, comments, typos, wording, text-only config. Nothing about what the code does changes. Goes coder → owner, with no plan, review or tests.',
+  '- small: a small, clear code change (size S): one area, an obvious approach, no design choices, nothing risky (auth, payments, data migrations, security). Goes coder → review → tests, with no architect.',
+  '- standard: everything else, and whenever you are unsure. The architect plans it and the owner approves the plan.',
+  "The office checks the coder's diff and moves a task up a lane when it turns out bigger, and anything that needs a debugger, research, a design review or a briefing is standard anyway.",
+  "Don't pick skills for roles your lane skips (trivial: architect, reviewer, tester; small: architect).",
+].join('\n');
+
 function repoNotes(worktree: string): string | null {
   for (const name of ['CLAUDE.md', 'AGENTS.md']) {
     const f = join(worktree, name);
@@ -106,7 +144,7 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
   const attachments = attachmentSection(step, task, ctx.attachmentsDir);
   if (attachments) parts.push(attachments);
 
-  const included = INPUTS[step]
+  const included = inputsFor(step, task)
     .map((name) => [name, docs.latest(task.id, name)] as const)
     .filter(([, text]) => text);
   if (included.length) {
@@ -136,7 +174,8 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
     );
   }
   if (step === 'planning' && ctx.briefing) parts.push(briefingRules(ctx.briefing.hasSkill));
-  parts.push(`## Your job now\n${JOBS[step]}`);
+  if (step === 'intake' && task.kind !== 'review') parts.push(ROUTE_RULES);
+  parts.push(`## Your job now\n${jobFor(step, task)}`);
   parts.push(
     `## Output format\nYour final message is saved as ${CONTRACTS[step].doc}.md and is all the next agent sees. Reply with only this document, starting with the --- front matter line:\n\n${CONTRACTS[step].format}`,
   );

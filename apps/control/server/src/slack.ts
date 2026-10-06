@@ -391,6 +391,12 @@ export class SlackBridge {
         return void (await this.say(`:tada: PR merged: ${String(event.payload.url)}`, task));
       case 'review_posted':
         return void (await this.say(`:memo: Review posted: ${String(event.payload.url)}`, task));
+      case 'lane_decided': {
+        const lane = String(event.payload.lane);
+        if (lane === 'standard') return;
+        const route = lane === 'trivial' ? 'coder, then your push approval (no plan, review or tests)' : 'coder, review and tests (no plan to approve)';
+        return void (await this.say(`:twisted_rightwards_arrows: Route: *${lane}*: ${route}. It moves up a lane if the change turns out bigger.`, task));
+      }
       case 'worktree':
         return;
       default:

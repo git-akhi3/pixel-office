@@ -25,6 +25,8 @@ export const CONTRACTS = {
       title: z.string().min(1).max(80),
       kind: z.enum(['feature', 'bug']),
       size: z.enum(['S', 'M', 'L']),
+      /** The route through the team. Missing or unknown means standard; the office checks it against the rest. */
+      lane: z.enum(['trivial', 'small', 'standard']).optional().catch(undefined),
       needs_debugger: bool,
       needs_researcher: bool,
       design_review: bool,
@@ -40,6 +42,7 @@ export const CONTRACTS = {
 title: <short task title, under 60 characters>
 kind: feature | bug
 size: S | M | L          # S: under an hour of focused work, M: half a day, L: more
+lane: trivial | small | standard   # see "Route" below
 needs_debugger: true | false    # true only for bugs whose cause is unclear
 needs_researcher: true | false  # true only if external docs/APIs must be checked first
 design_review: true | false     # true for UI or architecture changes: the plan gets a design section

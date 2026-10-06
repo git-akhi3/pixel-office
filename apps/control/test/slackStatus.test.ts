@@ -40,6 +40,13 @@ describe('stageOf', () => {
     expect(stageOf(add({ status: 'blocked', resumeStatus: 'testing' }))?.n).toBe(7);
     expect(stageOf(add({ status: 'reviewing_pr', kind: 'review' }))).toEqual({ n: 2, of: 5 });
   });
+
+  it('counts only the stages a lane runs', () => {
+    const { add } = setup();
+    expect(stageOf(add({ status: 'coding', lane: 'trivial' }))).toEqual({ n: 3, of: 7 });
+    expect(stageOf(add({ status: 'awaiting_push_approval', lane: 'trivial' }))).toEqual({ n: 4, of: 7 });
+    expect(stageOf(add({ status: 'reviewing', lane: 'small' }))).toEqual({ n: 4, of: 10 });
+  });
 });
 
 describe('waitingOnYou', () => {

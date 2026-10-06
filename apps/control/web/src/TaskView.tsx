@@ -4,7 +4,7 @@ import { flushReviewEdits, ReviewPanel } from './Review';
 import { Briefing } from './Briefing';
 import { TaskSkills } from './Skills';
 import { Icon, RoleIcon } from './icons';
-import { DiffView, Doc, duration, formatTokens, StageTrack, StatusBadge, timeAgo } from './ui';
+import { DiffView, Doc, duration, formatTokens, LANE_HINT, StageTrack, StatusBadge, timeAgo } from './ui';
 
 type Tab = 'docs' | 'diff' | 'activity' | 'runs';
 
@@ -68,6 +68,8 @@ const REFRESH_ON = new Set([
   'briefing_resumed',
   'briefing_decided',
   'skills_picked',
+  'lane_decided',
+  'lane_changed',
 ]);
 
 export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: OfficeEvent | null; onError: (e: unknown) => void }) {
@@ -141,6 +143,7 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
           <span className="task-id">Mission #{task.id}</span>
           <span className="repo-chip">{repo.name}</span>
           {task.size && <span className="size" title={`Size ${task.size}`}>{task.size}</span>}
+          {task.lane && task.lane !== 'standard' && <span className="tag" title={`${task.lane} lane: ${LANE_HINT[task.lane]}`}>{task.lane}</span>}
           <span className={`kind kind-${task.kind}`}>{task.kind}</span>
         </div>
         <h1>{task.title}</h1>

@@ -1,5 +1,5 @@
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import type { GateKind, GateStatus, Role, TaskKind, TaskSize, TaskStatus } from '../domain.js';
+import type { GateKind, GateStatus, Lane, Role, TaskKind, TaskSize, TaskStatus } from '../domain.js';
 
 const now = () => Date.now();
 
@@ -55,6 +55,11 @@ export const tasks = sqliteTable('tasks', {
   input: text('input').notNull(),
   kind: text('kind').$type<TaskKind>().notNull().default('feature'),
   size: text('size').$type<TaskSize>(),
+  /** Route through the team (see LANES); null on tasks from before lanes, which run the full pipeline. */
+  lane: text('lane').$type<Lane>(),
+  /** Epic milestones: the epic this task was split from, and the milestone it builds on (waits for its PR). */
+  parentId: integer('parent_id'),
+  dependsOn: integer('depends_on'),
   needsDebugger: integer('needs_debugger', { mode: 'boolean' }).notNull().default(false),
   needsResearcher: integer('needs_researcher', { mode: 'boolean' }).notNull().default(false),
   designFlag: integer('design_flag', { mode: 'boolean' }).notNull().default(false),

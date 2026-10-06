@@ -105,17 +105,31 @@ export interface Stage {
   tone: Tone;
 }
 
-export function stageOf(task: Pick<Task, 'status' | 'resumeStatus' | 'kind'>): Stage {
+/** What each lane means, for tooltips. */
+export const LANE_HINT: Record<string, string> = {
+  trivial: 'docs or wording only, so no plan, review or tests; you approve the push',
+  small: 'a small code change, so no architect; review and tests still run',
+  standard: 'the full team',
+};
+
+/** Stages a lane skips: trivial tasks go straight from build to ship, small ones have no plan. */
+const SKIPPED: Record<string, string[]> = { trivial: ['Plan', 'Review', 'Test'], small: ['Plan'] };
+
+export function stageOf(task: Pick<Task, 'status' | 'resumeStatus' | 'kind' | 'lane'>): Stage {
   const review = task.kind === 'review';
-  const stages = review ? REVIEW_STAGES : BUILD_STAGES;
   const position = review ? REVIEW_POSITION : BUILD_POSITION;
   // A parked task (paused, stopped, blocked) keeps its place: where it resumes from.
   const at = position[task.status] ?? (task.resumeStatus ? position[task.resumeStatus] : undefined) ?? -1;
-  return { stages, index: at, tone: statusTone(task.status) };
+  if (review) return { stages: REVIEW_STAGES, index: at, tone: statusTone(task.status) };
+  const skipped = SKIPPED[task.lane ?? ''] ?? [];
+  const stages = BUILD_STAGES.filter((s) => !skipped.includes(s));
+  // The same position on the shorter track: count the kept stages before it.
+  const index = at < 0 ? at : BUILD_STAGES.slice(0, at).filter((s) => !skipped.includes(s)).length;
+  return { stages, index, tone: statusTone(task.status) };
 }
 
 /** The mission's stages as a row of pips: done, current (in the status colour), still to come. */
-export function StageTrack({ task, labels }: { task: Pick<Task, 'status' | 'resumeStatus' | 'kind' | 'running'>; labels?: boolean }) {
+export function StageTrack({ task, labels }: { task: Pick<Task, 'status' | 'resumeStatus' | 'kind' | 'running' | 'lane'>; labels?: boolean }) {
   const { stages, index, tone } = stageOf(task);
   const current = stages[index];
   return (

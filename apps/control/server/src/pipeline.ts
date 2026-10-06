@@ -3,6 +3,9 @@
 //   queued → intake → [debugging] → [researching] → planning → awaiting_plan_approval
 //     → coding → reviewing → testing → awaiting_push_approval → pushing → pr_open → retro → done
 //
+// Lanes (lanes.ts): trivial tasks go intake → coding → awaiting_push_approval; small ones skip the
+// architect (intake → coding → reviewing → testing → …). The coder's diff can only raise the lane.
+//
 // Failures: review or test failures go back to the coder twice, then back to the architect.
 // A coder blocker goes back to the architect. A task is re-planned at most twice, then it is blocked for me.
 
@@ -15,16 +18,17 @@ import { getSettings, schema, usagePause, type Db } from './db/index.js';
 import type { Gate, GrillMode, Question, Repo, SkillPicks, Task } from './db/schema.js';
 import { attachmentsDir, cleanLinks, Uploads } from './attachments.js';
 import { answersMessage, BRIEFING_WAIT_MS, briefDoc, MAX_BAD_ROUNDS, parseRound, type Delivery, type RoundQuestion } from './briefing.js';
-import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, type GateDecision, type Role, type TaskKind, type TaskStatus } from './domain.js';
+import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, maxLane, type GateDecision, type Lane, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
 import type { PrInfo, Publisher } from './github.js';
 import { matchesAnyGlob, realPath } from './guard.js';
 import { CONTRACTS, extractPr, normalizeOutput, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
+import { laneAtIntake, laneOfDiff } from './lanes.js';
 import { buildPrompt, PICKABLE_ROLES } from './prompts.js';
 import { addToAllowlist, effectiveAllowlist, getRepo } from './repos.js';
 import type { AgentRunner, PermissionAnswer, RunOutcome } from './runner.js';
 import { commentableLines, formatComment, originSlug, parsePrUrl, parseReviewDoc, prSlug, reviewBody, splitComments } from './reviews.js';
-import { changedFiles, commitAll, createReviewWorktree, createWorktree, diff, removeWorktree } from './worktree.js';
+import { changedFiles, commitAll, createReviewWorktree, createWorktree, diff, diffStat, removeWorktree } from './worktree.js';
 
 /** One spelling per PR, so manual and auto-picked reviews of the same PR match. */
 const canonicalPrUrl = (slug: string, number: number) => `https://github.com/${slug.toLowerCase()}/pull/${number}`;
@@ -528,6 +532,7 @@ export class Pipeline {
           title: string;
           kind: TaskKind;
           size: 'S' | 'M' | 'L';
+          lane?: Lane;
           needs_debugger: boolean;
           needs_researcher: boolean;
           design_review: boolean;
@@ -546,7 +551,17 @@ export class Pipeline {
           skillPicks: this.managerPicks(task, m.skills, m.skills_why),
           ...this.grillDecision(task, m.grill, m.grill_reason),
         });
-        this.update(task.id, { status: updated.needsDebugger ? 'debugging' : updated.needsResearcher ? 'researching' : 'planning' });
+        const { lane, reason } = laneAtIntake({
+          said: m.lane,
+          size: updated.size,
+          needsDebugger: updated.needsDebugger,
+          needsResearcher: updated.needsResearcher,
+          designFlag: updated.designFlag,
+          grill: updated.grill,
+        });
+        this.deps.bus.emit(task.id, 'lane_decided', { lane, said: m.lane ?? null, reason });
+        const next: TaskStatus = updated.needsDebugger ? 'debugging' : updated.needsResearcher ? 'researching' : lane === 'standard' ? 'planning' : 'coding';
+        this.update(task.id, { lane, status: next });
         return;
       }
       case 'debugging':
@@ -574,6 +589,11 @@ export class Pipeline {
         const repo = getRepo(this.deps.db, task.repoId);
         await commitAll(task.worktreePath!, pr?.title ?? task.title, repo.gitAuthor);
         await this.checkScope(task);
+        // A trivial change that stayed trivial goes straight to me; anything else is reviewed and tested.
+        if ((await this.checkLane(task)) === 'trivial') {
+          await this.openPushGate(this.getTask(task.id), false);
+          return;
+        }
         this.update(task.id, { status: 'reviewing' });
         return;
       }
@@ -666,6 +686,7 @@ export class Pipeline {
     const previous = this.deps.docs.latest(task.id, 'plan');
     this.deps.bus.emit(task.id, 'replanned', { count: task.replanCount + 1 });
     this.update(task.id, {
+      ...this.toStandard(task, 'the architect is re-planning it'),
       replanCount: task.replanCount + 1,
       loopCount: 0,
       feedback: previous ? `${feedback}\n\n### Previous plan (revise it)\n${previous}` : feedback,
@@ -680,6 +701,27 @@ export class Pipeline {
     if (outside.length) {
       this.alert(task, 'scope', `The coder changed files outside the plan: ${outside.slice(0, 10).join(', ')}${outside.length > 10 ? '…' : ''}`);
     }
+  }
+
+  /** Raises a trivial or small task's lane when the coder's diff is bigger than the lane allows. */
+  private async checkLane(task: Task): Promise<Lane> {
+    const current = task.lane ?? 'standard';
+    if (current === 'standard' || !task.baseSha) return current;
+    const measured = laneOfDiff(await diffStat(task.worktreePath!, task.baseSha));
+    const lane = maxLane(current, measured.lane);
+    if (lane !== current) {
+      this.update(task.id, { lane });
+      this.deps.bus.emit(task.id, 'lane_changed', { from: current, to: lane, reason: measured.reason });
+      this.alert(task, 'lane', `Moved from the ${current} lane to ${lane}: ${measured.reason}.`);
+    }
+    return lane;
+  }
+
+  /** A task the architect now plans runs the full pipeline from here on. */
+  private toStandard(task: Task, why: string): Partial<Task> {
+    if (!task.lane || task.lane === 'standard') return {};
+    this.deps.bus.emit(task.id, 'lane_changed', { from: task.lane, to: 'standard', reason: why });
+    return { lane: 'standard' };
   }
 
   tokensUsed(taskId: number, steps?: TaskStatus[]): number {
@@ -714,8 +756,9 @@ export class Pipeline {
     return gate;
   }
 
-  private async openPushGate(task: Task): Promise<void> {
-    const auto = getSettings(this.deps.db).autoApprovePush;
+  /** reviewed: review and tests passed. A trivial change skipped both, so it always waits for me. */
+  private async openPushGate(task: Task, reviewed = true): Promise<void> {
+    const auto = reviewed && getSettings(this.deps.db).autoApprovePush;
     if (auto) {
       // Only reached when review and tests both passed; the publisher still enforces branch rules.
       this.openGate(task.id, 'push', null, true);
@@ -784,6 +827,11 @@ export class Pipeline {
       this.update(task.id, { status: 'coding', feedback: `The owner did not approve the push:\n\n${comment}` });
     }
     void this.tick();
+  }
+
+  /** Where a finished task goes: a retrospective, except for reviews and trivial changes (nothing to learn). */
+  private finished(task: Task): Partial<Task> {
+    return task.kind === 'review' || task.lane === 'trivial' ? { status: 'done', doneAt: this.now() } : { status: 'retro' };
   }
 
   private async push(task: Task): Promise<void> {
@@ -1029,6 +1077,7 @@ export class Pipeline {
     this.cancelGates(taskId);
     const previous = this.deps.docs.latest(taskId, 'plan');
     const updated = this.update(taskId, {
+      ...this.toStandard(task, 'you asked for a plan'),
       status: 'planning',
       resumeStatus: null,
       resumeAt: null,
@@ -1102,11 +1151,7 @@ export class Pipeline {
           throw new Error(`The task is ${task.status}; it cannot be marked done.`);
         }
         this.cancelGates(taskId);
-        // Reviews have no retrospective: done means done.
-        const done =
-          task.kind === 'review'
-            ? this.update(taskId, { status: 'done', doneAt: this.now(), statusNote: null, resumeStatus: null })
-            : this.update(taskId, { status: 'retro', statusNote: null, resumeStatus: null });
+        const done = this.update(taskId, { ...this.finished(task), statusNote: null, resumeStatus: null });
         void this.tick();
         return done;
       }
@@ -1317,7 +1362,7 @@ export class Pipeline {
       const state = await publisher.prState(getRepo(db, t.repoId), t.prUrl).catch(() => 'UNKNOWN' as const);
       if (state === 'MERGED') {
         this.deps.bus.emit(t.id, 'pr_merged', { url: t.prUrl });
-        this.update(t.id, { status: 'retro' });
+        this.update(t.id, this.finished(t));
         await this.dropWorktree(t);
       } else if (state === 'CLOSED') {
         this.update(t.id, { statusNote: 'The PR was closed without merging.' });

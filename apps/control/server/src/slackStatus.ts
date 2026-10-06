@@ -45,8 +45,15 @@ export function tokens(n: number): string {
 }
 
 /** "stage 5 of 12": rough position in the pipeline. Not a time estimate. */
+/** Steps a lane skips (see lanes.ts). */
+const SKIPPED: Partial<Record<string, TaskStatus[]>> = {
+  trivial: ['planning', 'awaiting_plan_approval', 'reviewing', 'testing', 'retro'],
+  small: ['planning', 'awaiting_plan_approval'],
+};
+
 export function stageOf(task: Task): { n: number; of: number } | null {
-  const stages = task.kind === 'review' ? REVIEW_STAGES : FEATURE_STAGES;
+  const skipped = SKIPPED[task.lane ?? ''] ?? [];
+  const stages = task.kind === 'review' ? REVIEW_STAGES : FEATURE_STAGES.filter((s) => !skipped.includes(s));
   // A paused, blocked or stopped task sits where it will resume. Debugging and research happen before planning.
   let at: TaskStatus = ['paused', 'blocked', 'stopped'].includes(task.status) ? (task.resumeStatus ?? task.status) : task.status;
   if (at === 'debugging' || at === 'researching') at = 'planning';
@@ -94,6 +101,7 @@ export function describeTask(task: Task, ctx: StatusContext): string {
   const running = isAgentStep(task.status);
   const head = [`*#${task.id}* ${esc(task.title)}`, `${esc(task.status.replace(/_/g, ' '))} (${boardColumn(task.status)})`];
   if (stage) head.push(`stage ${stage.n} of ${stage.of}`);
+  if (task.lane && task.lane !== 'standard') head.push(`${task.lane} lane`);
   const lines = [head.join(' · ')];
 
   const work: string[] = [];

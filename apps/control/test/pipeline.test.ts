@@ -23,8 +23,8 @@ const appDir = resolve(import.meta.dirname, '..');
 // ---------------------------------------------------------------- fakes
 
 const docs = {
-  task: (o: Partial<{ debugger: boolean }> = {}) =>
-    `---\ntitle: Add greeting\nkind: feature\nsize: S\nneeds_debugger: ${!!o.debugger}\nneeds_researcher: false\ndesign_review: false\n---\n## Request\nAdd a greeting.\n\n## Draft acceptance criteria\n- greet() returns hello`,
+  task: (o: Partial<{ debugger: boolean; lane: string; size: string }> = {}) =>
+    `---\ntitle: Add greeting\nkind: feature\nsize: ${o.size ?? 'S'}\n${o.lane ? `lane: ${o.lane}\n` : ''}needs_debugger: ${!!o.debugger}\nneeds_researcher: false\ndesign_review: false\n---\n## Request\nAdd a greeting.\n\n## Draft acceptance criteria\n- greet() returns hello`,
   diagnosis: '---\nreproduced: true\n---\n## Root cause\nx',
   plan: '---\nfiles_in_scope:\n  - src/**\ntoken_estimate: 1000\n---\n## Goal\nAdd greet().\n\n## Steps\n1. src/greet.ts: add greet()',
   changes: '---\nstatus: done\n---\n## Changes\n- Step 1: added src/greet.ts\n\n## PR\n**Title:** Add greet helper\n**Summary:**\n- adds greet()\n**How it was tested:** npm test',
@@ -253,6 +253,96 @@ describe('pipeline', () => {
     const t = pipeline.getTask(task.id);
     const log = execSync(`git -C "${t.worktreePath}" log --format=%s ${t.baseSha}..HEAD`).toString();
     expect(log).not.toContain('test:');
+  });
+
+  describe('lanes', () => {
+    const intakeAs = (o: Parameters<typeof docs.task>[0]) => runner.queue('intake', () => ({ text: docs.task(o) }));
+    const writeReadme = (): Script => (req) => {
+      writeFileSync(join(req.cwd, 'README.md'), `# Greeting ${Math.random()}\n`);
+      return { text: docs.changes };
+    };
+    const laneOf = (t: Task) => pipeline.getTask(t.id).lane;
+    const alerts = (t: Task) =>
+      db.select().from(schema.events).where(eq(schema.events.taskId, t.id)).all().filter((e) => e.type === 'alert').map((e) => String(e.payload.message));
+
+    it('sends a trivial docs change from the coder straight to my push approval, and skips the retrospective', async () => {
+      intakeAs({ lane: 'trivial' });
+      runner.queue('coding', writeReadme());
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Fix the README wording' });
+      await settle();
+      expect(statusOf(task)).toBe('awaiting_push_approval');
+      expect(steps()).toEqual(['intake', 'coding']);
+      expect(laneOf(task)).toBe('trivial');
+      expect(runner.calls[1]!.prompt).toContain('There is no separate plan');
+      expect(pipeline.pendingGates(task.id).map((g) => g.kind)).toEqual(['push']);
+
+      await pipeline.decideGate(pushGate(task).id, 'approve');
+      await pipeline.action(task.id, 'done');
+      await settle();
+      expect(statusOf(task)).toBe('done');
+      expect(steps()).not.toContain('retro');
+    });
+
+    it('never auto-approves the push of a trivial change, which had no review', async () => {
+      setSetting(db, 'autoApprovePush', true);
+      intakeAs({ lane: 'trivial' });
+      runner.queue('coding', writeReadme());
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Fix the README wording' });
+      await settle();
+      expect(statusOf(task)).toBe('awaiting_push_approval');
+      expect(publisher.pushed).toEqual([]);
+    });
+
+    it('moves a "trivial" task that changed code up to the small lane: review and tests run', async () => {
+      intakeAs({ lane: 'trivial' });
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Fix the README wording' });
+      await settle(); // the default coder changes src/greet.ts
+      expect(steps()).toEqual(['intake', 'coding', 'reviewing', 'testing']);
+      expect(laneOf(task)).toBe('small');
+      expect(alerts(task).some((m) => m.includes('Moved from the trivial lane to small') && m.includes('src/greet.ts'))).toBe(true);
+      expect(statusOf(task)).toBe('awaiting_push_approval');
+    });
+
+    it('runs a small task without the architect: coder, review against task.md, tests', async () => {
+      intakeAs({ lane: 'small' });
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+      await settle();
+      expect(steps()).toEqual(['intake', 'coding', 'reviewing', 'testing']);
+      expect(statusOf(task)).toBe('awaiting_push_approval');
+      const review = runner.calls.find((c) => c.step === 'reviewing')!.prompt;
+      expect(review).toContain('### task.md');
+      expect(review).toContain('there is no separate plan');
+    });
+
+    it('moves a small task with a big diff to standard', async () => {
+      intakeAs({ lane: 'small' });
+      runner.queue('coding', (req) => {
+        writeFileSync(join(req.cwd, 'src', 'big.ts'), Array.from({ length: 250 }, (_, i) => `export const v${i} = ${i};`).join('\n') + '\n');
+        return { text: docs.changes };
+      });
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Add constants' });
+      await settle();
+      expect(laneOf(task)).toBe('standard');
+      expect(alerts(task).some((m) => m.includes('to standard') && m.includes('250 lines'))).toBe(true);
+    });
+
+    it('keeps anything bigger than S, or without a lane, on the full pipeline', async () => {
+      intakeAs({ lane: 'trivial', size: 'M' });
+      const a = pipeline.createTask({ repoId: repo.id, input: 'a' });
+      const b = pipeline.createTask({ repoId: repo.id, input: 'b' });
+      await settle();
+      expect([statusOf(a), statusOf(b)]).toEqual(['awaiting_plan_approval', 'awaiting_plan_approval']);
+      expect([laneOf(a), laneOf(b)]).toEqual(['standard', 'standard']);
+    });
+
+    it('goes back to the architect, on the standard lane, when the coder of a small task is blocked', async () => {
+      intakeAs({ lane: 'small' });
+      runner.queue('coding', () => ({ text: docs.blocked }));
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+      await settle();
+      expect(statusOf(task)).toBe('awaiting_plan_approval');
+      expect(laneOf(task)).toBe('standard');
+    });
   });
 
   it('leaves no pending gate behind when a task is discarded or marked done', async () => {

@@ -1,6 +1,6 @@
 import type { Task } from './api';
 import { Icon, type IconName } from './icons';
-import { COLUMNS, formatTokens, StageTrack, StatusBadge, timeAgo } from './ui';
+import { COLUMNS, formatTokens, LANE_HINT, StageTrack, StatusBadge, timeAgo } from './ui';
 
 const LANES: Record<string, { icon: IconName; tone: string }> = {
   Queued: { icon: 'clock', tone: 'muted' },
@@ -73,6 +73,7 @@ export function Board({
                         <span className="repo-chip">{repoName(t.repoId)}</span>
                         {t.kind !== 'feature' && <span className={`kind kind-${t.kind}`}>{t.kind}</span>}
                         {t.size && <span className="size" title={`Size ${t.size}`}>{t.size}</span>}
+                        {t.lane && t.lane !== 'standard' && <span className="tag" title={`${t.lane} lane: ${LANE_HINT[t.lane]}`}>{t.lane}</span>}
                       </div>
                       <div className="card-title">{t.title}</div>
                       <StageTrack task={t} />

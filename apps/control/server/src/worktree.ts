@@ -135,6 +135,16 @@ export async function changedFiles(worktree: string, baseSha: string): Promise<s
   );
 }
 
+/** Lines added plus removed per file since the base commit (committed work; binary files count as 0). */
+export async function diffStat(worktree: string, baseSha: string): Promise<Array<{ file: string; lines: number }>> {
+  const out = await git(worktree, ['diff', '--numstat', '--no-renames', baseSha]);
+  return out
+    .split('\n')
+    .map((l) => l.split('\t'))
+    .filter((p) => p.length >= 3 && p[2])
+    .map(([added, removed, file]) => ({ file: file!, lines: (Number(added) || 0) + (Number(removed) || 0) }));
+}
+
 /** Stable diff output whatever the user's git config says (prefixes, color, external diff tools). */
 const DIFF_FLAGS = ['--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
 

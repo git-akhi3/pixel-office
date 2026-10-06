@@ -43,6 +43,10 @@ export interface Task {
   reviewSummary: string | null;
   reviewPostedUrl: string | null;
   size: 'S' | 'M' | 'L' | null;
+  /** How much of the team the task gets; null on old tasks (standard). */
+  lane: 'trivial' | 'small' | 'standard' | null;
+  parentId: number | null;
+  dependsOn: number | null;
   status: TaskStatus;
   resumeStatus: TaskStatus | null;
   statusNote: string | null;
