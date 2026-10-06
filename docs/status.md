@@ -5,7 +5,7 @@ Updated 2026-10-05. Design: [design.md](design.md). Phase 1 detail: [phase-1-pla
 | Phase | State |
 |---|---|
 | 1. Core pipeline | Built, reviewed, tried on one real task (add-item UX on zobaze-item-search) |
-| 2. Remote (Slack, Cloudflare) | Deferred by the owner. Groundwork only: settings in `~/.office/env`, Slack app manifest in `tools/`, steer/replan available on the board |
+| 2. Remote (Slack, Cloudflare) | Slack built (`server/src/slack.ts`: DM a task, one thread per task, live status, approve/reject buttons, thread commands). Cloudflare Tunnel + Access still to do |
 | 3. PR reviews | Built and reviewed (three review rounds, security hardening) |
 | 4. Smarts | Built and reviewed |
 | 5. Office tab | Built, reviewed (two rounds), verified live against Pixel Agents |
@@ -34,5 +34,5 @@ Agents run with your Claude subscription through the Agent SDK, isolated from yo
 
 ## Next
 
-- **Phase 2 when you're ready:** Slack app (manifest in `tools/slack-app-manifest.yml`, tokens into `~/.office/env`), then Cloudflare Tunnel + Access on your domain. Until phase 2 adds Cloudflare Access verification, the board accepts only 127.0.0.1/localhost: don't point a tunnel at it before then.
+- **Phase 2 remainder:** Cloudflare Tunnel + Access on your domain. Slack setup: manifest in `tools/slack-app-manifest.yml`, tokens `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_OWNER_ID` in `~/.office/env`. Until phase 2 adds Cloudflare Access verification, the board accepts only 127.0.0.1/localhost: don't point a tunnel at it before then.
 - Watch the knowledge files and token stats after a week of real tasks; tune agent prompts on the Team page.

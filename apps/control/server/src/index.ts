@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { connect } from 'node:net';
 import { loadAgents } from './agents.js';
-import { ensureDirs, loadConfig, loadOauthToken } from './config.js';
+import { ensureDirs, loadConfig, loadEnvFile, loadOauthToken, remoteConfig, slackConfig } from './config.js';
 import { getSettings, openDb, setSetting } from './db/index.js';
 import { PixelBridge, titleFrom } from './pixelBridge.js';
 import { EventBus } from './events.js';
@@ -12,6 +12,7 @@ import { TaskDocs } from './handoffs.js';
 import { Pipeline } from './pipeline.js';
 import { SdkRunner } from './runner.js';
 import { buildServer } from './server.js';
+import { startSlack } from './slack.js';
 
 const config = loadConfig();
 ensureDirs(config);
@@ -69,8 +70,23 @@ bridge.start(bus);
 pipeline.start();
 console.log(`Pixel Office control: http://${config.host}:${config.port}  (data: ${config.home})`);
 
+// Slack is optional. A mistake in its settings or a failed connection must not take the office down.
+let slack: Awaited<ReturnType<typeof startSlack>> | null = null;
+try {
+  const env = loadEnvFile(config.envFile);
+  const slackSettings = slackConfig(env);
+  if (slackSettings) {
+    slack = await startSlack(slackSettings, { db, bus, pipeline, docs, publicUrl: remoteConfig(config, env).publicUrl });
+    await slack.bridge.announce();
+    console.log('Slack: connected. DM the bot to start a task.');
+  }
+} catch (e) {
+  console.error(`Slack is off: ${(e as Error).message}`);
+}
+
 const shutdown = async () => {
   console.log('Shutting down: running steps are stopped; resume them from the board.');
+  await slack?.stop().catch(() => undefined);
   await pipeline.shutdown();
   await app.close();
   process.exit(0);
