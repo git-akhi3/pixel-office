@@ -33,6 +33,8 @@ export interface Settings {
   pixelSessionId: string | null;
   /** The skill the architect follows when a mission is grilled (a short built-in fallback when it isn't in the catalog). */
   grillSkill: string;
+  /** On size S tasks, run the architect and reviewer on Sonnet when their definition says Opus. */
+  sonnetForSmall: boolean;
 }
 
 const UNKNOWN_RESET_PAUSE_MS = 30 * 60 * 1000;
@@ -54,7 +56,7 @@ export function usagePause(s: Settings, now: number): { paused: boolean; until: 
   return { paused: false, until: null, window: null };
 }
 
-const DEFAULTS: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, rateLimit: null, usagePauseAt: 0.9, pixelSessionId: null, grillSkill: 'grilling' };
+const DEFAULTS: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, rateLimit: null, usagePauseAt: 0.9, pixelSessionId: null, grillSkill: 'grilling', sonnetForSmall: true };
 
 export function getSettings(db: Db): Settings {
   const rows = db.select().from(schema.settings).all();

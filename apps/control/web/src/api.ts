@@ -214,6 +214,7 @@ export interface Settings {
   rateLimit: { fiveHour?: number; sevenDay?: number; resetsAt?: number; at: number } | null;
   usagePauseAt: number;
   grillSkill: string;
+  sonnetForSmall: boolean;
   usage?: { paused: boolean; until: number | null; window: string | null };
 }
 

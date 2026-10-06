@@ -451,6 +451,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         reviewMinLines: z.number().int().min(0).max(100_000).optional(),
         usagePauseAt: z.number().min(0.5).max(1).optional(),
         grillSkill: z.string().regex(SKILL_NAME).optional(),
+        sonnetForSmall: z.boolean().optional(),
       })
       .parse(req.body);
     if (body.grillSkill !== undefined) setSetting(db, 'grillSkill', body.grillSkill);
@@ -459,6 +460,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     if (body.reviewAutoPickup !== undefined) setSetting(db, 'reviewAutoPickup', body.reviewAutoPickup);
     if (body.reviewMinLines !== undefined) setSetting(db, 'reviewMinLines', body.reviewMinLines);
     if (body.usagePauseAt !== undefined) setSetting(db, 'usagePauseAt', body.usagePauseAt);
+    if (body.sonnetForSmall !== undefined) setSetting(db, 'sonnetForSmall', body.sonnetForSmall);
     void pipeline.tick();
     return getSettings(db);
   });

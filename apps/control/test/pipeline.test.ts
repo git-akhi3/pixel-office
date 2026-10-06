@@ -41,7 +41,7 @@ const docs = {
 type Script = (req: RunRequest) => Promise<Partial<RunOutcome> & { text?: string }> | (Partial<RunOutcome> & { text?: string });
 
 class FakeRunner implements AgentRunner {
-  calls: Array<{ step: string; prompt: string; skills: string[] }> = [];
+  calls: Array<{ step: string; prompt: string; model?: string; effort?: string; skills: string[] }> = [];
   active = 0;
   maxActive = 0;
   overrides: Partial<Record<string, Script[]>> = {};
@@ -58,7 +58,7 @@ class FakeRunner implements AgentRunner {
 
   async run(req: RunRequest): Promise<RunOutcome> {
     const step = this.stepOf(req.taskId);
-    this.calls.push({ step, prompt: req.prompt, skills: req.agent.skills });
+    this.calls.push({ step, prompt: req.prompt, skills: req.agent.skills, model: req.agent.model, effort: req.agent.effort });
     this.active++;
     this.maxActive = Math.max(this.maxActive, this.active);
     try {
@@ -342,6 +342,36 @@ describe('pipeline', () => {
       await settle();
       expect(statusOf(task)).toBe('awaiting_plan_approval');
       expect(laneOf(task)).toBe('standard');
+    });
+  });
+
+  describe('models by size', () => {
+    const OPUS = 'claude-opus-5-5'; // the built-in architect and reviewer
+    const modelOf = (step: string) => runner.calls.find((c) => c.step === step)!;
+
+    it('plans and reviews an S task on Sonnet at medium effort, and keeps the coder as defined', async () => {
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' }); // intake says size S
+      await settle();
+      await pipeline.decideGate(planGate(task).id, 'approve');
+      await settle();
+      expect(modelOf('planning')).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+      expect(modelOf('reviewing')).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+      expect(modelOf('coding').model).toBe('claude-sonnet-5-5');
+      const planRun = db.select().from(schema.runs).where(eq(schema.runs.step, 'planning')).get()!;
+      expect(planRun.model).toBe('claude-sonnet-5-5');
+    });
+
+    it('keeps Opus for bigger tasks, and for S tasks when the setting is off', async () => {
+      runner.queue('intake', () => ({ text: docs.task({ size: 'M' }) }));
+      pipeline.createTask({ repoId: repo.id, input: 'a' });
+      await settle();
+      expect(modelOf('planning').model).toBe(OPUS);
+
+      setSetting(db, 'sonnetForSmall', false);
+      runner.calls = [];
+      pipeline.createTask({ repoId: repo.id, input: 'b' });
+      await settle();
+      expect(modelOf('planning').model).toBe(OPUS);
     });
   });
 

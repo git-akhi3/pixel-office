@@ -38,6 +38,8 @@ const reviewMarker = (taskId: number) => `<!-- pixel-office review task #${taskI
 const PICKUP_RETRY_MS = 60 * 60 * 1000;
 
 export const MAX_CODER_LOOPS = 2;
+/** The architect's and reviewer's model on size S tasks (see forSize). */
+export const SMALL_TASK_MODEL = 'claude-sonnet-5-5';
 /** Skills the manager may pick per role; most tasks need none or one. */
 const MAX_MANAGER_PICKS = 4;
 export const MAX_REPLANS = 2;
@@ -393,7 +395,7 @@ export class Pipeline {
     const withGrill = grilling && this.skillCatalog().some((s) => s.name === grillSkill) ? withSkills(roleAgent, [grillSkill], this.skillDirs()) : roleAgent;
     // A PR under review is untrusted code (and untrusted text): its reviewer gets exactly Read/Grep/Glob,
     // read-only, whatever a custom reviewer definition lists. No shell, no writes, no web.
-    const agent: AgentDef = step === 'reviewing_pr' ? { ...roleAgent, tools: ['Read', 'Grep', 'Glob'], write: 'none' } : withGrill;
+    const agent = this.forSize(task, role, step === 'reviewing_pr' ? { ...roleAgent, tools: ['Read', 'Grep', 'Glob'], write: 'none' } : withGrill);
     const repo = getRepo(db, task.repoId);
 
     // The retrospective only reads handoff documents; the worktree may already be gone after a merge.
@@ -701,6 +703,18 @@ export class Pipeline {
     if (outside.length) {
       this.alert(task, 'scope', `The coder changed files outside the plan: ${outside.slice(0, 10).join(', ')}${outside.length > 10 ? '…' : ''}`);
     }
+  }
+
+  /**
+   * A size S task doesn't need the biggest model to plan or review it: on S tasks an Opus architect or
+   * reviewer runs on Sonnet at medium effort (Settings → sonnetForSmall). Applied on top of whatever
+   * agent definition is loaded, so my edits on the Team page keep their skills and tools.
+   */
+  private forSize(task: Task, role: Role, agent: AgentDef): AgentDef {
+    if (task.kind === 'review' || task.size !== 'S' || (role !== 'architect' && role !== 'reviewer')) return agent;
+    if (!/opus/i.test(agent.model) || !getSettings(this.deps.db).sonnetForSmall) return agent;
+    const effort = agent.effort === 'low' ? 'low' : 'medium';
+    return { ...agent, model: SMALL_TASK_MODEL, effort };
   }
 
   /** Raises a trivial or small task's lane when the coder's diff is bigger than the lane allows. */

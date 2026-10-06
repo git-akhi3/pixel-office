@@ -349,6 +349,16 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
           </span>
         </span>
       </label>
+      <label className="switch">
+        <input type="checkbox" checked={s.sonnetForSmall} onChange={(e) => save({ sonnetForSmall: e.target.checked })} />
+        <span>
+          <strong>Sonnet for small tasks</strong>
+          <span className="hint">
+            On size S tasks, the architect and reviewer run on Sonnet (medium effort) instead of Opus. Bigger tasks keep their
+            own model.
+          </span>
+        </span>
+      </label>
       <label>
         Tasks running at once
         <select value={s.concurrency} onChange={(e) => save({ concurrency: Number(e.target.value) })}>
