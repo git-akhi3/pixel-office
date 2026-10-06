@@ -109,7 +109,11 @@ function parseAuthor(author: string | null): { name: string; email: string } | n
 
 /** Commits everything in the worktree. Returns false when there was nothing to commit. */
 export async function commitAll(worktree: string, message: string, fallbackAuthor: string | null): Promise<boolean> {
-  const excluded = (await setupArtifacts(worktree)).map((p) => `:(exclude)${p}`);
+  // An artifact git already ignores (npm install swapped the symlink for a real node_modules/) needs no exclude,
+  // and naming an ignored path makes `git add` fail.
+  const artifacts = await setupArtifacts(worktree);
+  const ignored = artifacts.length ? (await run('git', ['check-ignore', '--', ...artifacts], { cwd: worktree })).stdout.split('\n') : [];
+  const excluded = artifacts.filter((p) => !ignored.includes(p)).map((p) => `:(exclude)${p}`);
   await git(worktree, ['add', '-A', '--', '.', ...excluded]);
   const staged = await run('git', ['diff', '--cached', '--quiet'], { cwd: worktree });
   if (staged.code === 0) return false;
