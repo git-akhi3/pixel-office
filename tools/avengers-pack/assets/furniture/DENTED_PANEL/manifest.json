@@ -1,0 +1,14 @@
+{
+  "id": "DENTED_PANEL",
+  "name": "Dented panel",
+  "category": "wall",
+  "type": "asset",
+  "file": "DENTED_PANEL.png",
+  "width": 32,
+  "height": 32,
+  "footprintW": 2,
+  "footprintH": 2,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

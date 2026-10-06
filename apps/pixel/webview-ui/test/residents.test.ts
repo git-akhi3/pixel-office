@@ -131,3 +131,28 @@ test('residents follow layout edits: removed from the roster, they leave', () =>
   assert.equal(os.characters.get(coderId)!.matrixEffect, 'despawn');
   assert.equal(os.residentIds.size, 1);
 });
+
+// ── Theme packs: hero names, aliases and a reserved palette pool ─────────────
+
+test('a resident shows its label, answers to its aliases and keeps its palette', () => {
+  const os = new OfficeState(
+    twoRoomLayout([{ name: 'architect', label: 'Strange', palette: 7, aliases: ['designer'], area: 'Dev' }]),
+  );
+  const ch = os.characters.get(os.residentIds.get('architect')!)!;
+  assert.equal(ch.label, 'Strange');
+  assert.equal(ch.palette, 7);
+  assert.equal(os.residentFor('designer'), ch.id, 'an alias reaches the same resident');
+  assert.equal(os.residentFor('architect'), ch.id);
+  assert.equal(os.residentFor('coder'), null);
+});
+
+test('visiting agents draw their skins from the layout palette pool only', () => {
+  const layout = twoRoomLayout([{ name: 'coder', palette: 6, area: 'Dev' }]);
+  layout.agentPalettes = [14, 15];
+  const os = new OfficeState(layout);
+  for (let id = 1; id <= 4; id++) os.addAgent(id);
+  const palettes = [1, 2, 3, 4].map((id) => os.characters.get(id)!.palette);
+  for (const p of palettes) assert.ok([14, 15].includes(p), `palette ${p} is in the pool`);
+  assert.deepEqual([...new Set(palettes)].sort(), [14, 15], 'both skins get used before any repeats');
+  assert.equal(os.characters.get(os.residentIds.get('coder')!)!.palette, 6, 'the hero keeps its own skin');
+});

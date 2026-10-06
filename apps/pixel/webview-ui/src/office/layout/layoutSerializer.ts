@@ -49,6 +49,11 @@ export function layoutToFurnitureInstances(furniture: PlacedFurniture[]): Furnit
     const spriteH = entry.sprite.length;
     let zY = y + spriteH;
 
+    // Fully walkable decor (a rug, a floor emblem) is part of the floor: everything stands on it.
+    if ((entry.backgroundTiles ?? 0) >= entry.footprintH && entry.category !== 'chairs') {
+      zY = y - 1;
+    }
+
     // Chair z-sorting: ensure characters sitting on chairs render correctly
     if (entry.category === 'chairs') {
       if (entry.orientation === 'back') {

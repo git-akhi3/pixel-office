@@ -1,0 +1,14 @@
+{
+  "id": "SIGN_DAILY_BUGLE",
+  "name": "Sign: Daily Bugle",
+  "category": "wall",
+  "type": "asset",
+  "file": "SIGN_DAILY_BUGLE.png",
+  "width": 64,
+  "height": 16,
+  "footprintW": 4,
+  "footprintH": 1,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

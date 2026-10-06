@@ -1,0 +1,14 @@
+{
+  "id": "ARC_REACTOR",
+  "name": "Arc reactor",
+  "category": "decor",
+  "type": "asset",
+  "file": "ARC_REACTOR.png",
+  "width": 32,
+  "height": 32,
+  "footprintW": 2,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

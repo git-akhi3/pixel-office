@@ -1,0 +1,14 @@
+{
+  "id": "SIGN_SHAWARMA",
+  "name": "Sign: Shawarma",
+  "category": "wall",
+  "type": "asset",
+  "file": "SIGN_SHAWARMA.png",
+  "width": 48,
+  "height": 16,
+  "footprintW": 3,
+  "footprintH": 1,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

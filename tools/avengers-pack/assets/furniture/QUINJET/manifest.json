@@ -1,0 +1,14 @@
+{
+  "id": "QUINJET",
+  "name": "Quinjet",
+  "category": "decor",
+  "type": "asset",
+  "file": "QUINJET.png",
+  "width": 96,
+  "height": 48,
+  "footprintW": 6,
+  "footprintH": 3,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

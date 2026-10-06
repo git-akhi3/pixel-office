@@ -1,0 +1,14 @@
+{
+  "id": "IRON_HELMET",
+  "name": "Iron helmet",
+  "category": "decor",
+  "type": "asset",
+  "file": "IRON_HELMET.png",
+  "width": 16,
+  "height": 16,
+  "footprintW": 1,
+  "footprintH": 1,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": true,
+  "backgroundTiles": 0
+}

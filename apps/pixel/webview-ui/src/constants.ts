@@ -35,6 +35,26 @@ export const MATRIX_TRAIL_EMPTY_ALPHA = 0.5;
 export const MATRIX_TRAIL_MID_THRESHOLD = 0.33;
 export const MATRIX_TRAIL_DIM_THRESHOLD = 0.66;
 
+// ── Portal / dust effect (the Avengers theme's spawn and despawn) ──────────────
+export const PORTAL_EFFECT_DURATION_SEC = 0.6;
+export const PORTAL_SPARKS = 28;
+export const PORTAL_MAX_RADIUS_PX = 11;
+export const PORTAL_SPIN_TURNS_PER_SEC = 1.5;
+export const PORTAL_COLORS = ['#ffb347', '#ff7a1a', '#ffe28a', '#ff9f2e'];
+export const PORTAL_CORE_COLOR = 'rgba(255, 190, 90, 0.35)';
+export const DUST_DRIFT_X_PX = 9;
+export const DUST_DRIFT_Y_PX = 16;
+export const DUST_COLOR = '#b8a99a';
+/** Hologram tint for transient sub-agents: cyan by luminance, with darker scanlines. */
+export const HOLOGRAM_ALPHA = 0.85;
+export const hologramColor = (lum: number, scanline: boolean): string => {
+  const k = scanline ? 0.7 : 1;
+  const r = Math.round((40 + 150 * lum) * k);
+  const g = Math.round((150 + 100 * lum) * k);
+  const b = Math.round((220 + 35 * lum) * k);
+  return `#${[r, g, b].map((v) => Math.min(255, v).toString(16).padStart(2, '0')).join('')}`;
+};
+
 // ── Rendering ────────────────────────────────────────────────
 export const CHARACTER_SITTING_OFFSET_PX = 6;
 export const CHARACTER_Z_SORT_OFFSET = 0.5;

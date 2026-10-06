@@ -44,6 +44,7 @@ import {
   VOID_TILE_DASH_PATTERN,
   VOID_TILE_OUTLINE_COLOR,
 } from '../../constants.js';
+import { HOLOGRAM_ALPHA } from '../../constants.js';
 import { getColorizedFloorSprite, hasFloorSprites, WALL_COLOR } from '../floorTiles.js';
 import { mapOffset } from '../projection.js';
 import {
@@ -51,14 +52,18 @@ import {
   getCarpetPaletteKey,
   hasCarpetSprites,
 } from '../sprites/carpetTiles.js';
+import { getHologramSprite } from '../sprites/hologram.js';
 import { getPetSprites } from '../sprites/petSpriteData.js';
 import { getCachedSprite, getOutlineSprite } from '../sprites/spriteCache.js';
 import {
+  BUBBLE_ASSEMBLE_SPRITE,
   BUBBLE_HEART_SPRITE,
   BUBBLE_PERMISSION_SPRITE,
+  BUBBLE_SHIELD_SPRITE,
   BUBBLE_WAITING_SPRITE,
   getCharacterSprites,
 } from '../sprites/spriteData.js';
+import { isAvengersTheme } from '../theme.js';
 import type {
   AreaDefinition,
   CarpetTile,
@@ -74,6 +79,7 @@ import { getWallInstances, hasWallSprites, wallColorToHex } from '../wallTiles.j
 import { getCharacterSprite } from './characters.js';
 import { renderMatrixEffect } from './matrixEffect.js';
 import { getPetSpriteData } from './petEntity.js';
+import { renderPortalEffect } from './portalEffect.js';
 
 // ── Settings ────────────────────────────────────────────────────
 
@@ -388,9 +394,14 @@ export function renderScene(
   }
 
   // Characters
+  const avengers = isAvengersTheme();
   for (const ch of characters) {
     const sprites = getCharacterSprites(ch.palette, ch.hueShift);
-    const spriteData = getCharacterSprite(ch, sprites);
+    // In the Avengers theme a transient sub-agent is a hologram of its parent.
+    const hologram = avengers && ch.isSubagent && !ch.isResident;
+    const spriteData = hologram
+      ? getHologramSprite(getCharacterSprite(ch, sprites))
+      : getCharacterSprite(ch, sprites);
     const cached = getCachedSprite(spriteData, zoom);
     // Sitting offset: shift character down when seated so they visually sit in the chair
     const sittingOffset = ch.state === CharacterState.TYPE ? CHARACTER_SITTING_OFFSET_PX : 0;
@@ -405,20 +416,21 @@ export function renderScene(
 
     // Headless agents (adopted, no terminal to focus) render translucent while
     // the "Display headless as ghosts" setting is on.
-    const alpha = ch.isHeadless && ghostHeadlessAgents ? HEADLESS_CHARACTER_ALPHA : 1;
+    const alpha = ch.isHeadless && ghostHeadlessAgents ? HEADLESS_CHARACTER_ALPHA : hologram ? HOLOGRAM_ALPHA : 1;
 
-    // Matrix spawn/despawn effect — skip outline, use per-pixel rendering
+    // Spawn/despawn effect (digital rain, or the theme's portal) — skip outline, use per-pixel rendering
     if (ch.matrixEffect) {
       const mDrawX = drawX;
       const mDrawY = drawY;
       const mSpriteData = spriteData;
       const mCh = ch;
+      const renderEffect = avengers ? renderPortalEffect : renderMatrixEffect;
       drawables.push({
         zY: charZY,
         draw: (c) => {
           c.save();
           c.globalAlpha = alpha;
-          renderMatrixEffect(c, mCh, mSpriteData, mDrawX, mDrawY, zoom);
+          renderEffect(c, mCh, mSpriteData, mDrawX, mDrawY, zoom);
           c.restore();
         },
       });
@@ -779,8 +791,13 @@ function renderBubbles(
     // bubble, so skip the bubble for it.
     if (ch.bubbleType === 'waiting' && ch.waitingAwaitingInput) continue;
 
-    const sprite =
-      ch.bubbleType === 'permission' ? BUBBLE_PERMISSION_SPRITE : BUBBLE_WAITING_SPRITE;
+    const sprite = isAvengersTheme()
+      ? ch.bubbleType === 'permission'
+        ? BUBBLE_SHIELD_SPRITE
+        : BUBBLE_ASSEMBLE_SPRITE
+      : ch.bubbleType === 'permission'
+        ? BUBBLE_PERMISSION_SPRITE
+        : BUBBLE_WAITING_SPRITE;
 
     // Compute opacity: permission = full, waiting = fade in last 0.5s
     let alpha = 1.0;

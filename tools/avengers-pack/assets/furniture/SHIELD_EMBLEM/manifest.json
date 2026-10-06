@@ -1,0 +1,14 @@
+{
+  "id": "SHIELD_EMBLEM",
+  "name": "S.H.I.E.L.D. floor emblem",
+  "category": "decor",
+  "type": "asset",
+  "file": "SHIELD_EMBLEM.png",
+  "width": 64,
+  "height": 64,
+  "footprintW": 4,
+  "footprintH": 4,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 4
+}

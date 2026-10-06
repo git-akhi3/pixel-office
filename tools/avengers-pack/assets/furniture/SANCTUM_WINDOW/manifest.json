@@ -1,0 +1,14 @@
+{
+  "id": "SANCTUM_WINDOW",
+  "name": "Sanctum window",
+  "category": "wall",
+  "type": "asset",
+  "file": "SANCTUM_WINDOW.png",
+  "width": 32,
+  "height": 32,
+  "footprintW": 2,
+  "footprintH": 2,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

@@ -34,11 +34,23 @@ CATALOG = {
 }
 
 
-# custom furniture from art-pack/ (room signs, your images): footprint read from each manifest
-for _m in (Path(__file__).parent / "art-pack" / "assets" / "furniture").glob("*/manifest.json"):
-    _d = json.loads(_m.read_text())
-    CATALOG[_d["id"]] = (_d["footprintW"], _d["footprintH"], _d.get("backgroundTiles", 0),
-                         "wall" if _d.get("canPlaceOnWalls") else "floor")
+# custom furniture from art-pack/ and avengers-pack/ (signs, props): footprint read from each manifest.
+# Group manifests (rotation/state/animation) are flattened to their leaf assets, which inherit the group's flags.
+def _leaf_assets(node: dict, inherited: dict):
+    flags = {k: node.get(k, inherited.get(k)) for k in ("category", "canPlaceOnWalls", "canPlaceOnSurfaces", "backgroundTiles")}
+    if node.get("type") == "group":
+        for m in node.get("members", []):
+            yield from _leaf_assets(m, flags)
+    else:
+        yield {**flags, **node}
+
+
+for _pack in ("art-pack", "avengers-pack"):
+    for _m in (Path(__file__).parent / _pack / "assets" / "furniture").glob("*/manifest.json"):
+        for _d in _leaf_assets(json.loads(_m.read_text()), {}):
+            kind = ("wall" if _d.get("canPlaceOnWalls") else "surface" if _d.get("canPlaceOnSurfaces")
+                    else {"desks": "desk", "chairs": "chair"}.get(_d.get("category"), "floor"))
+            CATALOG[_d["id"]] = (_d["footprintW"], _d["footprintH"], _d.get("backgroundTiles") or 0, kind)
 
 
 def tint(h: int, s: int, b: int, c: int = 0, colorize: bool = True) -> dict:
@@ -57,6 +69,10 @@ class Office:
         self.areas: list[dict] = []
         self.area_tiles: list = [None] * (cols * rows)
         self.residents: list[dict] = []
+        self.theme: str | None = None
+        self.agent_palettes: list[int] | None = None
+        self.agent_area: str | None = None
+        self.pets: list[int] = [0, 1]
 
     def _i(self, c: int, r: int) -> int:
         return r * self.cols + c
@@ -97,7 +113,7 @@ class Office:
             for c in range(c0 + 1, c1):
                 if self.tiles[self._i(c, r)] not in (VOID, WALL):
                     self.area_tiles[self._i(c, r)] = label
-        self.residents += [{"name": n, "area": label} for n in residents]
+        self.residents += [{"name": n, "area": label} if isinstance(n, str) else {**n, "area": label} for n in residents]
 
     def put(self, kind: str, c: int, r: int, color: dict | None = None):
         f = {"uid": f"f-{self.name}-{len(self.furniture)}", "type": kind, "col": c, "row": r}
@@ -158,7 +174,7 @@ class Office:
                 if tile(c, r) in (VOID, WALL):
                     errs.append(f"{t}@{f['col']},{f['row']} on wall/void at {c},{r}")
                 if (r - f["row"]) < bg:
-                    continue
+                    continue  # background rows: walkable, other furniture may sit there
                 if (c, r) in blocked:
                     errs.append(f"{t}@{f['col']},{f['row']} overlaps {blocked[(c, r)]} at {c},{r}")
                 blocked[(c, r)] = t
@@ -177,7 +193,10 @@ class Office:
                 "tileColors": self.colors, "carpetTiles": self.carpets, "furniture": self.furniture,
                 **({"areas": self.areas, "areaTiles": self.area_tiles} if self.areas else {}),
                 **({"residents": self.residents} if self.residents else {}),
-                "pets": [{"id": f"pet-{self.name}-0", "petType": 0}, {"id": f"pet-{self.name}-1", "petType": 1}]}
+                **({"theme": self.theme} if self.theme else {}),
+                **({"agentPalettes": self.agent_palettes} if self.agent_palettes else {}),
+                **({"agentArea": self.agent_area} if self.agent_area else {}),
+                "pets": [{"id": f"pet-{self.name}-{i}", "petType": t} for i, t in enumerate(self.pets)]}
 
 
 # ------------------------------------------------------------------------------------------------ layouts
@@ -308,10 +327,131 @@ def zen_garden() -> Office:
     return o
 
 
+def helicarrier() -> Office:
+    """The Avengers deck of the S.H.I.E.L.D. Helicarrier: Fury's Bridge in the centre, a hero room on every side,
+    and a mission walking clockwise around him. Needs tools/avengers-pack (build it with tools/avengers/build_pack.py);
+    the heroes are the pack's characters, appended after the 6 bundled skins (palette 6 + N)."""
+    pal = json.loads((Path(__file__).parent / "avengers-pack" / "pack.json").read_text())["palettes"]
+    o = Office("helicarrier", 49, 35, tint(220, 20, -55, 10))
+    o.theme = "avengers"
+    o.agent_palettes = [pal[f"agent{i}"] for i in range(6)]
+    o.pets = [0]  # Goose
+    o.agent_area = "Quinjet Bay"
+    steel, walk = tint(212, 30, -72), tint(210, 32, -60)
+    # rooms: walls on the shared borders. Row 0 is void so 2-tall wall items fit over the top wall.
+    o.room(0, 1, 14, 12, 7, tint(195, 35, -74))                    # archive
+    o.room(14, 1, 34, 12, 6, tint(22, 45, -70))                    # sanctum
+    o.room(34, 1, 48, 12, 4, tint(220, 25, -76))                   # workshop
+    o.room(0, 12, 14, 23, 1, tint(350, 45, -76))                   # red room
+    o.room(14, 12, 34, 23, 4, steel)                               # bridge
+    o.room(34, 12, 48, 23, 5, tint(95, 22, -70), (5, tint(95, 22, -75)))  # smash lab
+    o.room(0, 23, 14, 34, 9, tint(220, 25, -78), (9, tint(220, 25, -72)))  # quinjet bay
+    o.room(14, 23, 34, 34, 5, tint(40, 15, -66))                   # daily bugle
+    o.room(34, 23, 48, 34, 3, tint(44, 55, -58))                   # hall of asgard
+    o.floor(20, 16, 27, 21, 3, walk)                               # the bridge's walkway ring
+    o.floor(2, 28, 12, 28, 1, tint(45, 80, -40))                   # landing stripe
+    door = tint(0, 0, -30, 0, False)
+    for c, r, w, h in [(23, 12, 2, 1), (23, 23, 2, 1), (14, 17, 1, 2), (34, 17, 1, 2),      # around the bridge
+                       (14, 6, 1, 2), (34, 6, 1, 2), (7, 12, 1, 1), (41, 12, 1, 1),         # the ring
+                       (7, 23, 1, 1), (41, 23, 1, 1), (14, 28, 1, 2), (34, 28, 1, 2)]:
+        o.door(c, r, w, h, 1, door)
+
+    def hero(name, label, key, aliases=()):
+        return {"name": name, "label": label, "palette": pal[key], **({"aliases": list(aliases)} if aliases else {})}
+
+    o.area("The Archive", "#4fb0a0", 0, 1, 14, 12, (hero("researcher", "Vision", "vision"),))
+    o.area("Sanctum", "#e08a3c", 14, 1, 34, 12, (hero("architect", "Strange", "strange", ("designer",)),))
+    o.area("Stark Workshop", "#8ea0c8", 34, 1, 48, 12, (hero("coder", "Stark", "ironman"),))
+    o.area("Red Room", "#e05a6e", 0, 12, 14, 23, (hero("debugger", "Widow", "widow"),))
+    o.area("The Bridge", "#5aa8e8", 14, 12, 34, 23, (hero("manager", "Fury", "fury"),))
+    o.area("Smash Lab", "#8ccc64", 34, 12, 48, 23, (hero("tester", "Hulk", "hulk"),))
+    o.area("Quinjet Bay", "#9aa6be", 0, 23, 14, 34)
+    o.area("Daily Bugle", "#d8c8a8", 14, 23, 34, 34, (hero("pr-writer", "Spidey", "spidey"),))
+    o.area("Hall of Asgard", "#e8c060", 34, 23, 48, 34, (hero("reviewer", "Thor", "thor"),))
+
+    def station(c, r, desk="STEEL_DESK", seat="COMMAND_CHAIR", color=None, screen=None):
+        """Desk facing the viewer, holo screen on it, seat below: 3 wide x 3 tall from (c, r)."""
+        o.put(desk, c, r, color)
+        o.put("HOLO_SCREEN_FRONT_OFF", c + 1, r, screen)
+        o.put(seat, c + 1, r + 2, color)
+
+    # archive (Vision): data wall, racks, a reading corner with the mind stone
+    o.put("SIGN_THE_ARCHIVE", 5, 1); o.put("DATA_WALL", 1, 0); o.put("DOUBLE_BOOKSHELF", 11, 0)
+    station(5, 3, screen=tint(45, 0, 0, 0, False))
+    o.put("SERVER_RACK", 1, 3); o.put("SERVER_RACK", 2, 3); o.put("FLOATING_BOOKS", 12, 4)
+    o.carpet(3, 7, 10, 10, 2, tint(45, 40, -58), tint(50, 70, -25))
+    o.put("SMALL_TABLE_FRONT", 4, 8, tint(200, 20, -40)); o.put("MIND_STONE_CASE", 4, 8)
+    o.put("SOFA_FRONT", 7, 8, tint(45, 60, -20)); o.put("BOOK_PILE", 12, 10); o.put("BOOK_PILE", 1, 10)
+
+    # sanctum (Strange): round windows, mandala rug, candles, a spell circle
+    o.put("SIGN_SANCTUM", 22, 1); o.put("SANCTUM_WINDOW", 17, 0); o.put("SANCTUM_WINDOW", 29, 0)
+    station(23, 3, desk="DESK_FRONT", color=tint(20, 50, -30), screen=tint(-90, 0, 0, 0, False))
+    o.put("CANDELABRA", 16, 3); o.put("CANDELABRA", 32, 3); o.put("AGAMOTTO_STAND", 18, 8)
+    o.put("MANDALA_RUG", 22, 7); o.put("SPELL_CIRCLE", 28, 8)
+    o.put("BOOK_PILE", 15, 10); o.put("BOOK_PILE", 33, 10); o.put("BOOK_PILE", 16, 10)
+
+    # stark workshop (Iron Man): his desk, two spare benches, armour racks, the reactor
+    o.put("SIGN_STARK_WORKSHOP", 38, 1); o.put("TOOL_WALL", 35, 0); o.put("DATA_WALL", 45, 0)
+    station(40, 3, color=tint(0, 40, -10, 0, False)); o.put("IRON_HELMET", 42, 3)
+    o.put("ARMOR_RACK", 36, 3); o.put("ARMOR_RACK", 45, 3)
+    station(35, 7, color=tint(0, 40, -10, 0, False)); station(44, 7, color=tint(0, 40, -10, 0, False))
+    o.put("ARC_REACTOR", 40, 7); o.put("WORKBENCH", 39, 10); o.put("ROBOT_ARM", 47, 10)
+
+    # red room (Widow): evidence boards, spotlights, the interrogation table
+    o.put("SIGN_RED_ROOM", 4, 12); o.put("EVIDENCE_BOARD", 1, 11); o.put("EVIDENCE_BOARD", 11, 11)
+    station(5, 14, color=tint(350, 30, -20, 0, False), screen=tint(150, 0, 0, 0, False))
+    o.put("SPOTLIGHT", 1, 14); o.put("SPOTLIGHT", 12, 14)
+    o.put("INTERROGATION_TABLE", 5, 18); o.put("RED_LEDGER", 6, 18)
+    o.put("WEAPON_CASE", 12, 19); o.put("CRATE", 1, 21)
+
+    # the bridge (Fury): sky windows, mission screens, the eagle on the floor, holo tables
+    o.put("SKY_WINDOW", 15, 11); o.put("BRIDGE_SCREEN", 18, 11); o.put("SIGN_THE_BRIDGE", 20, 12)
+    o.put("CAP_SHIELD", 25, 11); o.put("BRIDGE_SCREEN", 27, 11); o.put("SKY_WINDOW", 30, 11)
+    station(23, 14)
+    o.put("SHIELD_EMBLEM", 22, 17)
+    o.put("HOLO_TABLE", 16, 18); o.put("HOLO_TABLE", 29, 18)
+    o.put("CRATE", 15, 21); o.put("CRATE", 33, 21); o.put("CRATE", 15, 13); o.put("CRATE", 33, 13)
+
+    # smash lab (Hulk): dented panels, gamma tanks, cracked floor
+    o.put("DENTED_PANEL", 35, 11); o.put("SIGN_SMASH_LAB", 38, 12); o.put("HAZARD_SIGN", 42, 12); o.put("DENTED_PANEL", 45, 11)
+    station(40, 14, seat="LAB_STOOL", color=tint(100, 20, -20, 0, False), screen=tint(-80, 0, 0, 0, False))
+    o.put("GAMMA_TANK", 35, 14); o.put("GAMMA_TANK", 47, 14)
+    o.put("CRACKED_FLOOR", 37, 17); o.put("CRACKED_FLOOR", 42, 19); o.put("CRACKED_FLOOR", 39, 20)
+    o.put("CRASH_DUMMY", 35, 19); o.put("PUNCH_BAG", 47, 19)
+
+    # quinjet bay (field agents): the jet, hangar door, shawarma
+    o.put("SIGN_QUINJET_BAY", 2, 23); o.put("HANGAR_DOOR", 8, 22); o.put("HAWKEYE_BOW", 1, 22)
+    o.put("QUINJET", 4, 24)
+    for c, r in [(2, 25), (11, 25), (2, 27), (11, 27)]:
+        o.put("LANDING_LIGHT", c, r)
+    o.put("SHAWARMA_COUNTER", 1, 29); o.put("SHAWARMA_TABLE", 7, 29)
+    for c, r in [(6, 29), (6, 30), (9, 29), (9, 30), (7, 31), (8, 31)]:
+        o.put("STEEL_BENCH", c, r)
+    o.put("CRATE", 13, 24); o.put("CRATE", 13, 25); o.put("CRATE", 12, 24); o.put("CRATE", 1, 32)
+
+    # daily bugle (Spider-Man): the desk with a typewriter, newsroom desks, camera, cobwebs
+    o.put("SIGN_DAILY_BUGLE", 16, 23); o.put("SPIDEY_POSTER", 27, 22); o.put("WEB_CORNER", 15, 23); o.put("WEB_CORNER", 33, 23)
+    station(23, 25, color=tint(0, 20, 0, 0, False), screen=tint(160, 0, 0, 0, False)); o.put("TYPEWRITER", 25, 25)
+    o.put("NEWSPAPER_STACK", 16, 25); o.put("NEWSPAPER_STACK", 17, 25); o.put("NEWSPAPER_STACK", 16, 26)
+    o.put("CAMERA_TRIPOD", 31, 25)
+    o.carpet(19, 29, 28, 32, 1, tint(40, 10, -52), tint(0, 60, -20))
+    o.put("DESK_FRONT", 16, 29, tint(30, 30, -20)); o.put("PC_FRONT_OFF", 17, 29)
+    o.put("DESK_FRONT", 30, 29, tint(30, 30, -20)); o.put("PC_FRONT_OFF", 31, 29)
+    o.put("NEWSPAPER_STACK", 32, 32); o.put("BIN", 15, 32)
+
+    # hall of asgard (Thor): throne, pillars, braziers, Mjolnir on its pedestal
+    o.put("SIGN_HALL_OF_ASGARD", 36, 23); o.put("GOLD_BANNER", 44, 22); o.put("GOLD_BANNER", 46, 22)
+    o.put("STEEL_DESK", 40, 25, tint(45, 60, 10, 0, False)); o.put("HOLO_SCREEN_FRONT_OFF", 41, 25, tint(170, 0, 0, 0, False))
+    o.put("THRONE", 41, 27)
+    o.put("MJOLNIR_PEDESTAL", 36, 25); o.put("ASGARD_PILLAR", 35, 28); o.put("ASGARD_PILLAR", 47, 28)
+    o.put("BRAZIER", 36, 31); o.put("BRAZIER", 46, 31); o.put("BIFROST_RUNE", 43, 30)
+    return o
+
+
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
     ok = True
-    for build in (agent_hq, neon_arcade, zen_garden):
+    for build in (agent_hq, neon_arcade, zen_garden, helicarrier):
         o = build()
         errs = o.check()
         print(f"{o.name:12} {o.cols}x{o.rows}  {len(o.furniture)} items  {o.seats()} seats  {'OK' if not errs else 'ERRORS'}")

@@ -1,0 +1,14 @@
+{
+  "id": "TOOL_WALL",
+  "name": "Tool wall",
+  "category": "wall",
+  "type": "asset",
+  "file": "TOOL_WALL.png",
+  "width": 32,
+  "height": 32,
+  "footprintW": 2,
+  "footprintH": 2,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

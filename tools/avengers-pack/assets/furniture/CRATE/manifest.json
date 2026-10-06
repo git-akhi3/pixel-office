@@ -1,0 +1,14 @@
+{
+  "id": "CRATE",
+  "name": "Supply crate",
+  "category": "decor",
+  "type": "asset",
+  "file": "CRATE.png",
+  "width": 16,
+  "height": 16,
+  "footprintW": 1,
+  "footprintH": 1,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

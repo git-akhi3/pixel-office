@@ -1,0 +1,14 @@
+{
+  "id": "SKY_WINDOW",
+  "name": "Sky window",
+  "category": "wall",
+  "type": "asset",
+  "file": "SKY_WINDOW.png",
+  "width": 48,
+  "height": 32,
+  "footprintW": 3,
+  "footprintH": 2,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

@@ -43,6 +43,8 @@ export interface RosterCharacter {
   folderName?: string;
   agentName?: string;
   isTeamLead?: boolean;
+  /** A resident's display name from the layout (a theme's hero name). */
+  label?: string;
 }
 
 export interface RosterSub {
@@ -64,7 +66,10 @@ export interface RosterInput {
 
 export interface RosterEntry {
   id: number;
+  /** The role: a resident's sub-agent type, "lead", a teammate's name, or the session folder. */
   name: string;
+  /** Display name when it differs from the role (a theme's hero name). */
+  label?: string;
   kind: 'resident' | 'agent' | 'sub';
   state: 'working' | 'approval' | 'waiting' | 'idle';
   /** What it is working on (a sub-agent's task title). */
@@ -73,8 +78,8 @@ export interface RosterEntry {
   activity?: string;
 }
 
-/** A short name for a character's tag: the resident's role, the team role, or the session's folder. */
-export function characterName(
+/** What a character is for: the resident's role, the team role, or the session's folder. */
+export function characterRole(
   id: number,
   ch: RosterCharacter,
   residentIds: ReadonlyMap<string, number>,
@@ -85,6 +90,16 @@ export function characterName(
   if (ch.agentName) return ch.agentName;
   if (sub) return subagentType(sub.label) ?? 'subtask';
   return ch.folderName || 'agent';
+}
+
+/** A short name for a character's tag: its display name when the layout gives one, else its role. */
+export function characterName(
+  id: number,
+  ch: RosterCharacter,
+  residentIds: ReadonlyMap<string, number>,
+  sub?: RosterSub,
+): string {
+  return ch.label ?? characterRole(id, ch, residentIds, sub);
 }
 
 /** "Subtask: [reviewer] Quick review" names its sub-agent type in brackets. */
@@ -131,10 +146,11 @@ export function buildRoster(input: RosterInput): RosterEntry[] {
 
     const entry: RosterEntry = {
       id,
-      name: characterName(id, ch, residentIds, sub),
+      name: characterRole(id, ch, residentIds, sub),
       kind: ch.isResident ? 'resident' : isSub ? 'sub' : 'agent',
       state,
     };
+    if (ch.label) entry.label = ch.label;
     if (sub?.label) entry.task = sub.label;
     if (tool && state !== 'idle') entry.activity = tool.status;
     roster.push(entry);

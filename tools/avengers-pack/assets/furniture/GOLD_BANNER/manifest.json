@@ -1,0 +1,14 @@
+{
+  "id": "GOLD_BANNER",
+  "name": "Asgard banner",
+  "category": "wall",
+  "type": "asset",
+  "file": "GOLD_BANNER.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

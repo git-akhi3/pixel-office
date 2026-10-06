@@ -1,0 +1,14 @@
+{
+  "id": "BIFROST_RUNE",
+  "name": "Bifrost rune",
+  "category": "decor",
+  "type": "asset",
+  "file": "BIFROST_RUNE.png",
+  "width": 32,
+  "height": 32,
+  "footprintW": 2,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 2
+}

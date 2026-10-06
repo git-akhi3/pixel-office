@@ -1,0 +1,14 @@
+{
+  "id": "HAWKEYE_BOW",
+  "name": "Hawkeye's bow",
+  "category": "wall",
+  "type": "asset",
+  "file": "HAWKEYE_BOW.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

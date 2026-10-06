@@ -1,0 +1,14 @@
+{
+  "id": "SIGN_STARK_WORKSHOP",
+  "name": "Sign: Stark Workshop",
+  "category": "wall",
+  "type": "asset",
+  "file": "SIGN_STARK_WORKSHOP.png",
+  "width": 64,
+  "height": 16,
+  "footprintW": 4,
+  "footprintH": 1,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

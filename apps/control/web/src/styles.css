@@ -1521,6 +1521,103 @@ input.mono {
   text-overflow: ellipsis;
 }
 
+.duty-who {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.duty-role {
+  font-size: var(--fs-xs);
+  color: var(--dim);
+}
+.portrait {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  image-rendering: pixelated;
+  background: var(--bg-deep);
+  border: 2px solid var(--border);
+}
+
+/*
+ * The Avengers theme (the office reports it with its roster): the live panel becomes a S.H.I.E.L.D.
+ * briefing panel in steel, amber and red. Same layout, different skin.
+ */
+.theme-avengers {
+  --steel: #0d1420;
+  --steel-2: #16202f;
+  --steel-3: #223044;
+  --steel-border: #3a4d66;
+  --amber: #f2b53c;
+  --amber-bg: #3a2a10;
+  --shield-red: #d7262e;
+}
+.theme-avengers .live-panel {
+  background: var(--steel);
+  border-right-color: var(--steel-border);
+}
+.theme-avengers .live-head {
+  background: var(--steel-2);
+  border-bottom: 2px solid var(--amber);
+}
+.theme-avengers .live-title {
+  color: var(--amber);
+}
+.theme-avengers .live-scroll h3 {
+  color: var(--amber);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.theme-avengers .count {
+  background: var(--steel-3);
+}
+.theme-avengers .mission,
+.theme-avengers .duty-row {
+  background: var(--steel-2);
+  border-color: var(--steel-border);
+}
+.theme-avengers .mission {
+  border-left-color: #58a9ff;
+}
+.theme-avengers .mission-waiting {
+  border-left-color: var(--amber);
+}
+.theme-avengers .mission:hover,
+.theme-avengers .duty-row:hover {
+  border-color: var(--amber);
+  background: var(--steel-3);
+}
+.theme-avengers .duty-idle {
+  background: none;
+}
+.theme-avengers .duty-approval .portrait,
+.theme-avengers .duty-waiting .portrait {
+  border-color: var(--amber);
+}
+.theme-avengers .duty-working .portrait {
+  border-color: #58a9ff;
+}
+.theme-avengers .hud-tl button {
+  background: var(--steel-2);
+  color: var(--amber);
+  --bc: var(--amber);
+}
+.theme-avengers .alert-chip {
+  background: var(--amber-bg);
+  color: var(--amber);
+  --bc: var(--amber);
+}
+.theme-avengers .hud-br .cta {
+  background: var(--shield-red);
+  color: #fff;
+  --bc: #ffd6d8;
+}
+.theme-avengers .hud-br .cta:hover {
+  background: #ee3a42;
+  color: #fff;
+}
+
 /* Narrow or portrait screens: the live panel slides over the office instead of sitting beside it. */
 @media (max-width: 1099px), (orientation: portrait) {
   .live-panel {

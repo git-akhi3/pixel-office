@@ -1,0 +1,14 @@
+{
+  "id": "PUNCH_BAG",
+  "name": "Heavy bag",
+  "category": "decor",
+  "type": "asset",
+  "file": "PUNCH_BAG.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

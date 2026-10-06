@@ -1,0 +1,14 @@
+{
+  "id": "ARMOR_RACK",
+  "name": "Armor rack",
+  "category": "decor",
+  "type": "asset",
+  "file": "ARMOR_RACK.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

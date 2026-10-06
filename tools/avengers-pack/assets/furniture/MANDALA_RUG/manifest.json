@@ -1,0 +1,14 @@
+{
+  "id": "MANDALA_RUG",
+  "name": "Mandala rug",
+  "category": "decor",
+  "type": "asset",
+  "file": "MANDALA_RUG.png",
+  "width": 48,
+  "height": 48,
+  "footprintW": 3,
+  "footprintH": 3,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 3
+}

@@ -1,0 +1,14 @@
+{
+  "id": "WEB_CORNER",
+  "name": "Cobweb",
+  "category": "wall",
+  "type": "asset",
+  "file": "WEB_CORNER.png",
+  "width": 16,
+  "height": 16,
+  "footprintW": 1,
+  "footprintH": 1,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

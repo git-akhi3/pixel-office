@@ -1,0 +1,14 @@
+{
+  "id": "SHAWARMA_COUNTER",
+  "name": "Shawarma counter",
+  "category": "desks",
+  "type": "asset",
+  "file": "SHAWARMA_COUNTER.png",
+  "width": 48,
+  "height": 32,
+  "footprintW": 3,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 1
+}

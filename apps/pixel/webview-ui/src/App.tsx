@@ -294,11 +294,11 @@ function App() {
         subagentCharacters,
         subagentTools,
       });
-      const serialized = JSON.stringify(roster);
+      const serialized = JSON.stringify([officeState.getLayout().theme, roster]);
       if (serialized === lastRosterRef.current) return;
       lastRosterRef.current = serialized;
       window.parent.postMessage(
-        { source: EMBED_SOURCE, type: 'roster', agents: roster },
+        { source: EMBED_SOURCE, type: 'roster', agents: roster, theme: officeState.getLayout().theme ?? null },
         embedParent,
       );
     };

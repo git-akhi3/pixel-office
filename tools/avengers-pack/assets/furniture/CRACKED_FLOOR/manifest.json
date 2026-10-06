@@ -1,0 +1,14 @@
+{
+  "id": "CRACKED_FLOOR",
+  "name": "Cracked floor",
+  "category": "decor",
+  "type": "asset",
+  "file": "CRACKED_FLOOR.png",
+  "width": 32,
+  "height": 32,
+  "footprintW": 2,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 2
+}

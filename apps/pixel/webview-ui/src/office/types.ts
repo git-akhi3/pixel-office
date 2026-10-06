@@ -167,6 +167,12 @@ export interface OfficeLayout {
    *  same type (Agent tool `subagent_type`) runs, which then animates the resident
    *  instead of spawning a transient Subtask character. */
   residents?: ResidentDefinition[];
+  /** Theme pack the layout belongs to ("avengers"): picks effects, bubbles and sub-agent styling. */
+  theme?: string;
+  /** Palettes new (non-resident) agents may use. Lets a theme reserve its hero skins for residents. */
+  agentPalettes?: number[];
+  /** Area label where visiting (non-resident) agents sit first, when their folder has no mapping. */
+  agentArea?: string;
 }
 
 export interface ResidentDefinition {
@@ -176,6 +182,10 @@ export interface ResidentDefinition {
   area?: string;
   palette?: number;
   hueShift?: number;
+  /** Display name on the name tag and roster ("Fury"); the role stays `name`. */
+  label?: string;
+  /** Other sub-agent types this resident also plays ("designer" for the architect). */
+  aliases?: string[];
 }
 
 export interface Character {
@@ -239,6 +249,8 @@ export interface Character {
   /** Resident agent (layout.residents): never despawns, idles inside its area. */
   isResident?: boolean;
   residentArea?: string;
+  /** Display name from the layout (a theme's hero name), shown instead of the role. */
+  label?: string;
   /** Headless agent: adopted from outside the office, so there is no terminal to
    *  focus. Rendered translucent. Teammates and sub-agents are never headless —
    *  clicking them reaches their lead's / parent's terminal. */

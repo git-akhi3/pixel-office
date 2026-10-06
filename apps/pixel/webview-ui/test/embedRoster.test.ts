@@ -108,6 +108,20 @@ describe('buildRoster', () => {
     ]);
   });
 
+  it('keeps the role as the name and carries a hero label beside it', () => {
+    const roster = buildRoster(
+      base({
+        characters: new Map([[6, character({ isResident: true, isActive: true, label: 'Fury' })]]),
+        residentIds: new Map([['manager', 6]]),
+        subagentCharacters: [{ id: 6, parentAgentId: 1, parentToolId: 't', label: '#4 Size it' }],
+      }),
+    );
+    expect(roster[0]).toMatchObject({ id: 6, name: 'manager', label: 'Fury', kind: 'resident' });
+    expect(characterName(6, character({ isResident: true, label: 'Fury' }), new Map([['manager', 6]]))).toBe(
+      'Fury',
+    );
+  });
+
   it('reports approval and waiting ahead of working, and no activity for an idle session', () => {
     const roster = buildRoster(
       base({

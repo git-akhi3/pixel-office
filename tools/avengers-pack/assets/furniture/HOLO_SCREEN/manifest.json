@@ -1,0 +1,67 @@
+{
+  "id": "HOLO_SCREEN",
+  "name": "Holo screen",
+  "category": "electronics",
+  "type": "group",
+  "groupType": "rotation",
+  "rotationScheme": "2-way",
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": true,
+  "backgroundTiles": 1,
+  "members": [
+    {
+      "type": "group",
+      "groupType": "state",
+      "orientation": "front",
+      "members": [
+        {
+          "type": "group",
+          "groupType": "animation",
+          "state": "on",
+          "members": [
+            {
+              "type": "asset",
+              "id": "HOLO_SCREEN_FRONT_ON_1",
+              "file": "HOLO_SCREEN_FRONT_ON_1.png",
+              "width": 16,
+              "height": 32,
+              "footprintW": 1,
+              "footprintH": 2,
+              "frame": 0
+            },
+            {
+              "type": "asset",
+              "id": "HOLO_SCREEN_FRONT_ON_2",
+              "file": "HOLO_SCREEN_FRONT_ON_2.png",
+              "width": 16,
+              "height": 32,
+              "footprintW": 1,
+              "footprintH": 2,
+              "frame": 1
+            },
+            {
+              "type": "asset",
+              "id": "HOLO_SCREEN_FRONT_ON_3",
+              "file": "HOLO_SCREEN_FRONT_ON_3.png",
+              "width": 16,
+              "height": 32,
+              "footprintW": 1,
+              "footprintH": 2,
+              "frame": 2
+            }
+          ]
+        },
+        {
+          "type": "asset",
+          "id": "HOLO_SCREEN_FRONT_OFF",
+          "file": "HOLO_SCREEN_FRONT_OFF.png",
+          "width": 16,
+          "height": 32,
+          "footprintW": 1,
+          "footprintH": 2,
+          "state": "off"
+        }
+      ]
+    }
+  ]
+}

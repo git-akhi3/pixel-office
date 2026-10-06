@@ -41,6 +41,7 @@ import { CharacterState, Direction, PetState, TILE_SIZE } from '../types.js';
 
 /** First resident character id; residents count down from here (sub-agents use -1, -2, ...). */
 const RESIDENT_ID_BASE = -1_000_000;
+import { setActiveTheme } from '../theme.js';
 import { createCharacter, updateCharacter } from './characters.js';
 import { advanceMatrixEffect, startMatrixEffect } from './matrixEffectState.js';
 import { createPet, updatePet } from './petEntity.js';
@@ -77,6 +78,8 @@ export class OfficeState {
   /** Resident agents (layout.residents): name → character id. Ids count down from
    *  RESIDENT_ID_BASE so they never collide with sub-agent ids (-1, -2, ...). */
   residentIds: Map<string, number> = new Map();
+  /** Other sub-agent types a resident plays (layout.residents[].aliases): alias → resident name. */
+  private residentAliases: Map<string, string> = new Map();
   private nextResidentId = RESIDENT_ID_BASE;
   /** Walkable tiles inside each resident's area, so idle residents stay in their room. */
   private residentWalkable: Map<number, Array<{ col: number; row: number }>> = new Map();
@@ -116,6 +119,7 @@ export class OfficeState {
 
   constructor(layout?: OfficeLayout) {
     this.layout = layout || createDefaultLayout();
+    setActiveTheme(this.layout.theme);
     this.tileMap = layoutToTileMap(this.layout);
     this.seats = layoutToSeats(this.layout.furniture);
     this.blockedTiles = getBlockedTiles(this.layout.furniture);
@@ -130,6 +134,7 @@ export class OfficeState {
    *  @param shift Optional pixel shift to apply when grid expands left/up */
   rebuildFromLayout(layout: OfficeLayout, shift?: { col: number; row: number }): void {
     this.layout = layout;
+    setActiveTheme(layout.theme);
     this.tileMap = layoutToTileMap(layout);
     this.seats = layoutToSeats(layout.furniture);
     this.blockedTiles = getBlockedTiles(layout.furniture);
@@ -186,9 +191,11 @@ export class OfficeState {
       ch.seatId = null; // will be reassigned below
     }
 
-    // Second pass: assign remaining characters to free seats
-    for (const ch of this.characters.values()) {
-      if (ch.seatId) continue;
+    // Second pass: assign remaining characters to free seats. Residents first: a hero's desk in its
+    // own room must not go to a passing session when a new layout arrives.
+    const unseated = [...this.characters.values()].filter((ch) => !ch.seatId);
+    unseated.sort((a, b) => Number(!!b.isResident) - Number(!!a.isResident));
+    for (const ch of unseated) {
       const seatId = ch.isResident
         ? this.findResidentSeat(ch.residentArea)
         : this.findFreeSeat(ch.folderName);
@@ -310,9 +317,13 @@ export class OfficeState {
       }
       ch.isResident = true;
       ch.agentName = def.name;
+      ch.label = def.label;
       ch.residentArea = def.area;
       this.residentWalkable.set(id!, this.areaWalkableTiles(def.area));
     });
+    this.residentAliases = new Map(
+      defs.flatMap((def) => (def.aliases ?? []).map((alias) => [alias, def.name] as const)),
+    );
   }
 
   private areaWalkableTiles(area?: string): Array<{ col: number; row: number }> {
@@ -327,7 +338,7 @@ export class OfficeState {
   /** Resident whose name matches a sub-agent type, if it is free to take the job. */
   residentFor(agentType: string | undefined): number | null {
     if (!agentType) return null;
-    const id = this.residentIds.get(agentType);
+    const id = this.residentIds.get(this.residentAliases.get(agentType) ?? agentType);
     if (id === undefined) return null;
     for (const busy of this.subagentMeta.keys()) if (busy === id) return null;
     return this.characters.has(id) ? id : null;
@@ -486,6 +497,16 @@ export class OfficeState {
       if (pick) return pick;
     }
 
+    // Stage 1b — the layout's own area for visiting agents (a theme's hangar), when the folder has none.
+    if (this.layout.agentArea) {
+      const home = this.layout.agentArea;
+      const pick = this.pickFromSeats(
+        freeSeats.filter((uid) => this.seatZone(uid) === home),
+        electronicsTiles,
+      );
+      if (pick) return pick;
+    }
+
     // Stage 2 — unzoned seats (no area label, or layout has no areas at all).
     const unzoned = freeSeats.filter((uid) => this.seatZone(uid) === null);
     const pick2 = this.pickFromSeats(unzoned, electronicsTiles);
@@ -520,8 +541,18 @@ export class OfficeState {
    * repeat in balanced rounds with a random hue shift (≥45°).
    */
   private pickDiversePalette(): { palette: number; hueShift: number } {
-    // Count how many non-sub-agents use each base palette (0-5)
     const paletteCount = getLoadedCharacterCount();
+    // A theme can reserve its hero skins for residents: agents then pick from its pool only.
+    // (Sprite lookup wraps out-of-range palettes, so the pool is not clamped to the loaded count.)
+    const pool = (this.layout.agentPalettes ?? []).filter((p) => Number.isInteger(p) && p >= 0);
+    if (pool.length > 0) {
+      const counts = pool.map(
+        (p) => [...this.characters.values()].filter((ch) => !ch.isSubagent && !ch.isResident && ch.palette === p).length,
+      );
+      const pick = pickDiversePalette(pool.length, counts);
+      return { palette: pool[pick.palette], hueShift: pick.hueShift };
+    }
+    // Count how many non-sub-agents use each base palette (0-5)
     const counts = new Array(paletteCount).fill(0) as number[];
     for (const ch of this.characters.values()) {
       if (ch.isSubagent) continue;

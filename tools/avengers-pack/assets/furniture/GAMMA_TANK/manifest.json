@@ -1,0 +1,14 @@
+{
+  "id": "GAMMA_TANK",
+  "name": "Gamma tank",
+  "category": "decor",
+  "type": "asset",
+  "file": "GAMMA_TANK.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

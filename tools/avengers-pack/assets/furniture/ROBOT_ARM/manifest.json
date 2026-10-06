@@ -1,0 +1,14 @@
+{
+  "id": "ROBOT_ARM",
+  "name": "Dum-E",
+  "category": "decor",
+  "type": "asset",
+  "file": "ROBOT_ARM.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

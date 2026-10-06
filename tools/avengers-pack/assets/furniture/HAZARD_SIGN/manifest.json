@@ -1,0 +1,14 @@
+{
+  "id": "HAZARD_SIGN",
+  "name": "Hazard sign",
+  "category": "wall",
+  "type": "asset",
+  "file": "HAZARD_SIGN.png",
+  "width": 16,
+  "height": 16,
+  "footprintW": 1,
+  "footprintH": 1,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

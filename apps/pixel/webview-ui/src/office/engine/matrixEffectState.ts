@@ -8,7 +8,8 @@
  * into its module graph just to reset three fields.
  */
 
-import { MATRIX_SPRITE_COLS } from '../../constants.js';
+import { MATRIX_SPRITE_COLS, PORTAL_EFFECT_DURATION_SEC } from '../../constants.js';
+import { isAvengersTheme } from '../theme.js';
 import type { Character } from '../types.js';
 import { MATRIX_EFFECT_DURATION } from '../types.js';
 
@@ -39,10 +40,15 @@ export function startMatrixEffect(ch: Character, kind: 'spawn' | 'despawn'): voi
  *    character keeps rendering as gone, and removing it is the caller's job. */
 export type MatrixEffectTick = 'none' | 'running' | 'spawned' | 'despawned';
 
+/** How long a spawn/despawn takes: the theme's portal is slower than the digital rain. */
+export function effectDuration(): number {
+  return isAvengersTheme() ? PORTAL_EFFECT_DURATION_SEC : MATRIX_EFFECT_DURATION;
+}
+
 export function advanceMatrixEffect(ch: Character, dt: number): MatrixEffectTick {
   if (!ch.matrixEffect) return 'none';
   ch.matrixEffectTimer += dt;
-  if (ch.matrixEffectTimer < MATRIX_EFFECT_DURATION) return 'running';
+  if (ch.matrixEffectTimer < effectDuration()) return 'running';
   if (ch.matrixEffect === 'despawn') return 'despawned';
   ch.matrixEffect = null;
   ch.matrixEffectTimer = 0;

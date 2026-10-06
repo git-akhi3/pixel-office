@@ -1,0 +1,14 @@
+{
+  "id": "STEEL_DESK",
+  "name": "Steel desk",
+  "category": "desks",
+  "type": "asset",
+  "file": "STEEL_DESK.png",
+  "width": 48,
+  "height": 32,
+  "footprintW": 3,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 1
+}

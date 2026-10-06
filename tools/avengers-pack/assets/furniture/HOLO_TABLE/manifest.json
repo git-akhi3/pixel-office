@@ -1,0 +1,14 @@
+{
+  "id": "HOLO_TABLE",
+  "name": "Holo table",
+  "category": "desks",
+  "type": "asset",
+  "file": "HOLO_TABLE.png",
+  "width": 48,
+  "height": 32,
+  "footprintW": 3,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 1
+}
