@@ -38,6 +38,8 @@ const TYPES: Record<string, string> = {
 const INLINE = new Set(['text/plain', 'text/markdown', 'text/csv', 'application/json', 'text/yaml', 'application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
 export const ACCEPTED_EXTENSIONS = Object.keys(TYPES);
+/** Next to each upload; a dotfile, so it can never clash with an uploaded name (safeName drops leading dots). */
+const META = '.meta.json';
 
 /** A safe file name: no folders, no leading dot, plain characters, the original extension kept. */
 export function safeName(name: string): string {
@@ -92,13 +94,13 @@ export class Uploads {
     mkdirSync(d, { recursive: true, mode: 0o700 });
     writeFileSync(join(d, clean), data, { mode: 0o600 });
     const meta: UploadMeta = { name: clean, size: data.length, type, at: now };
-    writeFileSync(join(d, 'meta.json'), JSON.stringify(meta));
+    writeFileSync(join(d, META), JSON.stringify(meta));
     return { id, name: clean, size: data.length, type };
   }
 
   private meta(id: string): UploadMeta {
     if (!/^[0-9a-f]{24}$/.test(id)) throw new Error('Unknown upload.');
-    const f = join(this.dir, id, 'meta.json');
+    const f = join(this.dir, id, META);
     if (!existsSync(f)) throw new Error('That upload has expired. Attach the file again.');
     return JSON.parse(readFileSync(f, 'utf8')) as UploadMeta;
   }
@@ -114,14 +116,15 @@ export class Uploads {
   claim(ids: string[], dest: string): Attachment[] {
     this.check(ids);
     mkdirSync(dest, { recursive: true, mode: 0o700 });
-    const taken = new Set(existsSync(dest) ? readdirSync(dest) : []);
+    // APFS is case-insensitive: Spec.md and spec.md are the same file.
+    const taken = new Set((existsSync(dest) ? readdirSync(dest) : []).map((n) => n.toLowerCase()));
     const out: Attachment[] = [];
     for (const id of [...new Set(ids)]) {
       const meta = this.meta(id);
       let name = meta.name;
       const ext = extname(name);
-      for (let n = 2; taken.has(name); n++) name = `${meta.name.slice(0, meta.name.length - ext.length)}-${n}${ext}`;
-      taken.add(name);
+      for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${meta.name.slice(0, meta.name.length - ext.length)}-${n}${ext}`;
+      taken.add(name.toLowerCase());
       renameSync(join(this.dir, id, meta.name), join(dest, name));
       rmSync(join(this.dir, id), { recursive: true, force: true });
       out.push({ name, size: meta.size, type: meta.type });
@@ -135,7 +138,7 @@ export class Uploads {
     for (const id of readdirSync(this.dir)) {
       const d = join(this.dir, id);
       try {
-        const metaFile = join(d, 'meta.json');
+        const metaFile = join(d, META);
         const at = existsSync(metaFile) ? (JSON.parse(readFileSync(metaFile, 'utf8')) as UploadMeta).at : statSync(d).mtimeMs;
         if (now - at > UPLOAD_TTL_MS) rmSync(d, { recursive: true, force: true });
       } catch {

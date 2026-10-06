@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -55,6 +55,17 @@ describe('uploads', () => {
     expect(() => u.check(['../../etc'])).toThrow(/Unknown upload/);
     const ids = [1, 2, 3].map(() => u.save('big.pdf', Buffer.alloc(9 * 1024 * 1024)).id);
     expect(() => u.check(ids)).toThrow(/over 25 MB/);
+  });
+
+  it('keeps a file called meta.json intact, and treats names differing in case as a clash', () => {
+    const dir = tmp();
+    const u = new Uploads(join(dir, 'uploads'));
+    const meta = u.save('meta.json', Buffer.from('{"real":true}'));
+    const upper = u.save('Spec.md', Buffer.from('A'));
+    const lower = u.save('spec.md', Buffer.from('B'));
+    const dest = join(dir, 'att');
+    expect(u.claim([meta.id, upper.id, lower.id], dest).map((a) => a.name)).toEqual(['meta.json', 'Spec.md', 'spec-2.md']);
+    expect(readFileSync(join(dest, 'meta.json'), 'utf8')).toBe('{"real":true}');
   });
 
   it('deletes uploads nobody claimed within a day', () => {

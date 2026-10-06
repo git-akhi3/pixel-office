@@ -3,7 +3,7 @@
 // Pure functions: no I/O except realpath lookups.
 
 import { existsSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { GRAPH_TOOLS } from './graph.js';
 
@@ -236,6 +236,65 @@ function redirectTargets(command: string): string[] {
   return [...command.matchAll(/(?:^|[^<>&\d])\d?>>?\s*([^\s;&|<>]+)/g)].map((m) => m[1]!).filter((t) => !t.startsWith('&'));
 }
 
+/** Tools whose arguments are text, not files: their arguments are never read as paths. */
+const TEXT_ONLY = new Set(['echo', 'printf', 'basename', 'dirname', 'tr', 'which', 'pwd']);
+/** Tools whose first positional argument is a pattern (unless -e/-f give it). */
+const PATTERN_FIRST = new Set(['grep', 'rg', 'egrep', 'fgrep']);
+
+/**
+ * File arguments of one simple command must stay inside the worktree (or the temp dir, or a read
+ * root), and never be secrets: `cat ../../env` from a worktree under ~/.office would otherwise read
+ * the office's token. Paths are resolved from `cwd` (after any cd in the same command). "Inside" is
+ * judged on the written path, so the repo's setup links (a venv linked from the main checkout) still
+ * work; the real path is still checked for secrets.
+ */
+export function shellPathProblem(ctx: GuardContext, segment: string, cwd: string): { decision: 'deny' | 'ask'; reason: string } | null {
+  const tokens = (segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map((t) => t.replace(/^["']|["']$/g, '').replace(/\\(.)/g, '$1'));
+  const tool = basename(tokens[0] ?? '');
+  if (TEXT_ONLY.has(tool)) return null;
+  const isGitGrep = tool === 'git' && tokens[1] === 'grep';
+  let patternPending = PATTERN_FIRST.has(tool) || isGitGrep;
+  // Written and real spellings both count (macOS: /var is /private/var).
+  const roots = [ctx.worktree, tmpdir(), realPath(tmpdir()), ...(ctx.readRoots ?? [])];
+  for (let i = isGitGrep ? 2 : 1; i < tokens.length; i++) {
+    let v = tokens[i]!;
+    if (v === '--') continue;
+    if (v.startsWith('-')) {
+      // -e PATTERN / --regexp=PATTERN: the pattern is given, the next positional is a path.
+      if (patternPending && (v === '-e' || v === '--regexp')) {
+        patternPending = false;
+        i++;
+        continue;
+      }
+      if (patternPending && v.startsWith('--regexp=')) {
+        patternPending = false;
+        continue;
+      }
+      if (!v.includes('=')) continue;
+      v = v.slice(v.indexOf('=') + 1);
+    } else if (patternPending) {
+      patternPending = false;
+      continue;
+    }
+    v = v.replace(/^</, '');
+    if (!v) continue;
+    // A variable or substitution could point anywhere: I decide.
+    if (v.includes('$') || v.includes('`')) return { decision: 'ask', reason: `a file argument uses a variable: ${v}` };
+    if (/^~[^/]/.test(v)) return { decision: 'deny', reason: `another user's home is off-limits: ${v}` };
+    const pathLike = v.includes('/') || v === '..' || v.startsWith('~');
+    if (!pathLike || /^\/+$/.test(v)) continue;
+    // Globs: check the fixed part before the first wildcard.
+    const expanded = v.replace(/^~(?=\/|$)/, homedir());
+    const glob = expanded.search(/[*?[{]/);
+    const fixed = glob === -1 ? expanded : expanded.slice(0, expanded.lastIndexOf('/', glob) + 1) || '.';
+    const lexical = resolve(isAbsolute(fixed) ? fixed : join(cwd, fixed));
+    const real = realPath(lexical);
+    if (isSecretFor(ctx, real) || isSecretFor(ctx, lexical)) return { decision: 'deny', reason: `secrets are off-limits: ${v}` };
+    if (!roots.some((r) => isInside(r, lexical) || isInside(r, real))) return { decision: 'deny', reason: `reads outside the worktree are blocked: ${v} (use paths inside the task's worktree)` };
+  }
+  return null;
+}
+
 export function checkCommand(ctx: GuardContext, command: string): GuardDecision {
   for (const [re, reason] of DENIED_COMMANDS) {
     if (re.test(command)) return deny(reason);
@@ -248,17 +307,29 @@ export function checkCommand(ctx: GuardContext, command: string): GuardDecision 
 
   const unmatched: string[] = [];
   if (/\$\(|`|<\(|\beval\b|\bsource\b|^\s*\.\s/.test(command)) unmatched.push(command.trim());
+  // Where relative paths point: the worktree, then wherever a `cd` in this command went.
+  let cwd = ctx.worktree;
   for (const segment of splitCommand(command)) {
     const cd = segment.match(/^cd\s+(\S+)$/);
     if (cd) {
       const target = cd[1]!.replace(/^["']|["']$/g, '');
-      if (isInside(ctx.worktree, realPath(isAbsolute(target) ? target : join(ctx.worktree, target)))) continue;
+      const next = realPath(isAbsolute(target) ? target : join(cwd, target));
+      if (isInside(ctx.worktree, next)) {
+        cwd = next;
+        continue;
+      }
       return deny(`cd outside the worktree is blocked: ${target}`);
     }
     // Strip a trailing redirect (already checked above) before matching.
     const bare = segment.replace(/\s*\d?>>?\s*\S+/g, '').replace(/\s*2>&1/g, '').trim();
     const flag = unsafeFlag(bare);
     if (flag) return deny(flag);
+    const path = shellPathProblem(ctx, bare, cwd);
+    if (path?.decision === 'deny') return deny(path.reason);
+    if (path?.decision === 'ask') {
+      unmatched.push(bare);
+      continue;
+    }
     if (!matchesAllowlist(bare, ctx.allowlist)) unmatched.push(bare);
   }
   if (unmatched.length) {

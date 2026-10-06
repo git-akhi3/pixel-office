@@ -263,10 +263,15 @@ export class Pipeline {
       .values({ repoId: input.repoId, input: text, title, kind: input.kind ?? 'feature', baseBranch: input.baseBranch ?? null, skillPicks, grillMode: input.grillMode ?? 'auto', links })
       .returning()
       .get();
-    // Moved in before the first tick, so intake already sees them.
+    // Moved in before the first tick, so intake already sees them. If that fails, no task is left behind.
     if (uploads.length) {
-      const attachments = this.uploads.claim(uploads, attachmentsDir(this.deps.docs.dir(task.id)));
-      task = this.deps.db.update(schema.tasks).set({ attachments }).where(eq(schema.tasks.id, task.id)).returning().get();
+      try {
+        const attachments = this.uploads.claim(uploads, attachmentsDir(this.deps.docs.dir(task.id)));
+        task = this.deps.db.update(schema.tasks).set({ attachments }).where(eq(schema.tasks.id, task.id)).returning().get();
+      } catch (e) {
+        this.deps.db.delete(schema.tasks).where(eq(schema.tasks.id, task.id)).run();
+        throw e;
+      }
     }
     this.deps.bus.emit(task.id, 'created', { title });
     this.deps.bus.taskChanged(task);

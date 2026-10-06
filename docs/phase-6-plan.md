@@ -1,5 +1,7 @@
 # Phase 6 plan: mission skills, briefings, attachments
 
+Status 2026-10-06: all three steps built and reviewed (commits c791bd6, 6a01195, 4e6c9eb). One migration (0004) holds the schema for all three.
+
 Design: [design.md](design.md#mission-skills-briefings-and-attachments). Three steps, each reviewed independently and verified on the live board before the next.
 
 ## Step 1: mission skills

@@ -163,6 +163,12 @@ export class SlackBridge {
       if (lead[1] !== this.deps.botUserId) return;
       text = text.slice(lead[0].length).trim();
     }
+    const threadReply = !!msg.thread_ts && msg.thread_ts !== msg.ts;
+    if (sender === 'owner' && msg.files?.length && (threadReply || !text)) {
+      // Files only attach to the message that starts a task, together with its text.
+      await this.reply(msg.channel, msg.thread_ts ?? msg.ts, ':paperclip: Files attach only to a new task message, sent with its text (`<repo>: what to do`). These were not attached.');
+      if (!text) return;
+    }
     if (!text) return;
     try {
       if (msg.thread_ts && msg.thread_ts !== msg.ts) await this.onThreadMessage(msg.channel, msg.thread_ts, text, sender);
@@ -559,10 +565,24 @@ export async function startSlack(config: SlackConfig, deps: Omit<SlackBridgeDeps
     },
     downloadFile: async (url) => {
       if (!isSlackFileUrl(url)) throw new Error('not a Slack file link');
-      const res = await fetch(url, { headers: { authorization: `Bearer ${config.botToken}` }, redirect: 'error' });
+      let res: Response;
+      try {
+        res = await fetch(url, { headers: { authorization: `Bearer ${config.botToken}` }, redirect: 'error', signal: AbortSignal.timeout(30_000) });
+      } catch (e) {
+        // Without files:read, Slack redirects to its login page, which redirect: 'error' refuses.
+        throw new Error((e as Error).name === 'TimeoutError' ? 'download timed out' : 'Slack refused the download: the app may need the files:read permission (reinstall it)');
+      }
       if (!res.ok) throw new Error(res.status === 403 ? 'the Slack app needs the files:read permission (reinstall it)' : `download failed (${res.status})`);
-      const data = Buffer.from(await res.arrayBuffer());
-      if (data.length > MAX_ATTACHMENT_BYTES) throw new Error('over 10 MB');
+      if (Number(res.headers.get('content-length') ?? 0) > MAX_ATTACHMENT_BYTES) throw new Error('over 10 MB');
+      // Read with a cap, so a missing or wrong content-length can't fill memory.
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of res.body ?? []) {
+        size += (chunk as Uint8Array).length;
+        if (size > MAX_ATTACHMENT_BYTES) throw new Error('over 10 MB');
+        chunks.push(Buffer.from(chunk as Uint8Array));
+      }
+      const data = Buffer.concat(chunks);
       // Without files:read Slack answers with its HTML login page instead of the file.
       if ((res.headers.get('content-type') ?? '').startsWith('text/html') && !url.toLowerCase().endsWith('.html')) throw new Error('Slack sent a login page: the app needs files:read');
       return data;

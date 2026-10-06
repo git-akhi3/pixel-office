@@ -242,6 +242,46 @@ describe('shell allow-list', () => {
   });
 });
 
+describe('file arguments of shell commands', () => {
+  it('keeps reads inside the worktree: no climbing into ~/.office, other tasks or the system', () => {
+    for (const cmd of ['cat ../../env', 'head -5 ../../tasks/2/plan.md', 'wc -l ../../env', 'ls ../..', 'grep -r TOKEN ../..', 'cat /etc/hosts', 'rg TOKEN ~/', 'diff src/a.ts ../../env', 'tail --lines=5 ../../env', 'cat <../../env', 'cat ~bob/notes']) {
+      expect([cmd, decision(checkCommand(ctx(), cmd))]).toEqual([cmd, 'deny']);
+    }
+    // Via a cd inside the worktree, then up and out.
+    expect(decision(checkCommand(ctx(), 'cd src && cat ../../../env'))).toBe('deny');
+  });
+
+  it('still allows ordinary work: patterns, refs, globs, cd and setup links', () => {
+    for (const cmd of [
+      'rg "/api/items" src',
+      'grep -rn "a/b" .',
+      'grep -e "/x/" src/',
+      'git grep "/route" -- src',
+      'git diff origin/main..HEAD -- src/index.ts',
+      'git show HEAD:src/index.ts',
+      'ls src/*.ts',
+      'cat src/a.ts | tr / _',
+      'echo ../../env',
+      'cd src && ls ..',
+      `cat ${tmpdir()}/x`,
+    ]) {
+      expect([cmd, decision(checkCommand(ctx(), cmd))]).toEqual([cmd, 'allow']);
+    }
+    // The repo's venv is linked in from the main checkout by the setup command: running it must work.
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'guard-main-')));
+    mkdirSync(join(outside, '.venv', 'bin'), { recursive: true });
+    mkdirSync(join(wt, 'poc'), { recursive: true });
+    symlinkSync(join(outside, '.venv'), join(wt, 'poc', '.venv'));
+    const repoCtx = { ...ctx(), allowlist: [...ctx().allowlist, '../poc/.venv/bin/python -m pytest *', 'cat *'] };
+    expect(decision(checkCommand(repoCtx, 'cd src && ../poc/.venv/bin/python -m pytest -q tests'))).toBe('allow');
+    expect(decision(checkCommand(repoCtx, 'cat poc/.venv/bin/activate'))).toBe('allow');
+  });
+
+  it('asks when a file argument is a variable', () => {
+    expect(decision(checkCommand(ctx(), 'cat "$HOME/notes"'))).toBe('ask');
+  });
+});
+
 describe('other tools', () => {
   it('denies tools office agents do not have', () => {
     for (const t of ['Agent', 'Task', 'Skill', 'Mystery']) expect(decision(checkToolCall(ctx(), t, {}))).toBe('deny');

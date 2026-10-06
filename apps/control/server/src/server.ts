@@ -149,14 +149,23 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   // ---------------------------------------------------------------- attachments
 
   const uploads = deps.uploads ?? new Uploads(config.uploadsDir);
-  // Files arrive as raw bytes; the name comes in a header (URI-encoded).
-  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: MAX_ATTACHMENT_BYTES + 1024 }, (_req, body, done) => done(null, body));
-  app.post('/api/uploads', { bodyLimit: MAX_ATTACHMENT_BYTES + 1024 }, async (req) => {
-    const raw = req.headers['x-filename'];
-    const name = typeof raw === 'string' ? decodeURIComponent(raw) : '';
-    if (!name) throw new Error('Missing the file name (x-filename).');
-    if (!Buffer.isBuffer(req.body)) throw new Error('Send the file as application/octet-stream.');
-    return uploads.save(name, req.body);
+  // Files arrive as raw bytes; the name comes in a header (URI-encoded). The raw parser and the
+  // large body limit apply to this route only (the host and x-office checks above still run).
+  await app.register(async (scope) => {
+    scope.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: MAX_ATTACHMENT_BYTES + 1024 }, (_req, body, done) => done(null, body));
+    scope.post('/api/uploads', { bodyLimit: MAX_ATTACHMENT_BYTES + 1024 }, async (req) => {
+      if (!String(req.headers['content-type'] ?? '').startsWith('application/octet-stream')) throw new Error('Send the file as application/octet-stream.');
+      const raw = req.headers['x-filename'];
+      let name = '';
+      try {
+        name = typeof raw === 'string' ? decodeURIComponent(raw) : '';
+      } catch {
+        throw new Error('The file name is not valid.');
+      }
+      if (!name) throw new Error('Missing the file name (x-filename).');
+      if (!Buffer.isBuffer(req.body)) throw new Error('Send the file as application/octet-stream.');
+      return uploads.save(name, req.body);
+    });
   });
 
   app.get('/api/tasks/:id/attachments/:name', async (req, reply) => {
@@ -171,7 +180,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       .type(type)
       .header('x-content-type-options', 'nosniff')
       // Sandboxed, so an attachment can never run script on the board's origin (a PDF needs the viewer, which sandbox blocks).
-      .header('content-security-policy', type === 'application/pdf' ? "default-src 'none'; object-src 'self'; plugin-types application/pdf" : "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox")
+      .header('content-security-policy', type === 'application/pdf' ? "default-src 'none'; object-src 'self'" : "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox")
       .header('content-disposition', `${inline ? 'inline' : 'attachment'}; filename="${a.name}"`)
       .send(readFileSync(file));
   });

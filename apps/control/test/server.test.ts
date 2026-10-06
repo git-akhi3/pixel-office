@@ -214,5 +214,13 @@ describe('attachments', () => {
     // Uploads need the x-office header like every other change.
     const csrf = await app.inject({ method: 'POST', url: '/api/uploads', headers: { host: '127.0.0.1:4100', 'content-type': 'application/octet-stream', 'x-filename': 'a.md' }, payload: 'x' });
     expect(csrf.statusCode).toBe(403);
+    // Other routes don't take raw bodies.
+    const raw = await app.inject({ method: 'POST', url: '/api/tasks', headers: { ...headers, 'content-type': 'application/octet-stream' }, payload: 'x' });
+    expect(raw.statusCode).toBe(415);
+    // An expired upload refuses the task instead of creating it without its files.
+    const before = (await app.inject({ method: 'GET', url: '/api/tasks', headers })).json() as unknown[];
+    const expired = await app.inject({ method: 'POST', url: '/api/tasks', headers, payload: { repoId: repo.id, input: 'x', attachments: ['0'.repeat(24)] } });
+    expect(expired.statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/api/tasks', headers })).json()).toHaveLength(before.length);
   });
 });
