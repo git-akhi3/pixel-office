@@ -15,6 +15,7 @@ import type { TaskDocs } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
 import { listRepos } from './repos.js';
 import { SlackQuestions } from './slackQuestions.js';
+import { describeTask, duration, esc, listActive, tokens, type StatusContext } from './slackStatus.js';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type Uploads } from './attachments.js';
 import type { SlackConfig } from './config.js';
 
@@ -74,28 +75,14 @@ const OWNER_ONLY = new Set(['approve', 'reject', 'discard', 'done', 'replan', 's
 
 type Sender = 'owner' | 'assistant';
 
-/** Slack mrkdwn treats & < > as markup. */
-export function esc(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+export { esc };
 
 function clip(text: string, max = MAX_SECTION): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-function duration(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
-}
-
-function tokens(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n);
-}
-
 export const HELP = [
-  '*Start a task:* DM me `<repo>: what to build or fix` (the repo name is optional when only one is registered), or paste a GitHub PR link to review it.',
+  '*Start a task:* DM me `<repo>: what to build or fix` (the repo name is optional when only one is registered), or paste a GitHub PR link to review it. `status` on its own lists every active task.',
   '*In a task thread:* `status` · `pause` / `stop` · `resume` · `steer: <note to the agent>` · `replan: <why>` · `approve` · `reject: <what to change>` · `discard` · `done`',
   "*When the architect asks you something:* tap a button, or reply in the thread with your answer. `send` sends what you've answered so far; `enough` lets it plan now.",
 ].join('\n');
@@ -192,6 +179,7 @@ export class SlackBridge {
   private async onNewTask(channel: string, ts: string, text: string, sender: Sender, files: SlackFile[] = []): Promise<void> {
     const assistant = sender === 'assistant';
     if (/^(help|\?)$/i.test(text)) return void (await this.reply(channel, ts, HELP));
+    if (/^(status|tasks)[?.!]*$/i.test(text)) return void (await this.reply(channel, ts, listActive(this.statusContext())));
     const pr = text.match(PR_URL)?.[0];
     // An assistant must be explicit (`repo: ...` or a PR link). A stray "thanks!" must never become a task.
     const parsed = pr ? null : this.parseTask(text, !assistant);
@@ -290,8 +278,7 @@ export class SlackBridge {
     if (sender === 'owner' && this.questions.openQuestion(task.id) && !isExplicitCommand(text) && this.questions.onThreadReply(task.id, text)) return;
     switch (command) {
       case 'status': {
-        const t = pipeline.getTask(task.id);
-        return void (await say(this.statusText(t, false)));
+        return void (await say(describeTask(pipeline.getTask(task.id), this.statusContext())));
       }
       case 'pause':
       case 'stop':
@@ -477,7 +464,19 @@ export class SlackBridge {
 
   // ------------------------------------------------------------ status message
 
-  private statusText(task: Task, live = true): string {
+  private statusContext(): StatusContext {
+    const { pipeline } = this.deps;
+    return {
+      db: this.deps.db,
+      now: this.now(),
+      publicUrl: this.deps.publicUrl,
+      tokensUsed: (id, steps) => pipeline.tokensUsed(id, steps),
+      pendingGates: (id) => pipeline.pendingGates(id),
+      stepStartedAt: (id) => this.stepStartedAt.get(id),
+    };
+  }
+
+  private statusText(task: Task): string {
     const column = boardColumn(task.status);
     const running = isAgentStep(task.status);
     const agent = running ? AGENT_STEPS[task.status] : null;
@@ -488,7 +487,7 @@ export class SlackBridge {
     parts.push(`${tokens(this.deps.pipeline.tokensUsed(task.id))} tokens`);
     if (task.statusNote) parts.push(esc(clip(task.statusNote, 200)));
     if (task.prUrl) parts.push(task.prUrl);
-    return parts.join(' · ') + (live ? '' : `\n<${this.deps.publicUrl}/#/task/${task.id}|Open in office>`);
+    return parts.join(' · ');
   }
 
   /** Posts or edits the task's single status message. */
