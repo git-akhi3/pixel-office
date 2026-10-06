@@ -186,6 +186,7 @@ tests_added: <number>
 ---
 ## Tests added
 - path/to/file.test.ts: <what it covers, mapped to acceptance criteria>
+(or "- none: <why the change has no behaviour to test>")
 
 ## Suite
 <command>: <summary line, e.g. 120 passed, 2 failed>

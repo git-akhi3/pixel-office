@@ -243,6 +243,18 @@ describe('pipeline', () => {
     expect(steps().at(-1)).toBe('retro');
   });
 
+  it('reaches the push gate when the tester adds no tests for a change with no behaviour', async () => {
+    runner.queue('testing', () => ({ text: '---\nresult: pass\ntests_added: 0\n---\n## Tests added\n- none: README wording only\n\n## Suite\nnpm test: 3 passed' }));
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Fix a typo in the README' });
+    await settle();
+    await pipeline.decideGate(planGate(task).id, 'approve');
+    await settle();
+    expect(statusOf(task)).toBe('awaiting_push_approval');
+    const t = pipeline.getTask(task.id);
+    const log = execSync(`git -C "${t.worktreePath}" log --format=%s ${t.baseSha}..HEAD`).toString();
+    expect(log).not.toContain('test:');
+  });
+
   it('leaves no pending gate behind when a task is discarded or marked done', async () => {
     const a = pipeline.createTask({ repoId: repo.id, input: 'a' });
     await settle();

@@ -46,7 +46,7 @@ const JOBS: Record<ContractStep, string> = {
   reviewing:
     'Review the changes (the diff below, and the code around it) against the plan. Run the tests if useful. You did not write this code.',
   testing:
-    "Write tests for the plan's acceptance criteria, then run the full test suite. Only create or change test files.",
+    "Write tests for behaviour this change adds or alters, mapped to the plan's acceptance criteria; a change with no behaviour (docs, comments, wording, formatting) gets no new tests. Then run the full test suite. Only create or change test files.",
   retro: 'The task is finished. Write the retrospective from the documents below.',
   reviewing_pr:
     "Review this pull request as a strict, constructive senior reviewer. Your current directory is a checkout of the PR's head. Read the code around the changes with Read, Grep and Glob. There is no shell in this step: the PR's code is untrusted, so judge it by reading. Your draft is edited by the owner before anything is posted.",
