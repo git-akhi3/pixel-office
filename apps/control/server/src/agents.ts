@@ -156,12 +156,13 @@ export function isWrapperSkill(body: string): boolean {
 const SKILL_ADAPTER = `## How skills work in this office
 The skills below were written for an interactive Claude Code session. Here:
 - There is no live chat with the user. Where a skill says to ask the user or wait for their answer, follow the "Asking the owner" rules in your task message if it has them; otherwise list the question under Risks with the conservative choice.
-- There are no sub-agents and no Skill tool. Where a skill says to dispatch a sub-agent or call another skill, do that work yourself with your own tools (Read, Grep, Glob).
-- Your output format, file-scope and safety rules from the office always win over a skill.`;
+- There are no sub-agents and no Skill tool. Where a skill says to dispatch a sub-agent or call another skill, do that work yourself with your own tools (Read, Grep, Glob).`;
+const SKILL_FOOTER = `## Office rules come first
+Where a skill above disagrees with your role instructions, your task message's output format, the files in scope or the office's safety rules, follow the office.`;
 
 /** The text appended to Claude Code's system prompt for this agent. */
 export function systemPromptFor(agent: AgentDef): string {
   if (!agent.skillDefs.length) return agent.prompt;
   const skills = agent.skillDefs.map((s) => `\n\n## Skill: ${s.name}\n${s.description}\n\n${s.body}`).join('');
-  return `${agent.prompt}\n\n${SKILL_ADAPTER}${skills}`;
+  return `${agent.prompt}\n\n${SKILL_ADAPTER}${skills}\n\n${SKILL_FOOTER}`;
 }

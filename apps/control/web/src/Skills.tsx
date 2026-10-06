@@ -117,10 +117,10 @@ export function MissionSkills({
 
 /** The task page's skills: each role's built-in skills, the mission's picks and who made them. */
 export function TaskSkills({ task, onChanged, onError }: { task: Task; onChanged: () => void; onError: (e: unknown) => void }) {
-  const catalog = useCatalog(onError);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  // Open at plan approval: that's when I'd change what the coder, reviewer and tester get.
+  // Opening the panel reloads the catalog, so skills imported meanwhile show up.
   const [open, setOpen] = useState(task.status === 'awaiting_plan_approval');
+  const catalog = useCatalog(onError, open);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   useEffect(() => {
     api.agents().then(setAgents).catch(onError);
   }, [onError]);
@@ -181,10 +181,11 @@ export function TaskSkills({ task, onChanged, onError }: { task: Task; onChanged
 
 // ---------------------------------------------------------------- import from Claude Code
 
-/** Line diff for the update preview (skills are small, so a plain LCS is fine). */
+/** Line diff for the update preview (skills are small, so a plain LCS is fine; huge ones show old then new). */
 function lineDiff(a: string, b: string): Array<{ op: ' ' | '+' | '-'; line: string }> {
   const x = a.split('\n');
   const y = b.split('\n');
+  if (x.length * y.length > 4_000_000) return [...x.map((line) => ({ op: '-' as const, line })), ...y.map((line) => ({ op: '+' as const, line }))];
   const dp = Array.from({ length: x.length + 1 }, () => new Array<number>(y.length + 1).fill(0));
   for (let i = x.length - 1; i >= 0; i--) for (let j = y.length - 1; j >= 0; j--) dp[i]![j] = x[i] === y[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
   const out: Array<{ op: ' ' | '+' | '-'; line: string }> = [];

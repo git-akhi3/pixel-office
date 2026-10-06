@@ -12,7 +12,8 @@ import type { Graphs } from './graph.js';
 import { proposalFromRetro, type Knowledge } from './knowledge.js';
 import type { OfficeConfig } from './config.js';
 import { getSettings, schema, usagePause, type Db } from './db/index.js';
-import type { Gate, GrillMode, Repo, SkillPicks, Task } from './db/schema.js';
+import type { Gate, GrillMode, Question, Repo, SkillPicks, Task } from './db/schema.js';
+import { answersMessage, BRIEFING_WAIT_MS, briefDoc, MAX_BAD_ROUNDS, parseRound, type Delivery, type RoundQuestion } from './briefing.js';
 import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, type GateDecision, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
 import type { PrInfo, Publisher } from './github.js';
@@ -32,6 +33,8 @@ const reviewMarker = (taskId: number) => `<!-- pixel-office review task #${taskI
 const PICKUP_RETRY_MS = 60 * 60 * 1000;
 
 export const MAX_CODER_LOOPS = 2;
+/** Skills the manager may pick per role; most tasks need none or one. */
+const MAX_MANAGER_PICKS = 4;
 export const MAX_REPLANS = 2;
 export const WORKTREE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const RATE_LIMIT_FALLBACK_MS = 30 * 60 * 1000;
@@ -49,6 +52,8 @@ export interface PipelineDeps {
   now?: () => number;
   /** owner/name of a repo on GitHub (from its origin remote). Injectable for tests. */
   slugOf?: (repo: Repo) => Promise<string | null>;
+  /** How long a planning session waits for a question round's answers before parking. */
+  briefingWaitMs?: number;
 }
 
 export interface NewTask {
@@ -78,6 +83,12 @@ export class Pipeline {
   /** PRs auto-pickup skipped (too small, or failed) and when, so they are retried later rather than every sweep. */
   private skippedPrs = new Map<string, number>();
   private pending = new Map<number, PendingPermission>();
+  /** Planning sessions waiting for my answers to a question round, by task. */
+  private waiting = new Map<number, { gateId: number; resolve(delivery: Delivery | null): void }>();
+  /** "Send" or "Enough" pressed while a session was between waiting and parking. */
+  private queuedDelivery = new Map<number, Delivery>();
+  /** Malformed question rounds per task, sent back for a fix up to MAX_BAD_ROUNDS times. */
+  private badRounds = new Map<number, number>();
   private timers: NodeJS.Timeout[] = [];
   private ticking = false;
   private shuttingDown = false;
@@ -108,9 +119,9 @@ export class Pipeline {
       .map((s) => ({ name: s.name, description: s.description }));
   }
 
-  /** My picks, checked: known roles, existing skills. */
-  private ownerPicks(skills: Partial<Record<Role, string[]>> | undefined): SkillPicks {
-    const known = new Set(this.skillCatalog().map((s) => s.name));
+  /** My picks, checked: known roles, existing skills (or ones already picked, which may since be gone). */
+  private ownerPicks(skills: Partial<Record<Role, string[]>> | undefined, alreadyPicked: string[] = []): SkillPicks {
+    const known = new Set([...this.skillCatalog().map((s) => s.name), ...alreadyPicked]);
     const picks: SkillPicks = {};
     for (const [role, names] of Object.entries(skills ?? {}) as Array<[Role, string[]]>) {
       if (!PICKABLE_ROLES.includes(role)) throw new Error(`Skills can't be picked for the ${role}.`);
@@ -129,7 +140,7 @@ export class Pipeline {
     const task = this.getTask(taskId);
     if (TERMINAL_STATUSES.includes(task.status)) throw new Error(`The task is ${task.status}.`);
     if (this.running.has(taskId) && AGENT_STEPS[task.status] === role) throw new Error(`The ${role} is working right now; change its skills when it finishes.`);
-    const picks = { ...task.skillPicks, ...this.ownerPicks({ [role]: skills }) };
+    const picks = { ...task.skillPicks, ...this.ownerPicks({ [role]: skills }, task.skillPicks[role]?.skills) };
     const updated = this.update(taskId, { skillPicks: picks });
     this.deps.bus.emit(taskId, 'skills_changed', { role, skills, by: 'owner' });
     return updated;
@@ -209,6 +220,11 @@ export class Pipeline {
       .all()
       .filter((t) => (isAgentStep(t.status) && t.status !== 'queued') || t.status === 'pushing' || t.status === 'posting_review');
     for (const t of active) {
+      if (t.status === 'planning' && this.openRoundGate(t.id)) {
+        // The architect was waiting for my answers: keep the questions, wait for me without a session.
+        this.update(t.id, { status: 'awaiting_answer', resumeStatus: null, statusNote: this.waitingNote(t.id) });
+        continue;
+      }
       this.update(t.id, { status: 'paused', resumeStatus: t.status, statusNote: 'The server restarted during this step. Resume to run it again.' });
       this.deps.bus.emit(t.id, 'paused', { reason: 'server restart', step: t.status });
     }
@@ -341,9 +357,13 @@ export class Pipeline {
       this.skillDirs(),
       (name) => this.alert(task, 'skills', `The ${role}'s skill "${name}" no longer exists; running without it.`),
     );
+    // A grilled mission's architect also follows the grilling skill, when the catalog has it.
+    const grilling = step === 'planning' && task.grill;
+    const grillSkill = getSettings(db).grillSkill;
+    const withGrill = grilling && this.skillCatalog().some((s) => s.name === grillSkill) ? withSkills(roleAgent, [grillSkill], this.skillDirs()) : roleAgent;
     // A PR under review is untrusted code (and untrusted text): its reviewer gets exactly Read/Grep/Glob,
     // read-only, whatever a custom reviewer definition lists. No shell, no writes, no web.
-    const agent: AgentDef = step === 'reviewing_pr' ? { ...roleAgent, tools: ['Read', 'Grep', 'Glob'], write: 'none' } : roleAgent;
+    const agent: AgentDef = step === 'reviewing_pr' ? { ...roleAgent, tools: ['Read', 'Grep', 'Glob'], write: 'none' } : withGrill;
     const repo = getRepo(db, task.repoId);
 
     // The retrospective only reads handoff documents; the worktree may already be gone after a merge.
@@ -374,6 +394,7 @@ export class Pipeline {
       ...(step === 'intake'
         ? { catalog: this.skillCatalog(), roleSkills: Object.fromEntries(PICKABLE_ROLES.map((r) => [r, this.agents[r].skills])) }
         : {}),
+      ...(grilling ? { briefing: { hasSkill: withGrill !== roleAgent } } : {}),
     });
 
     const run = db
@@ -398,6 +419,7 @@ export class Pipeline {
       onEvent: (type, payload) => bus.emit(task.id, type, payload, run.id),
       askPermission: (subject, unmatched) => this.requestPermission(task.id, subject, unmatched),
       validate: (text) => validateDoc(step, text),
+      ...(grilling ? { interject: (text: string) => this.onArchitectMessage(task.id, run.id, text, abort.signal) } : {}),
     });
     this.recordRun(run.id, outcome);
     bus.emit(task.id, 'step_end', { step, role, status: outcome.status, error: outcome.error, usage: outcome.usage }, run.id);
@@ -414,6 +436,12 @@ export class Pipeline {
     switch (outcome.status) {
       case 'interrupted':
         this.update(task.id, { status: 'stopped', resumeStatus: step });
+        return;
+      case 'parked':
+        // Nobody answered within the wait: free the slot and keep the questions open for me.
+        this.update(task.id, { status: 'awaiting_answer', resumeStatus: null, statusNote: this.waitingNote(task.id) });
+        this.deps.bus.emit(task.id, 'briefing_parked', {});
+        this.deliverIfReady(task.id);
         return;
       case 'rate_limited': {
         const resumeAt = outcome.resetsAt ? outcome.resetsAt * 1000 : this.now() + RATE_LIMIT_FALLBACK_MS;
@@ -468,8 +496,10 @@ export class Pipeline {
           needs_debugger: boolean;
           needs_researcher: boolean;
           design_review: boolean;
-          skills?: Record<string, string[]>;
-          skills_why?: Record<string, string>;
+          skills?: unknown;
+          skills_why?: unknown;
+          grill?: boolean;
+          grill_reason?: string;
         }>('intake', text);
         const updated = this.update(task.id, {
           title: m.title,
@@ -478,7 +508,8 @@ export class Pipeline {
           needsDebugger: m.needs_debugger,
           needsResearcher: m.needs_researcher,
           designFlag: m.design_review,
-          skillPicks: this.managerPicks(task, m.skills ?? {}, m.skills_why ?? {}),
+          skillPicks: this.managerPicks(task, m.skills, m.skills_why),
+          ...this.grillDecision(task, m.grill, m.grill_reason),
         });
         this.update(task.id, { status: updated.needsDebugger ? 'debugging' : updated.needsResearcher ? 'researching' : 'planning' });
         return;
@@ -557,18 +588,22 @@ export class Pipeline {
   }
 
   /** The manager's picks for the roles I left empty. Unknown names are dropped and reported. */
-  private managerPicks(task: Task, skills: Record<string, string[]>, why: Record<string, string>): SkillPicks {
+  private managerPicks(task: Task, skills: unknown, why: unknown): SkillPicks {
     const known = new Set(this.skillCatalog().map((s) => s.name));
     const picks: SkillPicks = { ...task.skillPicks };
     const dropped: string[] = [];
-    for (const [role, names] of Object.entries(skills)) {
-      if (!PICKABLE_ROLES.includes(role as Role) || picks[role as Role]?.by === 'owner' || !Array.isArray(names)) continue;
-      const kept = [...new Set(names.map(String))].filter((n) => {
+    const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+    const reasons = isMap(why) ? why : {};
+    for (const [role, raw] of Object.entries(isMap(skills) ? skills : {})) {
+      if (!PICKABLE_ROLES.includes(role as Role) || picks[role as Role]?.by === 'owner') continue;
+      // A single name instead of a list is fine too.
+      const names = (Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []).map(String);
+      const kept = [...new Set(names)].slice(0, MAX_MANAGER_PICKS).filter((n) => {
         if (known.has(n)) return true;
         dropped.push(n);
         return false;
       });
-      if (kept.length) picks[role as Role] = { skills: kept, by: 'manager', ...(why[role] ? { why: String(why[role]).slice(0, 200) } : {}) };
+      if (kept.length) picks[role as Role] = { skills: kept, by: 'manager', ...(reasons[role] ? { why: String(reasons[role]).slice(0, 200) } : {}) };
     }
     if (dropped.length) this.alert(task, 'skills', `The manager picked skills that aren't in the catalog, left out: ${[...new Set(dropped)].join(', ')}.`);
     const added = Object.entries(picks).filter(([r, p]) => p?.by === 'manager' && task.skillPicks[r as Role]?.by !== 'owner');
@@ -675,6 +710,7 @@ export class Pipeline {
     if (!gate) throw new Error(`No gate ${gateId}`);
     if (gate.status !== 'pending') throw new Error('This gate has already been decided.');
     let task = this.getTask(gate.taskId);
+    if (gate.kind === 'question') throw new Error('Answer the questions instead.');
 
     const close = (status: Gate['status']) =>
       db.update(schema.gates).set({ status, decision, comment: comment ?? null, decidedAt: this.now() }).where(eq(schema.gates.id, gateId)).run();
@@ -729,6 +765,196 @@ export class Pipeline {
     }
   }
 
+  // ------------------------------------------------------------ briefing
+
+  /** Whether the architect grills me: my Always/Never wins; on Auto the manager decides at intake. */
+  private grillDecision(task: Task, managerSays: boolean | undefined, reason: string | undefined): Pick<Task, 'grill' | 'grillReason'> {
+    if (task.kind === 'review') return { grill: false, grillReason: null };
+    const grill = task.grillMode === 'always' ? true : task.grillMode === 'never' ? false : !!managerSays;
+    const grillReason =
+      task.grillMode === 'always'
+        ? 'You set Grill me to Always.'
+        : task.grillMode === 'never'
+          ? 'You set Grill me to Never.'
+          : reason?.trim() || (grill ? 'The manager asked for a briefing.' : null);
+    this.deps.bus.emit(task.id, 'briefing_decided', { grill, reason: grillReason, mode: task.grillMode });
+    return { grill, grillReason };
+  }
+
+  questions(taskId: number): Question[] {
+    return this.deps.db.select().from(schema.questions).where(eq(schema.questions.taskId, taskId)).orderBy(asc(schema.questions.id)).all();
+  }
+
+  private openRoundGate(taskId: number): Gate | undefined {
+    return this.pendingGates(taskId).find((g) => g.kind === 'question');
+  }
+
+  private waitingNote(taskId: number): string {
+    const gate = this.openRoundGate(taskId);
+    const open = gate ? this.questions(taskId).filter((q) => q.gateId === gate.id && q.answer === null && !q.delegated).length : 0;
+    return `The architect is waiting for your answers${open ? ` (${open} open question${open === 1 ? '' : 's'})` : ''}. Planning continues when you answer.`;
+  }
+
+  private briefingEnded(taskId: number): boolean {
+    return this.deps.db
+      .select()
+      .from(schema.events)
+      .where(and(eq(schema.events.taskId, taskId), eq(schema.events.type, 'briefing_ended')))
+      .all().length > 0;
+  }
+
+  /**
+   * The architect's final message on a grilled mission. A question round is stored and shown to me,
+   * and the session waits for my answers (string: sent back into the session; "park": nobody
+   * answered in time). Anything else is the plan (null).
+   */
+  private async onArchitectMessage(taskId: number, runId: number, text: string, signal: AbortSignal): Promise<string | 'park' | null> {
+    const round = parseRound(text);
+    if (round === null) return null;
+    if (typeof round === 'string') {
+      const bad = (this.badRounds.get(taskId) ?? 0) + 1;
+      this.badRounds.set(taskId, bad);
+      return bad <= MAX_BAD_ROUNDS ? round : null; // then it fails as a plan, with the plan's own correction
+    }
+    this.badRounds.delete(taskId);
+    if (this.briefingEnded(taskId)) {
+      return 'The owner already said that is enough questions. Write the plan now; put anything still open under Risks as an assumption.';
+    }
+    const gate = this.openRound(taskId, runId, round);
+    const delivery = await this.waitForRound(taskId, gate.id, signal);
+    if (delivery === null) return 'park';
+    return this.closeRound(taskId, gate.id, delivery);
+  }
+
+  private openRound(taskId: number, runId: number, round: RoundQuestion[]): Gate {
+    const number = Math.max(0, ...this.questions(taskId).map((q) => q.round)) + 1;
+    const gate = this.openGate(taskId, 'question', `Round ${number}: ${round.length} question${round.length === 1 ? '' : 's'}`);
+    this.deps.db
+      .insert(schema.questions)
+      .values(
+        round.map((q, idx) => ({
+          taskId,
+          gateId: gate.id,
+          runId,
+          round: number,
+          idx,
+          title: q.title,
+          body: q.question,
+          options: q.options,
+          recommended: q.recommended ?? null,
+        })),
+      )
+      .run();
+    const task = this.update(taskId, { statusNote: this.waitingNote(taskId) });
+    this.deps.bus.emit(taskId, 'question_round', { gateId: gate.id, round: number, count: round.length });
+    this.deps.bus.taskChanged(task);
+    return gate;
+  }
+
+  /** Resolves with how the round was delivered, or null when the wait ran out or the step was stopped. */
+  private waitForRound(taskId: number, gateId: number, signal: AbortSignal): Promise<Delivery | null> {
+    return new Promise((resolve) => {
+      const done = (d: Delivery | null) => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+        if (this.waiting.get(taskId)?.gateId === gateId) this.waiting.delete(taskId);
+        resolve(d);
+      };
+      const onAbort = () => done(null);
+      const timer = setTimeout(() => done(null), this.deps.briefingWaitMs ?? BRIEFING_WAIT_MS);
+      if (signal.aborted) return done(null);
+      signal.addEventListener('abort', onAbort);
+      this.waiting.set(taskId, { gateId, resolve: done });
+      // Answered already (fast, or before a restart): deliver straight away.
+      const queued = this.queuedDelivery.get(taskId);
+      if (queued) {
+        this.queuedDelivery.delete(taskId);
+        done(queued);
+      } else if (this.roundComplete(gateId)) done('complete');
+    });
+  }
+
+  private roundComplete(gateId: number): boolean {
+    const qs = this.deps.db.select().from(schema.questions).where(eq(schema.questions.gateId, gateId)).all();
+    return qs.length > 0 && qs.every((q) => q.answer !== null || q.delegated);
+  }
+
+  /** Closes a round: brief.md is updated and the answers message for the architect is returned. */
+  private closeRound(taskId: number, gateId: number, delivery: Delivery): string {
+    const { db, docs, bus } = this.deps;
+    const qs = db.select().from(schema.questions).where(eq(schema.questions.gateId, gateId)).orderBy(asc(schema.questions.idx)).all();
+    const task = this.getTask(taskId);
+    // Messages I sent while the round was open were held back, so the architect gets them with the answers.
+    const notes = task.feedback ? [task.feedback] : [];
+    db.update(schema.gates).set({ status: 'approved', decision: delivery, decidedAt: this.now() }).where(eq(schema.gates.id, gateId)).run();
+    docs.save(taskId, 'brief', briefDoc(this.questions(taskId)));
+    this.update(taskId, { feedback: null, statusNote: null });
+    bus.emit(taskId, 'gate_decided', { gateId, kind: 'question', decision: delivery });
+    if (delivery === 'enough') bus.emit(taskId, 'briefing_ended', {});
+    return answersMessage(qs[0]?.round ?? 0, qs, delivery, notes);
+  }
+
+  /** My answer to one question, from the board or Slack. The first answer counts. */
+  answerQuestion(questionId: number, answer: { text?: string; delegate?: boolean }, via: 'board' | 'slack'): Question {
+    const { db, bus } = this.deps;
+    const q = db.select().from(schema.questions).where(eq(schema.questions.id, questionId)).get();
+    if (!q) throw new Error(`No question ${questionId}`);
+    if (q.answer !== null || q.delegated) throw new Error(`Already answered${q.answeredVia ? ` on ${q.answeredVia === 'slack' ? 'Slack' : 'the board'}` : ''}.`);
+    const gate = q.gateId ? db.select().from(schema.gates).where(eq(schema.gates.id, q.gateId)).get() : undefined;
+    if (!gate || gate.status !== 'pending') throw new Error('This round is closed.');
+    const text = answer.text?.trim();
+    if (!answer.delegate && !text) throw new Error('Write an answer, or let the architect decide.');
+    const updated = db
+      .update(schema.questions)
+      .set({ answer: answer.delegate ? null : text!.slice(0, 4000), delegated: !!answer.delegate, answeredVia: via, answeredAt: this.now() })
+      .where(eq(schema.questions.id, questionId))
+      .returning()
+      .get();
+    bus.emit(q.taskId, 'question_answered', { questionId, gateId: gate.id, via, delegated: !!answer.delegate, answer: updated.answer });
+    if (this.roundComplete(gate.id)) this.deliver(q.taskId, gate.id, 'complete');
+    else this.update(q.taskId, { statusNote: this.waitingNote(q.taskId) });
+    return updated;
+  }
+
+  /** "Send what I've answered" or "Enough, start planning", for the open round. */
+  briefingAction(taskId: number, action: 'send' | 'enough'): void {
+    const gate = this.openRoundGate(taskId);
+    if (!gate) throw new Error('No questions are waiting.');
+    const qs = this.questions(taskId).filter((q) => q.gateId === gate.id);
+    if (action === 'send' && !qs.some((q) => q.answer !== null || q.delegated)) throw new Error('Answer at least one question first.');
+    this.deliver(taskId, gate.id, action);
+  }
+
+  /** Hands the round to the waiting session, or resumes planning when the session has parked. */
+  private deliver(taskId: number, gateId: number, delivery: Delivery): void {
+    const waiting = this.waiting.get(taskId);
+    if (waiting?.gateId === gateId) return waiting.resolve(delivery);
+    const task = this.getTask(taskId);
+    if (task.status !== 'awaiting_answer') {
+      // Between the session's wait and its parking (or stopped): delivered once it parks or resumes.
+      this.queuedDelivery.set(taskId, delivery);
+      return;
+    }
+    const message = this.closeRound(taskId, gateId, delivery);
+    this.update(taskId, { status: 'planning', resumeStatus: null, statusNote: null, feedback: message });
+    this.deps.bus.emit(taskId, 'briefing_resumed', { delivery });
+    void this.tick();
+  }
+
+  /** After parking or resuming: a round that's already answered (or sent) goes straight on. */
+  private deliverIfReady(taskId: number): void {
+    const gate = this.openRoundGate(taskId);
+    if (!gate) {
+      // Parked with no open round (it was cancelled): plan again.
+      if (this.getTask(taskId).status === 'awaiting_answer') this.update(taskId, { status: 'planning', statusNote: null });
+      return;
+    }
+    const queued = this.queuedDelivery.get(taskId);
+    this.queuedDelivery.delete(taskId);
+    if (queued) this.deliver(taskId, gate.id, queued);
+    else if (this.roundComplete(gate.id)) this.deliver(taskId, gate.id, 'complete');
+  }
+
   // ------------------------------------------------------------ steering
 
   /** Sends my instruction to the running agent, or keeps it for the next step. */
@@ -774,7 +1000,13 @@ export class Pipeline {
       case 'stop': {
         if (TERMINAL_STATUSES.includes(task.status) || task.status === 'stopped') throw new Error(`The task is ${task.status}.`);
         this.cancelPermissions(taskId);
-        const resumeStatus = task.status === 'paused' || task.status === 'blocked' ? task.resumeStatus : task.status;
+        // Stopped while the architect waits for my answers: resuming goes back to waiting for them.
+        const resumeStatus =
+          task.status === 'planning' && this.openRoundGate(taskId)
+            ? 'awaiting_answer'
+            : task.status === 'paused' || task.status === 'blocked'
+              ? task.resumeStatus
+              : task.status;
         const stopped = this.update(taskId, { status: 'stopped', resumeStatus, resumeAt: null });
         this.running.get(taskId)?.abort();
         this.deps.bus.emit(taskId, 'stopped', {});
@@ -792,9 +1024,15 @@ export class Pipeline {
           await this.push(task);
           return this.getTask(taskId);
         }
-        const resumed = this.update(taskId, { status: target, resumeStatus: null, resumeAt: null, statusNote: null });
+        const resumed = this.update(taskId, {
+          status: target,
+          resumeStatus: null,
+          resumeAt: null,
+          statusNote: target === 'awaiting_answer' ? this.waitingNote(taskId) : null,
+        });
+        if (target === 'awaiting_answer') this.deliverIfReady(taskId);
         void this.tick();
-        return resumed;
+        return this.getTask(taskId);
       }
       case 'discard': {
         if (task.status === 'discarded') return task;
@@ -827,6 +1065,7 @@ export class Pipeline {
   /** A finished or discarded task leaves no gate waiting for me. */
   private cancelGates(taskId: number): void {
     this.cancelPermissions(taskId);
+    this.queuedDelivery.delete(taskId); // a waiting session sees its abort signal
     this.deps.db
       .update(schema.gates)
       .set({ status: 'cancelled', decidedAt: this.now() })

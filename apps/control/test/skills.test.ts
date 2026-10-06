@@ -95,10 +95,10 @@ describe('importing skills from Claude Code', () => {
     existing.add('grilling');
     expect(readFileSync(join(office, 'grilling', 'SKILL.md'), 'utf8')).toContain('Interview relentlessly.');
     expect(JSON.parse(readFileSync(join(office, 'grilling', '.source.json'), 'utf8'))).toMatchObject({ path: grilling, source: 'mattpocock-skills' });
-    expect(importer.list().find((s) => s.name === 'grilling')!.status).toBe('imported');
+    expect(importer.list(true).find((s) => s.name === 'grilling')!.status).toBe('imported');
 
     writeFileSync(grilling, skillFile('grilling', 'Grill the user.', 'Interview relentlessly, in rounds.'));
-    expect(importer.list().find((s) => s.name === 'grilling')!.status).toBe('update');
+    expect(importer.list(true).find((s) => s.name === 'grilling')!.status).toBe('update');
     const d = importer.diff(key);
     expect(d.current).toContain('Interview relentlessly.');
     expect(d.incoming).toContain('in rounds');
@@ -115,11 +115,40 @@ describe('importing skills from Claude Code', () => {
     expect(() => importer.import(taken.key)).toThrow(/already has a skill named "write-pr"/);
   });
 
-  it('lists a symlinked skill file once', () => {
+  it('follows symlinks inside a root, lists each real file once, and ignores links leading outside', () => {
     const { importer, root, grilling } = setup();
+    // A linked skill folder and a linked SKILL.md, both pointing at the same real file.
+    symlinkSync(join(grilling, '..'), join(root, 'grilling-link'));
     mkdirSync(join(root, 'linked'));
     symlinkSync(grilling, join(root, 'linked', 'SKILL.md'));
-    expect(importer.list().filter((s) => s.name === 'grilling')).toHaveLength(1);
+    const outside = tmp();
+    writeSkill(outside, 'secret-skill');
+    symlinkSync(join(outside, 'secret-skill'), join(root, 'escape'));
+    const list = importer.list(true);
+    expect(list.filter((s) => s.name === 'grilling')).toHaveLength(1);
+    expect(list.find((s) => s.name === 'secret-skill')).toBeUndefined();
+    // A skill installed only as a link is found.
+    const elsewhere = join(root, 'store', 'tdd');
+    writeSkill(join(root, 'store'), 'tdd');
+    mkdirSync(join(root, 'installed'));
+    symlinkSync(elsewhere, join(root, 'installed', 'tdd'));
+    expect(importer.list(true).filter((s) => s.name === 'tdd')).toHaveLength(1);
+  });
+
+  it('offers an update when a plugin upgrade moved the skill to a new versioned folder', () => {
+    const { importer, root, existing, office } = setup();
+    const plugin = join(root, 'cache', 'mattpocock');
+    const key = importer.list().find((s) => s.name === 'grilling')!.key;
+    importer.import(key);
+    existing.add('grilling');
+    // Upgrade: the old folder goes away, the skill appears under a new path in the same plugin.
+    execSync(`mv "${join(plugin, 'skills')}" "${join(plugin, 'skills-1.3')}"`);
+    writeFileSync(join(plugin, 'skills-1.3', 'productivity', 'grilling', 'SKILL.md'), skillFile('grilling', 'Grill the user.', 'New wording.'));
+    const moved = importer.list(true).find((s) => s.name === 'grilling')!;
+    expect(moved.status).toBe('update');
+    importer.import(moved.key);
+    expect(readFileSync(join(office, 'grilling', 'SKILL.md'), 'utf8')).toContain('New wording.');
+    expect(importer.list(true).find((s) => s.name === 'grilling')!.status).toBe('imported');
   });
 });
 
@@ -212,6 +241,18 @@ describe('mission skills', () => {
     const planning = runner.calls.find((c) => c.step === 'planning')!;
     expect(planning.skills).toContain('grilling');
     expect(planning.system).toContain('## Skill: grilling');
+  });
+
+  it("ignores a malformed skills hint instead of failing the intake, and never picks for the manager", async () => {
+    runner.intakeText = intake('skills: coder\nskills_why: 3\n');
+    const a = pipeline.createTask({ repoId: repo.id, input: 'One' });
+    await settle();
+    expect(get(a).status).toBe('awaiting_plan_approval');
+    expect(get(a).skillPicks).toEqual({});
+    runner.intakeText = intake('skills:\n  manager: [grilling]\n  coder: fastify-conventions\n');
+    const b = pipeline.createTask({ repoId: repo.id, input: 'Two' });
+    await settle();
+    expect(get(b).skillPicks).toEqual({ coder: { skills: ['fastify-conventions'], by: 'manager' } });
   });
 
   it('rejects unknown skills and roles when I create a task', () => {

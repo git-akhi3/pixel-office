@@ -39,6 +39,7 @@ export function MissionPanel({
   const [prUrl, setPrUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [skills, setSkills] = useState<Partial<Record<Role, string[]>>>({});
+  const [grillMode, setGrillMode] = useState<Task['grillMode']>('auto');
   // Loaded once the panel is first opened, and again on each open (skills may have been imported since).
   const catalog = useCatalog(onError, open);
   const briefRef = useRef<HTMLTextAreaElement>(null);
@@ -65,9 +66,10 @@ export function MissionPanel({
     setBusy(true);
     try {
       const task =
-        mode === 'review' ? await api.createReview(prUrl.trim()) : await api.createTask({ repoId: repoId as number, input, kind, skills });
+        mode === 'review' ? await api.createReview(prUrl.trim()) : await api.createTask({ repoId: repoId as number, input, kind, skills, grillMode });
       setInput('');
       setSkills({});
+      setGrillMode('auto');
       setPrUrl('');
       onCreated(task);
     } catch (err) {
@@ -165,6 +167,29 @@ export function MissionPanel({
                         placeholder="Describe the task as you would to a teammate: what, why, and anything they should know (links, error messages, files)."
                       />
                     </label>
+                    <div className="field">
+                      <span className="field-label">Grill me first</span>
+                      <div className="chips" role="radiogroup" aria-label="Grill me first">
+                        {(
+                          [
+                            ['auto', 'Auto', 'The manager decides: big, design-heavy or unclear tasks get a briefing'],
+                            ['always', 'Always', 'The architect interviews you before it plans'],
+                            ['never', 'Never', 'Straight to the plan'],
+                          ] as const
+                        ).map(([mode, text, title]) => (
+                          <button key={mode} type="button" role="radio" aria-checked={grillMode === mode} className={grillMode === mode ? 'chip active' : 'chip'} title={title} onClick={() => setGrillMode(mode)}>
+                            {mode === 'auto' ? <Icon name="manager" /> : mode === 'always' ? <Icon name="question" /> : <Icon name="right" />} {text}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="hint">
+                        {grillMode === 'auto'
+                          ? 'The manager turns it on for big, design-heavy or unclear tasks.'
+                          : grillMode === 'always'
+                            ? 'The architect asks its questions in rounds; you answer here or in Slack.'
+                            : 'The architect plans from the briefing text alone.'}
+                      </span>
+                    </div>
                     <MissionSkills value={skills} onChange={setSkills} catalog={catalog} />
                     <div className="flow" aria-label="What happens next">
                       {FLOW.map((s, i) => (

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 
-export type DocName = 'task' | 'diagnosis' | 'research' | 'plan' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro' | 'pr-review';
+export type DocName = 'task' | 'diagnosis' | 'research' | 'brief' | 'plan' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro' | 'pr-review';
 
 export interface Contract {
   doc: DocName;
@@ -29,8 +29,12 @@ export const CONTRACTS = {
       needs_researcher: bool,
       design_review: bool,
       /** Catalog skills per role, for roles the owner left empty. Checked against the catalog afterwards. */
-      skills: z.record(z.string(), z.array(z.string())).optional(),
-      skills_why: z.record(z.string(), z.string()).optional(),
+      // Hints, not requirements: a malformed value is ignored rather than failing the intake.
+      skills: z.unknown().optional().catch(undefined),
+      skills_why: z.unknown().optional().catch(undefined),
+      /** Whether the architect should grill the owner before planning (used when the mission is on Auto). */
+      grill: bool.optional().catch(undefined),
+      grill_reason: z.coerce.string().max(300).optional().catch(undefined),
     }),
     format: `---
 title: <short task title, under 60 characters>
@@ -43,6 +47,8 @@ skills:                  # optional: catalog skills for roles the owner hasn't p
   coder: [skill-name]
 skills_why:              # one line per role you picked for
   coder: <why this skill fits this task>
+grill: true | false      # true when the architect should interview the owner before planning (see the briefing rules)
+grill_reason: <one line: why, or why not>
 ---
 ## Request
 <the request restated in 2-4 lines, with anything ambiguous called out>

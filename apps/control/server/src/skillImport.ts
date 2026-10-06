@@ -41,18 +41,36 @@ export interface SourceInfo {
 
 const SOURCE_FILE = '.source.json';
 const MAX_DEPTH = 9;
-const MAX_FILES = 3000;
+const MAX_FILES = 5000;
+/** Same cap as a skill saved on the Team page: the body goes into every prompt that uses it. */
+export const MAX_SKILL_BYTES = 50_000;
+/** list() walks folders and hashes files; the board asks for it several times per import. */
+const LIST_CACHE_MS = 3000;
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
 
 export const sha = (text: string) => createHash('sha256').update(text).digest('hex');
 const keyOf = (realPath: string) => sha(realPath).slice(0, 16);
 
-/** SKILL.md files under a directory, without following symlinked directories. */
+const inside = (root: string, p: string) => p === root || p.startsWith(`${root}/`);
+
+/**
+ * SKILL.md files under a directory, as real paths. Symlinks are followed (tools often install
+ * skills as links) but only while the target stays inside the root, and each real folder is
+ * walked once, so link cycles end.
+ */
 function findSkillFiles(dir: string): string[] {
   const found: string[] = [];
+  let root: string;
+  try {
+    root = realpathSync(dir);
+  } catch {
+    return found;
+  }
+  const seenDirs = new Set<string>();
   let visited = 0;
   const walk = (d: string, depth: number) => {
-    if (depth > MAX_DEPTH || visited > MAX_FILES) return;
+    if (depth > MAX_DEPTH || visited > MAX_FILES || seenDirs.has(d)) return;
+    seenDirs.add(d);
     let entries;
     try {
       entries = readdirSync(d, { withFileTypes: true });
@@ -60,12 +78,27 @@ function findSkillFiles(dir: string): string[] {
       return;
     }
     for (const e of entries) {
-      visited++;
-      if (e.isDirectory() && !SKIP_DIRS.has(e.name)) walk(join(d, e.name), depth + 1);
-      else if (e.isFile() && e.name === 'SKILL.md') found.push(join(d, e.name));
+      if (++visited > MAX_FILES) return;
+      if (SKIP_DIRS.has(e.name)) continue;
+      let real = join(d, e.name);
+      let isDir = e.isDirectory();
+      let isFile = e.isFile();
+      if (e.isSymbolicLink()) {
+        try {
+          real = realpathSync(real);
+          const st = statSync(real);
+          isDir = st.isDirectory();
+          isFile = st.isFile();
+        } catch {
+          continue; // dangling link
+        }
+        if (!inside(root, real)) continue;
+      }
+      if (isDir) walk(real, depth + 1);
+      else if (isFile && e.name === 'SKILL.md') found.push(real);
     }
   };
-  if (existsSync(dir)) walk(dir, 0);
+  walk(root, 0);
   return found;
 }
 
@@ -118,31 +151,45 @@ export class SkillImporter {
     private existing: () => Set<string>,
   ) {}
 
+  private cache: { at: number; list: ImportableSkill[] } | null = null;
+
   /** Every skill found in the roots, one entry per distinct file. */
-  list(): ImportableSkill[] {
+  list(fresh = false): ImportableSkill[] {
+    if (!fresh && this.cache && Date.now() - this.cache.at < LIST_CACHE_MS) return this.cache.list;
+    const list = this.scan();
+    this.cache = { at: Date.now(), list };
+    return list;
+  }
+
+  private scan(): ImportableSkill[] {
     const seen = new Set<string>();
     const out: ImportableSkill[] = [];
     const existing = this.existing();
     for (const root of this.roots) {
-      for (const file of findSkillFiles(root.dir)) {
-        let real: string;
-        try {
-          real = realpathSync(file);
-        } catch {
-          continue;
-        }
+      let rootDir = root.dir;
+      try {
+        rootDir = realpathSync(root.dir);
+      } catch {
+        continue; // the folder doesn't exist on this Mac
+      }
+      for (const file of findSkillFiles(rootDir)) {
+        const real = file;
         if (seen.has(real)) continue;
         seen.add(real);
         let text: string;
         let skill;
         try {
+          if (statSync(real).size > MAX_SKILL_BYTES) continue;
           text = readFileSync(real, 'utf8');
           skill = parseSkill(text, file);
         } catch {
           continue; // not a valid skill file
         }
+        const source = pluginName(real, rootDir) ?? root.label;
         const info = readSourceInfo(this.officeSkillsDir, skill.name);
-        const fromHere = info?.path === real;
+        // The same skill when it's this file, or when the plugin moved it (plugin caches are versioned,
+        // so an upgrade changes the path) and the old file is gone.
+        const fromHere = !!info && (info.path === real || (info.source === source && !existsSync(info.path)));
         const status: ImportableSkill['status'] = fromHere
           ? info.hash === sha(text)
             ? 'imported'
@@ -161,7 +208,7 @@ export class SkillImporter {
           key: keyOf(real),
           name: skill.name,
           description: skill.description,
-          source: pluginName(real, root.dir) ?? root.label,
+          source,
           path: real,
           extraFiles: siblings,
           wrapper: isWrapperSkill(skill.body),
@@ -173,7 +220,7 @@ export class SkillImporter {
   }
 
   private find(key: string): ImportableSkill {
-    const s = this.list().find((x) => x.key === key);
+    const s = this.list(true).find((x) => x.key === key);
     if (!s) throw new Error('That skill is no longer there. Refresh the list.');
     return s;
   }
@@ -193,7 +240,7 @@ export class SkillImporter {
     const s = this.find(key);
     if (!SKILL_NAME.test(s.name)) throw new Error(`"${s.name}" isn't a valid skill name here.`);
     if (s.status === 'taken') throw new Error(`The office already has a skill named "${s.name}". Delete or rename it on the Team page first.`);
-    if (statSync(s.path).size > 200_000) throw new Error(`${basename(s.path)} is too large to use as a skill.`);
+    if (statSync(s.path).size > MAX_SKILL_BYTES) throw new Error(`${basename(s.path)} is too large to use as a skill.`);
     const text = readFileSync(s.path, 'utf8');
     parseSkill(text, s.path);
     const dir = join(this.officeSkillsDir, s.name);
@@ -201,6 +248,7 @@ export class SkillImporter {
     writeFileSync(join(dir, 'SKILL.md'), text);
     const info: SourceInfo = { path: s.path, source: s.source, hash: sha(text), importedAt: Date.now() };
     writeFileSync(join(dir, SOURCE_FILE), JSON.stringify(info, null, 2));
+    this.cache = null;
     return { name: s.name };
   }
 }

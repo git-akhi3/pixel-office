@@ -14,6 +14,7 @@ import type { BusMessage, EventBus } from './events.js';
 import type { TaskDocs } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
 import { listRepos } from './repos.js';
+import { SlackQuestions } from './slackQuestions.js';
 import type { SlackConfig } from './config.js';
 
 /** The slice of Slack's Web API the bridge uses (so tests can fake it). */
@@ -44,7 +45,7 @@ const MAX_SECTION = 2800;
 /** An assistant may start this many tasks per hour: a loop or a chatty assistant must not queue unlimited work. */
 export const ASSISTANT_TASKS_PER_HOUR = 5;
 /** Commands only the owner may give: they approve work, discard it or let commands run. */
-const OWNER_ONLY = new Set(['approve', 'reject', 'discard', 'done', 'replan']);
+const OWNER_ONLY = new Set(['approve', 'reject', 'discard', 'done', 'replan', 'send', 'enough']);
 
 type Sender = 'owner' | 'assistant';
 
@@ -71,7 +72,11 @@ function tokens(n: number): string {
 export const HELP = [
   '*Start a task:* DM me `<repo>: what to build or fix` (the repo name is optional when only one is registered), or paste a GitHub PR link to review it.',
   '*In a task thread:* `status` · `pause` / `stop` · `resume` · `steer: <note to the agent>` · `replan: <why>` · `approve` · `reject: <what to change>` · `discard` · `done`',
+  "*When the architect asks you something:* tap a button, or reply in the thread with your answer. `send` sends what you've answered so far; `enough` lets it plan now.",
 ].join('\n');
+
+/** Words that are thread commands; any other reply from the owner answers the architect's open question. */
+const COMMANDS = new Set(['status', 'pause', 'stop', 'resume', 'discard', 'done', 'steer', 'replan', 'approve', 'reject', 'send', 'enough', 'help']);
 
 export class SlackBridge {
   private dm: string | null = null;
@@ -84,8 +89,12 @@ export class SlackBridge {
   private lastStatus = new Map<number, string>();
   private threadLocks = new Map<number, Promise<unknown>>();
   private assistantStarts: number[] = [];
+  /** The architect's briefing questions in task threads. */
+  readonly questions: SlackQuestions;
 
-  constructor(private deps: SlackBridgeDeps) {}
+  constructor(private deps: SlackBridgeDeps) {
+    this.questions = new SlackQuestions({ ...deps, thread: (task) => this.ensureThread(task) });
+  }
 
   private now(): number {
     return this.deps.now?.() ?? Date.now();
@@ -94,12 +103,14 @@ export class SlackBridge {
   async start(): Promise<void> {
     this.dm = await this.deps.api.openDm(this.deps.ownerId);
     this.unsubscribe = this.deps.bus.subscribe((m) => this.onBus(m));
+    this.questions.start();
     this.timer = setInterval(() => void this.refreshStatuses(), STATUS_REFRESH_MS);
     this.timer.unref();
   }
 
   stop(): void {
     this.unsubscribe?.();
+    this.questions.stop();
     if (this.timer) clearInterval(this.timer);
   }
 
@@ -198,6 +209,8 @@ export class SlackBridge {
     }
     // An assistant's chatter that isn't a command is ignored, not answered, so two bots never loop.
     if (sender === 'assistant' && !['status', 'pause', 'stop', 'resume', 'steer'].includes(command)) return;
+    // Only the owner answers the architect: a reply that isn't a command answers its open question.
+    if (sender === 'owner' && !COMMANDS.has(command) && this.questions.onThreadReply(task.id, text)) return;
     switch (command) {
       case 'status': {
         const t = pipeline.getTask(task.id);
@@ -226,6 +239,11 @@ export class SlackBridge {
         pipeline.replanNow(task.id, rest.trim());
         return void (await say('Sent back to the architect for a new plan.'));
       }
+      case 'send':
+      case 'enough':
+        if (sender !== 'owner') return;
+        pipeline.briefingAction(task.id, command);
+        return;
       case 'approve':
       case 'reject': {
         const gate = this.approvalGate(task.id);
@@ -241,7 +259,7 @@ export class SlackBridge {
 
   /** The pending plan, push or review gate of a task (command gates are answered with their buttons). */
   private approvalGate(taskId: number): Gate | undefined {
-    return this.deps.pipeline.pendingGates(taskId).find((g) => g.kind !== 'command');
+    return this.deps.pipeline.pendingGates(taskId).find((g) => g.kind !== 'command' && g.kind !== 'question');
   }
 
   // ------------------------------------------------------------ incoming: buttons
@@ -338,6 +356,7 @@ export class SlackBridge {
       if (g.auto) await this.say(`:white_check_mark: ${g.kind === 'push' ? 'Push' : 'Gate'} auto-approved.`, task);
       return;
     }
+    if (g.kind === 'question') return; // posted question by question by SlackQuestions
     const link = `${this.deps.publicUrl}/#/task/${task.id}`;
     let heading: string;
     let body = '';
@@ -475,6 +494,12 @@ export async function startSlack(config: SlackConfig, deps: Omit<SlackBridgeDeps
     // The owner's DM with the bot, or the one private channel shared with the assistant.
     if (m.channel_type !== 'im' && !(config.channelId && m.channel === config.channelId)) return;
     await bridge.onMessage(m);
+  });
+
+  app.action(/^office_q:/, async ({ ack, action, body, respond }) => {
+    await ack();
+    const note = await bridge.questions.onButton(body.user?.id, (action as { action_id: string }).action_id);
+    if (note) await respond({ response_type: 'ephemeral', replace_original: false, text: note }).catch(() => undefined);
   });
 
   app.action(/^office_gate:/, async ({ ack, action, body, respond }) => {

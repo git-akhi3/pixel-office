@@ -96,6 +96,22 @@ export interface OfficeEvent {
   at: number;
 }
 
+export interface Question {
+  id: number;
+  taskId: number;
+  gateId: number | null;
+  round: number;
+  idx: number;
+  title: string;
+  body: string;
+  options: string[];
+  recommended: string | null;
+  answer: string | null;
+  answeredVia: 'board' | 'slack' | null;
+  delegated: boolean;
+  answeredAt: number | null;
+}
+
 export interface TaskDetail {
   task: Task;
   repo: { id: number; name: string; defaultBranch: string };
@@ -104,6 +120,7 @@ export interface TaskDetail {
   docs: Array<{ file: string; name: string; version: number }>;
   alerts: OfficeEvent[];
   reviewComments: ReviewComment[];
+  questions: Question[];
 }
 
 export interface Repo {
@@ -192,6 +209,7 @@ export interface Settings {
   reviewMinLines: number;
   rateLimit: { fiveHour?: number; sevenDay?: number; resetsAt?: number; at: number } | null;
   usagePauseAt: number;
+  grillSkill: string;
   usage?: { paused: boolean; until: number | null; window: string | null };
 }
 
@@ -213,6 +231,8 @@ export const api = {
   createTask: (body: { repoId: number; input: string; kind?: 'feature' | 'bug'; skills?: Partial<Record<Role, string[]>>; grillMode?: Task['grillMode'] }) =>
     request<Task>('POST', '/api/tasks', body),
   setTaskSkills: (id: number, role: Role, skills: string[]) => request<Task>('PUT', `/api/tasks/${id}/skills`, { role, skills }),
+  answerQuestion: (id: number, answer: { answer?: string; delegate?: boolean }) => request<Question>('POST', `/api/questions/${id}`, answer),
+  briefing: (taskId: number, action: 'send' | 'enough') => request('POST', `/api/tasks/${taskId}/briefing`, { action }),
   doc: (id: number, file: string) => request<string>('GET', `/api/tasks/${id}/docs/${file}`),
   diff: (id: number) => request<string>('GET', `/api/tasks/${id}/diff`),
   events: (id: number, after = 0) => request<OfficeEvent[]>('GET', `/api/tasks/${id}/events?after=${after}&limit=2000`),

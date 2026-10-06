@@ -133,6 +133,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       gates: db.select().from(schema.gates).where(eq(schema.gates.taskId, taskId)).all(),
       docs: docs.list(taskId),
       reviewComments: task.kind === 'review' ? pipeline.reviewComments(taskId) : [],
+      questions: pipeline.questions(taskId),
       alerts: db
         .select()
         .from(schema.events)
@@ -185,6 +186,20 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       return { ok: true, path: task.worktreePath };
     }
     return summary(await pipeline.action(taskId, action));
+  });
+
+  app.post('/api/questions/:id', async (req) => {
+    const body = z
+      .object({ answer: z.string().trim().min(1).max(4000).optional(), delegate: z.boolean().optional() })
+      .refine((b) => !!b.answer !== !!b.delegate, 'Send an answer or delegate: true.')
+      .parse(req.body);
+    return pipeline.answerQuestion(id.parse((req.params as { id: string }).id), { text: body.answer, delegate: body.delegate }, 'board');
+  });
+
+  app.post('/api/tasks/:id/briefing', async (req) => {
+    const { action } = z.object({ action: z.enum(['send', 'enough']) }).parse(req.body);
+    pipeline.briefingAction(id.parse((req.params as { id: string }).id), action);
+    return { ok: true };
   });
 
   app.put('/api/tasks/:id/skills', async (req) => {
@@ -392,8 +407,10 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         reviewAutoPickup: z.boolean().optional(),
         reviewMinLines: z.number().int().min(0).max(100_000).optional(),
         usagePauseAt: z.number().min(0.5).max(1).optional(),
+        grillSkill: z.string().regex(SKILL_NAME).optional(),
       })
       .parse(req.body);
+    if (body.grillSkill !== undefined) setSetting(db, 'grillSkill', body.grillSkill);
     if (body.autoApprovePush !== undefined) setSetting(db, 'autoApprovePush', body.autoApprovePush);
     if (body.concurrency !== undefined) setSetting(db, 'concurrency', body.concurrency);
     if (body.reviewAutoPickup !== undefined) setSetting(db, 'reviewAutoPickup', body.reviewAutoPickup);

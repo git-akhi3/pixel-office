@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Repo, Task } from './db/schema.js';
 import type { Role } from './domain.js';
+import { briefingRules } from './briefing.js';
 import { CONTRACTS, type ContractStep, type DocName, type TaskDocs } from './handoffs.js';
 
 const MAX_REPO_NOTES = 6_000;
@@ -24,6 +25,8 @@ export interface PromptContext {
   /** Intake: the skills the manager may pick from, and each role's built-in skills. */
   catalog?: Array<{ name: string; description: string }>;
   roleSkills?: Partial<Record<Role, string[]>>;
+  /** Planning on a grilled mission: the rules for asking me, and whether the grilling skill is loaded. */
+  briefing?: { hasSkill: boolean };
 }
 
 /** Roles a mission can pick skills for (the manager's own intake has already started). */
@@ -52,7 +55,7 @@ const INPUTS: Record<ContractStep, DocName[]> = {
   intake: [],
   debugging: ['task'],
   researching: ['task', 'diagnosis'],
-  planning: ['task', 'diagnosis', 'research'],
+  planning: ['task', 'diagnosis', 'research', 'brief'],
   coding: ['task', 'plan'],
   reviewing: ['plan', 'changes'],
   testing: ['plan', 'changes'],
@@ -122,6 +125,12 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
     );
   }
   if (step === 'intake' && ctx.catalog?.length) parts.push(skillCatalog(task, ctx.catalog, ctx.roleSkills ?? {}));
+  if (step === 'intake' && task.grillMode === 'auto') {
+    parts.push(
+      '## Briefing\nDecide whether the architect should interview the owner before planning (grill: true). Say true when the task is size L, when it is design or architecture work, or whenever the request leaves open choices that would change the plan and you would otherwise be guessing. Say false for small, clear tasks. Give the reason in grill_reason.',
+    );
+  }
+  if (step === 'planning' && ctx.briefing) parts.push(briefingRules(ctx.briefing.hasSkill));
   parts.push(`## Your job now\n${JOBS[step]}`);
   parts.push(
     `## Output format\nYour final message is saved as ${CONTRACTS[step].doc}.md and is all the next agent sees. Reply with only this document, starting with the --- front matter line:\n\n${CONTRACTS[step].format}`,
@@ -132,7 +141,7 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
 /** The manager's view of the skill catalog at intake: what exists, what each role already has, what I locked. */
 function skillCatalog(task: Task, catalog: Array<{ name: string; description: string }>, roleSkills: Partial<Record<Role, string[]>>): string {
   const lines = ['## Skill catalog', 'Skills you can give the other agents for this task (name: when it applies):'];
-  for (const s of catalog) lines.push(`- ${s.name}: ${s.description}`);
+  for (const s of catalog) lines.push(`- ${s.name}: ${s.description.length > 300 ? `${s.description.slice(0, 297)}…` : s.description}`);
   const builtIn = PICKABLE_ROLES.filter((r) => roleSkills[r]?.length).map((r) => `${r}: ${roleSkills[r]!.join(', ')}`);
   if (builtIn.length) lines.push('', `Always on already (don't repeat them): ${builtIn.join('; ')}.`);
   const locked = PICKABLE_ROLES.filter((r) => task.skillPicks[r]?.by === 'owner').map((r) => `${r}: ${task.skillPicks[r]!.skills.join(', ') || 'none'}`);

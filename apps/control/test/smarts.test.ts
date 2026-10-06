@@ -99,7 +99,7 @@ describe('custom agent safety', () => {
 });
 
 describe('usage pause', () => {
-  const base: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, usagePauseAt: 0.9, rateLimit: null, pixelSessionId: null };
+  const base: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, usagePauseAt: 0.9, rateLimit: null, pixelSessionId: null, grillSkill: 'grilling' };
   const now = 1_000_000_000_000;
   const at = (fiveHour: number, sevenDay = 0.1, reset = now / 1000 + 3600) => ({ ...base, rateLimit: { fiveHour, sevenDay, fiveHourResetsAt: reset, sevenDayResetsAt: reset + 86400, at: now } });
 

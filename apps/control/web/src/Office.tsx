@@ -164,6 +164,11 @@ export function Office({
               </div>
               <StageTrack task={t} />
               <StatusBadge status={t.status} running={t.running} />
+              {t.pendingGates.some((g) => g.kind === 'question') && (
+                <div className="card-alert">
+                  <Icon name="question" size={8} /> The architect asks you
+                </div>
+              )}
               {t.running && activity[t.id] && <div className="card-activity">{activity[t.id]}</div>}
             </a>
           ))}

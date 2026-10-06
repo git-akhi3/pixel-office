@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type Gate, type OfficeEvent, type TaskDetail } from './api';
 import { flushReviewEdits, ReviewPanel } from './Review';
+import { Briefing } from './Briefing';
 import { TaskSkills } from './Skills';
 import { Icon, RoleIcon } from './icons';
 import { DiffView, Doc, duration, formatTokens, StageTrack, StatusBadge, timeAgo } from './ui';
@@ -50,7 +51,24 @@ function Steer({ taskId, running, onError, onReplanned }: { taskId: number; runn
   );
 }
 
-const REFRESH_ON = new Set(['step_start', 'step_end', 'gate', 'gate_decided', 'alert', 'pr_opened', 'stopped', 'resumed', 'worktree', 'paused']);
+const REFRESH_ON = new Set([
+  'step_start',
+  'step_end',
+  'gate',
+  'gate_decided',
+  'alert',
+  'pr_opened',
+  'stopped',
+  'resumed',
+  'worktree',
+  'paused',
+  'question_round',
+  'question_answered',
+  'briefing_parked',
+  'briefing_resumed',
+  'briefing_decided',
+  'skills_picked',
+]);
 
 export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: OfficeEvent | null; onError: (e: unknown) => void }) {
   const [detail, setDetail] = useState<TaskDetail | null>(null);
@@ -140,13 +158,22 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
           </span>
           {task.loopCount > 0 && <span className="fact">fix loop {task.loopCount}/2</span>}
           {task.replanCount > 0 && <span className="fact">re-plan {task.replanCount}/2</span>}
+          {task.grill && (
+            <span className="fact" title={task.grillReason ?? ''}>
+              <Icon name="question" size={8} /> briefing on{task.grillReason ? `: ${task.grillReason}` : ''}
+            </span>
+          )}
         </div>
         {task.statusNote && <p className="note">{task.statusNote}</p>}
       </header>
 
-      {pending.map((g) => (
-        <GateBar key={g.id} gate={g} onDone={load} onError={onError} />
-      ))}
+      <Briefing task={task} questions={detail.questions} onChanged={load} onError={onError} />
+
+      {pending
+        .filter((g) => g.kind !== 'question')
+        .map((g) => (
+          <GateBar key={g.id} gate={g} onDone={load} onError={onError} />
+        ))}
 
       <div className="actions">
         {canStop && <button onClick={() => act('stop')}>Stop</button>}

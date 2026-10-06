@@ -113,7 +113,7 @@ export const runs = sqliteTable('runs', {
   model: text('model').notNull(),
   effort: text('effort'),
   sessionId: text('session_id'),
-  status: text('status').$type<'running' | 'ok' | 'failed' | 'interrupted' | 'rate_limited'>().notNull(),
+  status: text('status').$type<'running' | 'ok' | 'failed' | 'interrupted' | 'rate_limited' | 'parked'>().notNull(),
   error: text('error'),
   doc: text('doc'),
   inputTokens: integer('input_tokens').notNull().default(0),

@@ -21,6 +21,12 @@ export interface RunRequest {
   mcpServers?: Record<string, { type: 'stdio'; command: string; args: string[] }>;
   /** Checks the final message against its handoff contract. A returned message is sent back once for a fix. */
   validate?(text: string): string | null;
+  /**
+   * Looks at each final message before validation (the architect's briefing questions). A string is
+   * sent back into the same session as the next user message; "park" ends the session (nobody
+   * answered in time); null lets the message through to validation.
+   */
+  interject?(text: string): Promise<string | 'park' | null>;
 }
 
 export interface RunUsage {
@@ -32,7 +38,8 @@ export interface RunUsage {
 }
 
 export interface RunOutcome {
-  status: 'ok' | 'failed' | 'interrupted' | 'rate_limited';
+  /** parked: the session ended while waiting for my answers; the step continues later in a new session. */
+  status: 'ok' | 'failed' | 'interrupted' | 'rate_limited' | 'parked';
   text: string;
   sessionId?: string;
   usage: RunUsage;
@@ -104,6 +111,8 @@ function shorten(value: unknown, max = 300): string {
 
 export class SdkRunner implements AgentRunner {
   private live = new Map<number, InputQueue>();
+  /** Runs waiting on interject (my answers): a steer message would start a turn without them. */
+  private holding = new Set<number>();
 
   constructor(
     private token: string,
@@ -112,7 +121,7 @@ export class SdkRunner implements AgentRunner {
 
   steer(runId: number, text: string): boolean {
     const q = this.live.get(runId);
-    if (!q) return false;
+    if (!q || this.holding.has(runId)) return false;
     q.push(text);
     return true;
   }
@@ -238,6 +247,27 @@ export class SdkRunner implements AgentRunner {
             }
             if (m.subtype === 'success') text = m.result;
             const ok = m.subtype === 'success' && !m.is_error && !rateLimited && !req.signal.aborted;
+            if (ok && req.interject) {
+              this.holding.add(req.runId);
+              let reply: string | 'park' | null;
+              try {
+                reply = await req.interject(text);
+              } finally {
+                this.holding.delete(req.runId);
+              }
+              if (req.signal.aborted) {
+                input.close();
+                return { status: 'interrupted', text, sessionId, usage, durationMs: Date.now() - started };
+              }
+              if (reply === 'park') {
+                input.close();
+                return { status: 'parked', text, sessionId, usage, durationMs: Date.now() - started };
+              }
+              if (reply !== null) {
+                input.push(reply);
+                continue;
+              }
+            }
             const correction = ok && req.validate ? req.validate(text) : null;
             if (correction && corrections < 1) {
               corrections++;

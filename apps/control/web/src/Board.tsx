@@ -77,6 +77,11 @@ export function Board({
                       <div className="card-title">{t.title}</div>
                       <StageTrack task={t} />
                       <StatusBadge status={t.status} running={t.running} />
+                      {t.pendingGates.some((g) => g.kind === 'question') && (
+                        <div className="card-alert">
+                          <Icon name="question" size={8} /> The architect has questions for you
+                        </div>
+                      )}
                       {t.pendingGates.some((g) => g.kind === 'command') && (
                         <div className="card-alert">
                           <Icon name="warn" size={8} /> Command waiting for approval

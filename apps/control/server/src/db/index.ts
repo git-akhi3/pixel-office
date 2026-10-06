@@ -31,6 +31,8 @@ export interface Settings {
   usagePauseAt: number;
   /** Stable id of the office's session in Pixel Agents, so restarts don't add characters. */
   pixelSessionId: string | null;
+  /** The skill the architect follows when a mission is grilled (a short built-in fallback when it isn't in the catalog). */
+  grillSkill: string;
 }
 
 const UNKNOWN_RESET_PAUSE_MS = 30 * 60 * 1000;
@@ -52,7 +54,7 @@ export function usagePause(s: Settings, now: number): { paused: boolean; until: 
   return { paused: false, until: null, window: null };
 }
 
-const DEFAULTS: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, rateLimit: null, usagePauseAt: 0.9, pixelSessionId: null };
+const DEFAULTS: Settings = { autoApprovePush: false, concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, rateLimit: null, usagePauseAt: 0.9, pixelSessionId: null, grillSkill: 'grilling' };
 
 export function getSettings(db: Db): Settings {
   const rows = db.select().from(schema.settings).all();

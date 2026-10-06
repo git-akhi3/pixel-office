@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type GraphInfo, type Repo, type Settings } from './api';
+import { api, type GraphInfo, type Repo, type Settings, type SkillInfo } from './api';
 import { Icon } from './icons';
 import { Meter, timeAgo } from './ui';
 
@@ -312,8 +312,13 @@ function GraphLine({ info, repoId, onBuild }: { info: GraphInfo | null; repoId: 
 
 export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
   const [s, setS] = useState<Settings | null>(null);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
   useEffect(() => {
     api.settings().then(setS).catch(onError);
+    api
+      .skills()
+      .then((all) => setSkills(all.filter((x) => !x.wrapper)))
+      .catch(onError);
   }, [onError]);
   if (!s) return <p className="empty">Loading…</p>;
 
@@ -389,6 +394,23 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
       >
         Check for review requests now
       </button>
+      <h2>Briefing</h2>
+      <label>
+        Skill the architect follows when it grills you
+        <select value={s.grillSkill} onChange={(e) => save({ grillSkill: e.target.value })}>
+          {!skills.some((x) => x.name === s.grillSkill) && <option value={s.grillSkill}>{s.grillSkill} (not in the catalog: built-in rules)</option>}
+          {skills.map((x) => (
+            <option key={x.name} value={x.name}>
+              {x.name}
+            </option>
+          ))}
+        </select>
+        <span className="hint">
+          {skills.some((x) => x.name === s.grillSkill)
+            ? 'Added to the architect on missions with Grill me on (Auto decides per task in the mission panel).'
+            : 'Import "grilling" from Claude Code on the Team page for the full interview method; until then the architect uses short built-in rules.'}
+        </span>
+      </label>
       <h2>Usage</h2>
       <label>
         Pause new steps at this much of the 5-hour or 7-day limit

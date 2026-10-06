@@ -2323,3 +2323,167 @@ select.skill-add {
   -webkit-line-clamp: 2;
   overflow: hidden;
 }
+
+/* ------------------------------------------------------------ briefing */
+
+.briefing {
+  margin: 18px 0;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  box-shadow: 4px 4px 0 var(--shadow);
+}
+.briefing-open {
+  border-color: var(--cyan);
+}
+.briefing-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.briefing-head > div {
+  flex: 1;
+  min-width: 0;
+}
+.briefing-head h2 {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--cyan);
+}
+.briefing-head p {
+  margin: 2px 0 0;
+}
+.briefing-head .link {
+  margin-left: 0;
+  flex: none;
+}
+.qa-history {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.qa-history li {
+  display: grid;
+  grid-template-columns: 36px minmax(120px, 1fr) 2fr;
+  gap: 10px;
+  padding: 6px 8px;
+  background: var(--bg-deep);
+  font-size: var(--fs-sm);
+}
+.qa-round {
+  color: var(--dim);
+}
+.qa-title {
+  color: var(--muted);
+}
+.qa-answer {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.qa-answer .tag {
+  margin: 0 0 0 8px;
+}
+.question-card {
+  margin-top: 14px;
+  padding: 14px;
+  background: var(--panel-2);
+  border: 2px solid var(--border-soft);
+  border-left: 6px solid var(--cyan);
+  animation: pop 0.2s steps(3);
+}
+.question-progress {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--fs-xs);
+  color: var(--dim);
+  text-transform: uppercase;
+}
+.question-progress .pips {
+  display: inline-flex;
+  gap: 3px;
+}
+.question-progress .pips span {
+  width: 14px;
+  height: 6px;
+  background: var(--bg-deep);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+}
+.question-progress .pips span.on {
+  background: var(--ok);
+  box-shadow: none;
+}
+.question-progress .pips span.now {
+  background: var(--cyan);
+  box-shadow: none;
+  animation: blink 1s steps(2, jump-none) infinite;
+}
+.question-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  font-size: var(--fs-md);
+  text-transform: none;
+  letter-spacing: 0;
+  color: #fff;
+}
+.question-card h3 .icon {
+  color: var(--cyan);
+}
+.question-body {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.question-body p:last-child {
+  margin-bottom: 0;
+}
+.recommended {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: var(--ok-bg);
+  border-left: 4px solid var(--ok);
+  font-family: var(--mono);
+  font-size: 13px;
+  color: #b9f0bd;
+}
+.recommended .field-label {
+  font-family: var(--pixel);
+  color: var(--ok);
+}
+.answer-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+.answer-own {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+.answer-own input {
+  margin: 0;
+  flex: 1;
+}
+.round-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 2px dashed var(--border-soft);
+}
+.round-actions .link {
+  margin-left: 0;
+}
+button.danger-link {
+  color: var(--danger);
+}
