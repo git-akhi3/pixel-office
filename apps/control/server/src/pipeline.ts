@@ -7,18 +7,18 @@
 // A coder blocker goes back to the architect. A task is re-planned at most twice, then it is blocked for me.
 
 import { and, asc, eq, inArray } from 'drizzle-orm';
-import { withRepoSkills, type AgentDef } from './agents.js';
+import { isWrapperSkill, listSkills, withRepoSkills, withSkills, type AgentDef } from './agents.js';
 import type { Graphs } from './graph.js';
 import { proposalFromRetro, type Knowledge } from './knowledge.js';
 import type { OfficeConfig } from './config.js';
 import { getSettings, schema, usagePause, type Db } from './db/index.js';
-import type { Gate, Repo, Task } from './db/schema.js';
+import type { Gate, GrillMode, Repo, SkillPicks, Task } from './db/schema.js';
 import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, type GateDecision, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
 import type { PrInfo, Publisher } from './github.js';
 import { matchesAnyGlob, realPath } from './guard.js';
 import { CONTRACTS, extractPr, normalizeOutput, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
-import { buildPrompt } from './prompts.js';
+import { buildPrompt, PICKABLE_ROLES } from './prompts.js';
 import { addToAllowlist, effectiveAllowlist, getRepo } from './repos.js';
 import type { AgentRunner, PermissionAnswer, RunOutcome } from './runner.js';
 import { commentableLines, formatComment, originSlug, parsePrUrl, parseReviewDoc, prSlug, reviewBody, splitComments } from './reviews.js';
@@ -58,6 +58,9 @@ export interface NewTask {
   title?: string;
   /** Start from and target this branch instead of the default branch. */
   baseBranch?: string;
+  /** My skill picks per role; these roles are locked for the manager. */
+  skills?: Partial<Record<Role, string[]>>;
+  grillMode?: GrillMode;
 }
 
 export type TaskAction = 'stop' | 'resume' | 'discard' | 'done';
@@ -92,6 +95,44 @@ export class Pipeline {
 
   agentSkills(role: Role): string[] {
     return this.agents[role].skills;
+  }
+
+  private skillDirs(): string[] {
+    return [this.deps.config.customSkillsDir, this.deps.config.skillsDir];
+  }
+
+  /** The skills agents can be given: the office's catalog, minus wrappers that only call other skills. */
+  skillCatalog(): Array<{ name: string; description: string }> {
+    return listSkills(this.skillDirs())
+      .filter((s) => !isWrapperSkill(s.body))
+      .map((s) => ({ name: s.name, description: s.description }));
+  }
+
+  /** My picks, checked: known roles, existing skills. */
+  private ownerPicks(skills: Partial<Record<Role, string[]>> | undefined): SkillPicks {
+    const known = new Set(this.skillCatalog().map((s) => s.name));
+    const picks: SkillPicks = {};
+    for (const [role, names] of Object.entries(skills ?? {}) as Array<[Role, string[]]>) {
+      if (!PICKABLE_ROLES.includes(role)) throw new Error(`Skills can't be picked for the ${role}.`);
+      const unknown = names.filter((n) => !known.has(n));
+      if (unknown.length) throw new Error(`Unknown skill(s): ${unknown.join(', ')}.`);
+      picks[role] = { skills: [...new Set(names)], by: 'owner' };
+    }
+    return picks;
+  }
+
+  /**
+   * Changes a role's mission skills. Allowed until the role's current run: a change applies from its
+   * next run (an architect re-plan, a coder fix loop).
+   */
+  setTaskSkills(taskId: number, role: Role, skills: string[]): Task {
+    const task = this.getTask(taskId);
+    if (TERMINAL_STATUSES.includes(task.status)) throw new Error(`The task is ${task.status}.`);
+    if (this.running.has(taskId) && AGENT_STEPS[task.status] === role) throw new Error(`The ${role} is working right now; change its skills when it finishes.`);
+    const picks = { ...task.skillPicks, ...this.ownerPicks({ [role]: skills }) };
+    const updated = this.update(taskId, { skillPicks: picks });
+    this.deps.bus.emit(taskId, 'skills_changed', { role, skills, by: 'owner' });
+    return updated;
   }
 
   /** Average tokens per architect/reviewer/debugger run with and without the code graph, to judge whether it pays off. */
@@ -184,9 +225,10 @@ export class Pipeline {
     const text = input.input.trim();
     if (!text) throw new Error('Describe the task.');
     const title = (input.title?.trim() || text.split('\n')[0]!).slice(0, 80);
+    const skillPicks = this.ownerPicks(input.skills);
     const task = this.deps.db
       .insert(schema.tasks)
-      .values({ repoId: input.repoId, input: text, title, kind: input.kind ?? 'feature', baseBranch: input.baseBranch ?? null })
+      .values({ repoId: input.repoId, input: text, title, kind: input.kind ?? 'feature', baseBranch: input.baseBranch ?? null, skillPicks, grillMode: input.grillMode ?? 'auto' })
       .returning()
       .get();
     this.deps.bus.emit(task.id, 'created', { title });
@@ -292,7 +334,13 @@ export class Pipeline {
     const step = task.status as ContractStep;
     const role = AGENT_STEPS[step]!;
     // This repo's extra skills for the role (my custom skills first, then the built-in ones).
-    const roleAgent = withRepoSkills(this.agents[role], getRepo(db, initial.repoId).skills, [config.customSkillsDir, config.skillsDir]);
+    // Then the mission's own picks for the role. A skill deleted since it was picked is skipped, with an alert.
+    const roleAgent = withSkills(
+      withRepoSkills(this.agents[role], getRepo(db, initial.repoId).skills, this.skillDirs()),
+      task.skillPicks[role]?.skills ?? [],
+      this.skillDirs(),
+      (name) => this.alert(task, 'skills', `The ${role}'s skill "${name}" no longer exists; running without it.`),
+    );
     // A PR under review is untrusted code (and untrusted text): its reviewer gets exactly Read/Grep/Glob,
     // read-only, whatever a custom reviewer definition lists. No shell, no writes, no web.
     const agent: AgentDef = step === 'reviewing_pr' ? { ...roleAgent, tools: ['Read', 'Grep', 'Glob'], write: 'none' } : roleAgent;
@@ -323,6 +371,9 @@ export class Pipeline {
       worktree,
       feedback,
       diff: (step === 'reviewing' || step === 'reviewing_pr') && task.baseSha ? await diff(worktree, task.baseSha) : undefined,
+      ...(step === 'intake'
+        ? { catalog: this.skillCatalog(), roleSkills: Object.fromEntries(PICKABLE_ROLES.map((r) => [r, this.agents[r].skills])) }
+        : {}),
     });
 
     const run = db
@@ -331,7 +382,7 @@ export class Pipeline {
       .returning()
       .get();
     this.currentRun.set(task.id, run.id);
-    bus.emit(task.id, 'step_start', { step, role, model: agent.model, effort: agent.effort }, run.id);
+    bus.emit(task.id, 'step_start', { step, role, model: agent.model, effort: agent.effort, skills: agent.skills }, run.id);
 
     const outcome = await runner.run({
       taskId: task.id,
@@ -410,7 +461,16 @@ export class Pipeline {
     const { docs } = this.deps;
     switch (step) {
       case 'intake': {
-        const m = readMeta<{ title: string; kind: TaskKind; size: 'S' | 'M' | 'L'; needs_debugger: boolean; needs_researcher: boolean; design_review: boolean }>('intake', text);
+        const m = readMeta<{
+          title: string;
+          kind: TaskKind;
+          size: 'S' | 'M' | 'L';
+          needs_debugger: boolean;
+          needs_researcher: boolean;
+          design_review: boolean;
+          skills?: Record<string, string[]>;
+          skills_why?: Record<string, string>;
+        }>('intake', text);
         const updated = this.update(task.id, {
           title: m.title,
           kind: m.kind,
@@ -418,6 +478,7 @@ export class Pipeline {
           needsDebugger: m.needs_debugger,
           needsResearcher: m.needs_researcher,
           designFlag: m.design_review,
+          skillPicks: this.managerPicks(task, m.skills ?? {}, m.skills_why ?? {}),
         });
         this.update(task.id, { status: updated.needsDebugger ? 'debugging' : updated.needsResearcher ? 'researching' : 'planning' });
         return;
@@ -493,6 +554,26 @@ export class Pipeline {
         return;
       }
     }
+  }
+
+  /** The manager's picks for the roles I left empty. Unknown names are dropped and reported. */
+  private managerPicks(task: Task, skills: Record<string, string[]>, why: Record<string, string>): SkillPicks {
+    const known = new Set(this.skillCatalog().map((s) => s.name));
+    const picks: SkillPicks = { ...task.skillPicks };
+    const dropped: string[] = [];
+    for (const [role, names] of Object.entries(skills)) {
+      if (!PICKABLE_ROLES.includes(role as Role) || picks[role as Role]?.by === 'owner' || !Array.isArray(names)) continue;
+      const kept = [...new Set(names.map(String))].filter((n) => {
+        if (known.has(n)) return true;
+        dropped.push(n);
+        return false;
+      });
+      if (kept.length) picks[role as Role] = { skills: kept, by: 'manager', ...(why[role] ? { why: String(why[role]).slice(0, 200) } : {}) };
+    }
+    if (dropped.length) this.alert(task, 'skills', `The manager picked skills that aren't in the catalog, left out: ${[...new Set(dropped)].join(', ')}.`);
+    const added = Object.entries(picks).filter(([r, p]) => p?.by === 'manager' && task.skillPicks[r as Role]?.by !== 'owner');
+    if (added.length) this.deps.bus.emit(task.id, 'skills_picked', { picks: Object.fromEntries(added) });
+    return picks;
   }
 
   /** Review or tests failed: back to the coder twice, then re-plan. */

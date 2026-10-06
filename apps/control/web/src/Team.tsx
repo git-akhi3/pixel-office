@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type AgentInfo, type SkillInfo } from './api';
 import { Icon, RoleIcon } from './icons';
+import { ImportSkills } from './Skills';
 
 const NEW_SKILL = (name: string) => `---
 name: ${name}
@@ -15,6 +16,7 @@ export function Team({ onError }: { onError: (e: unknown) => void }) {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [editing, setEditing] = useState<{ kind: 'agent' | 'skill'; key: string; text: string; isNew?: boolean } | null>(null);
   const [newSkill, setNewSkill] = useState('');
+  const [importing, setImporting] = useState(false);
 
   const load = useCallback(() => {
     api.agents().then(setAgents).catch(onError);
@@ -118,15 +120,28 @@ export function Team({ onError }: { onError: (e: unknown) => void }) {
         ))}
       </div>
 
-      <h2>
-        <Icon name="book" /> Skills
-      </h2>
+      <div className="section-head">
+        <h2>
+          <Icon name="book" /> Skills
+        </h2>
+        <button onClick={() => setImporting(true)}>
+          <Icon name="down" size={8} /> Import from Claude Code
+        </button>
+      </div>
+      <p className="hint">Agents get their role's skills on every run, plus the skills a mission picks (you, or the manager at intake) and the repo's.</p>
       <ul className="repo-list">
         {skills.map((s) => (
           <li key={s.name}>
             <div>
-              <strong>{s.name}</strong> {s.custom ? <span className="kind kind-review">{s.builtIn ? 'edited' : 'mine'}</span> : <span className="kind">built-in</span>}
+              <strong>{s.name}</strong> {s.custom ? <span className="kind kind-review">{s.builtIn ? 'edited' : s.importedFrom ? 'imported' : 'mine'}</span> : <span className="kind">built-in</span>}
+              {s.importedFrom && <span className="tag">{s.importedFrom}</span>}
+              {s.updateAvailable && (
+                <button className="link update-link" onClick={() => setImporting(true)} title="The original changed since it was imported">
+                  update available
+                </button>
+              )}
               <div className="hint">{s.description}</div>
+              {s.wrapper && <div className="hint over">Only calls other skills, which office agents can't do; it is left out of the catalog.</div>}
             </div>
             <div className="row-buttons">
               <button onClick={() => setEditing({ kind: 'skill', key: s.name, text: s.text })}>Edit</button>
@@ -179,6 +194,7 @@ export function Team({ onError }: { onError: (e: unknown) => void }) {
         <button disabled={!newSkill.trim()}>New skill</button>
       </form>
       <p className="hint">Attach a skill to an agent in its front matter (skills: [...]), or to one repo's agents under Repos → Edit.</p>
+      <ImportSkills open={importing} onClose={() => setImporting(false)} onImported={load} onError={onError} />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, type Gate, type OfficeEvent, type TaskDetail } from './api';
 import { flushReviewEdits, ReviewPanel } from './Review';
+import { TaskSkills } from './Skills';
 import { Icon, RoleIcon } from './icons';
 import { DiffView, Doc, duration, formatTokens, StageTrack, StatusBadge, timeAgo } from './ui';
 
@@ -162,6 +163,8 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
           </button>
         )}
       </div>
+
+      <TaskSkills task={task} onChanged={load} onError={onError} />
 
       {task.kind === 'review' && <ReviewPanel task={task} comments={detail.reviewComments} onChanged={load} onError={onError} />}
 

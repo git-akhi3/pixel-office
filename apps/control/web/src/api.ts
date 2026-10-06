@@ -5,7 +5,7 @@ export type TaskStatus = string;
 export interface Gate {
   id: number;
   taskId: number;
-  kind: 'plan' | 'push' | 'command' | 'review_post';
+  kind: 'plan' | 'push' | 'command' | 'review_post' | 'question';
   status: 'pending' | 'approved' | 'rejected' | 'cancelled';
   subject: string | null;
   decision: string | null;
@@ -24,6 +24,11 @@ export interface ReviewComment {
   body: string;
   deleted: boolean;
 }
+
+export type Role = 'manager' | 'architect' | 'coder' | 'reviewer' | 'tester' | 'debugger' | 'researcher';
+/** Roles a mission can pick skills for. */
+export const PICKABLE_ROLES: Role[] = ['architect', 'coder', 'reviewer', 'tester', 'debugger', 'researcher'];
+export type SkillPicks = Partial<Record<Role, { skills: string[]; by: 'owner' | 'manager'; why?: string }>>;
 
 export interface Task {
   id: number;
@@ -57,6 +62,12 @@ export interface Task {
   running: boolean;
   tokens: number;
   pendingGates: Array<{ id: number; kind: Gate['kind']; subject: string | null }>;
+  skillPicks: SkillPicks;
+  grillMode: 'auto' | 'always' | 'never';
+  grill: boolean;
+  grillReason: string | null;
+  attachments: Array<{ name: string; size: number; type: string }>;
+  links: string[];
 }
 
 export interface Run {
@@ -133,6 +144,21 @@ export interface SkillInfo {
   text: string;
   custom: boolean;
   builtIn: boolean;
+  /** Only tells the agent to call other skills: does nothing in the office. */
+  wrapper: boolean;
+  importedFrom: string | null;
+  updateAvailable: boolean;
+}
+
+export interface ImportableSkill {
+  key: string;
+  name: string;
+  description: string;
+  source: string;
+  path: string;
+  extraFiles: number;
+  wrapper: boolean;
+  status: 'new' | 'imported' | 'update' | 'taken';
 }
 
 export interface Proposal {
@@ -184,7 +210,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   tasks: () => request<Task[]>('GET', '/api/tasks'),
   task: (id: number) => request<TaskDetail>('GET', `/api/tasks/${id}`),
-  createTask: (body: { repoId: number; input: string; kind?: 'feature' | 'bug' }) => request<Task>('POST', '/api/tasks', body),
+  createTask: (body: { repoId: number; input: string; kind?: 'feature' | 'bug'; skills?: Partial<Record<Role, string[]>>; grillMode?: Task['grillMode'] }) =>
+    request<Task>('POST', '/api/tasks', body),
+  setTaskSkills: (id: number, role: Role, skills: string[]) => request<Task>('PUT', `/api/tasks/${id}/skills`, { role, skills }),
   doc: (id: number, file: string) => request<string>('GET', `/api/tasks/${id}/docs/${file}`),
   diff: (id: number) => request<string>('GET', `/api/tasks/${id}/diff`),
   events: (id: number, after = 0) => request<OfficeEvent[]>('GET', `/api/tasks/${id}/events?after=${after}&limit=2000`),
@@ -205,6 +233,9 @@ export const api = {
   saveSkill: (name: string, text: string) => request('PUT', `/api/skills/${name}`, { text }),
   deleteSkill: (name: string) => request('DELETE', `/api/skills/${name}`),
   installSkillGlobally: (name: string) => request<{ path: string }>('POST', `/api/skills/${name}/install-global`, {}),
+  importableSkills: () => request<ImportableSkill[]>('GET', '/api/skills/importable'),
+  importDiff: (key: string) => request<{ name: string; current: string; incoming: string }>('GET', `/api/skills/importable/${key}`),
+  importSkill: (key: string) => request<{ name: string }>('POST', '/api/skills/import', { key }),
   knowledge: (repoId: number) => request<{ text: string; maxLines: number; proposals: Proposal[] }>('GET', `/api/repos/${repoId}/knowledge`),
   saveKnowledge: (repoId: number, text: string) => request('PUT', `/api/repos/${repoId}/knowledge`, { text }),
   proposals: () => request<Proposal[]>('GET', '/api/knowledge/proposals'),

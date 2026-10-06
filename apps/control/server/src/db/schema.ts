@@ -3,6 +3,14 @@ import type { GateKind, GateStatus, Role, TaskKind, TaskSize, TaskStatus } from 
 
 const now = () => Date.now();
 
+export type SkillPicks = Partial<Record<Role, { skills: string[]; by: 'owner' | 'manager'; why?: string }>>;
+export type GrillMode = 'auto' | 'always' | 'never';
+export interface Attachment {
+  name: string;
+  size: number;
+  type: string;
+}
+
 export const repos = sqliteTable('repos', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull().unique(),
@@ -80,6 +88,15 @@ export const tasks = sqliteTable('tasks', {
   slackChannel: text('slack_channel'),
   slackThreadTs: text('slack_thread_ts'),
   slackStatusTs: text('slack_status_ts'),
+  /** Skills per role for this mission: picked by me (locked) or by the manager at intake, with its reason. */
+  skillPicks: text('skill_picks', { mode: 'json' }).$type<SkillPicks>().notNull().default({}),
+  /** Briefing: whether the architect grills me before planning. auto lets the manager decide at intake. */
+  grillMode: text('grill_mode').$type<GrillMode>().notNull().default('auto'),
+  grill: integer('grill', { mode: 'boolean' }).notNull().default(false),
+  grillReason: text('grill_reason'),
+  /** Files I attached (stored in the task folder under attachments/) and links. */
+  attachments: text('attachments', { mode: 'json' }).$type<Attachment[]>().notNull().default([]),
+  links: text('links', { mode: 'json' }).$type<string[]>().notNull().default([]),
   resumeAt: integer('resume_at'),
   doneAt: integer('done_at'),
   createdAt: integer('created_at').notNull().$defaultFn(now),
@@ -129,6 +146,29 @@ export const gates = sqliteTable('gates', {
   decidedAt: integer('decided_at'),
 });
 
+/** The architect's briefing questions, one row per question, asked in rounds. */
+export const questions = sqliteTable('questions', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  taskId: integer('task_id')
+    .notNull()
+    .references(() => tasks.id),
+  gateId: integer('gate_id').references(() => gates.id),
+  runId: integer('run_id'),
+  round: integer('round').notNull(),
+  idx: integer('idx').notNull(),
+  title: text('title').notNull(),
+  body: text('body').notNull(),
+  options: text('options', { mode: 'json' }).$type<string[]>().notNull().default([]),
+  recommended: text('recommended'),
+  /** My answer; null while open. "You decide" stores the recommendation with answeredVia noting it. */
+  answer: text('answer'),
+  answeredVia: text('answered_via').$type<'board' | 'slack'>(),
+  delegated: integer('delegated', { mode: 'boolean' }).notNull().default(false),
+  answeredAt: integer('answered_at'),
+  slackTs: text('slack_ts'),
+  createdAt: integer('created_at').notNull().$defaultFn(now),
+});
+
 export const events = sqliteTable('events', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   taskId: integer('task_id').references(() => tasks.id),
@@ -158,6 +198,7 @@ export const settings = sqliteTable('settings', {
 export type Repo = typeof repos.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type Run = typeof runs.$inferSelect;
+export type Question = typeof questions.$inferSelect;
 export type Gate = typeof gates.$inferSelect;
 export type OfficeEvent = typeof events.$inferSelect;
 export type ReviewComment = typeof reviewComments.$inferSelect;

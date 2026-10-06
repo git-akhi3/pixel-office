@@ -8,7 +8,9 @@ import { z } from 'zod';
 import type { OfficeConfig } from './config.js';
 import { getSettings, schema, setSetting, usagePause, type Db } from './db/index.js';
 import { boardColumn, ROLES, TASK_STATUSES } from './domain.js';
-import { listSkills, loadAgents, parseAgent, parseSkill, SKILL_NAME } from './agents.js';
+import { isWrapperSkill, listSkills, loadAgents, parseAgent, parseSkill, SKILL_NAME } from './agents.js';
+import { PICKABLE_ROLES } from './prompts.js';
+import { readSourceInfo, SkillImporter, updateAvailable } from './skillImport.js';
 import { GRAPHIFY_INSTALL } from './graph.js';
 import { MAX_KNOWLEDGE_LINES } from './knowledge.js';
 import type { EventBus } from './events.js';
@@ -108,7 +110,14 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   app.post('/api/tasks', async (req) => {
     const body = z
-      .object({ repoId: id, input: z.string().min(1).max(20_000), kind: z.enum(['feature', 'bug']).optional(), title: z.string().max(80).optional() })
+      .object({
+        repoId: id,
+        input: z.string().min(1).max(20_000),
+        kind: z.enum(['feature', 'bug']).optional(),
+        title: z.string().max(80).optional(),
+        skills: z.partialRecord(z.enum(PICKABLE_ROLES as [string, ...string[]]), z.array(z.string().regex(SKILL_NAME)).max(10)).optional(),
+        grillMode: z.enum(['auto', 'always', 'never']).optional(),
+      })
       .parse(req.body);
     return summary(pipeline.createTask(body));
   });
@@ -176,6 +185,11 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       return { ok: true, path: task.worktreePath };
     }
     return summary(await pipeline.action(taskId, action));
+  });
+
+  app.put('/api/tasks/:id/skills', async (req) => {
+    const body = z.object({ role: z.enum(PICKABLE_ROLES as [string, ...string[]]), skills: z.array(z.string().regex(SKILL_NAME)).max(10) }).parse(req.body);
+    return summary(pipeline.setTaskSkills(id.parse((req.params as { id: string }).id), body.role as (typeof ROLES)[number], body.skills));
   });
 
   app.post('/api/tasks/:id/steer', async (req) => {
@@ -269,14 +283,32 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   });
 
   app.get('/api/skills', async () =>
-    listSkills(skillDirs).map((s) => ({
-      name: s.name,
-      description: s.description,
-      text: s.text,
-      custom: s.source === config.customSkillsDir,
-      builtIn: existsSync(join(config.skillsDir, s.name, 'SKILL.md')),
-    })),
+    listSkills(skillDirs).map((s) => {
+      const custom = s.source === config.customSkillsDir;
+      const source = custom ? readSourceInfo(config.customSkillsDir, s.name) : null;
+      return {
+        name: s.name,
+        description: s.description,
+        text: s.text,
+        custom,
+        builtIn: existsSync(join(config.skillsDir, s.name, 'SKILL.md')),
+        wrapper: isWrapperSkill(s.body),
+        importedFrom: source?.source ?? null,
+        updateAvailable: custom && updateAvailable(config.customSkillsDir, s.name),
+      };
+    }),
   );
+
+  // Importing from Claude Code: only skills the importer found can be read or copied.
+  const importer = new SkillImporter(config.importRoots, config.customSkillsDir, () => new Set(listSkills(skillDirs).map((s) => s.name)));
+  const importKey = z.object({ key: z.string().regex(/^[0-9a-f]{16}$/) });
+  app.get('/api/skills/importable', async () => importer.list());
+  app.get('/api/skills/importable/:key', async (req) => importer.diff(importKey.parse(req.params).key));
+  app.post('/api/skills/import', async (req) => {
+    const result = importer.import(importKey.parse(req.body).key);
+    reloadAgents();
+    return result;
+  });
   app.put('/api/skills/:name', async (req) => {
     const name = z.string().regex(SKILL_NAME).parse((req.params as { name: string }).name);
     const { text } = z.object({ text: z.string().min(1).max(50_000) }).parse(req.body);

@@ -41,7 +41,7 @@ const docs = {
 type Script = (req: RunRequest) => Promise<Partial<RunOutcome> & { text?: string }> | (Partial<RunOutcome> & { text?: string });
 
 class FakeRunner implements AgentRunner {
-  calls: Array<{ step: string; prompt: string }> = [];
+  calls: Array<{ step: string; prompt: string; skills: string[] }> = [];
   active = 0;
   maxActive = 0;
   overrides: Partial<Record<string, Script[]>> = {};
@@ -58,7 +58,7 @@ class FakeRunner implements AgentRunner {
 
   async run(req: RunRequest): Promise<RunOutcome> {
     const step = this.stepOf(req.taskId);
-    this.calls.push({ step, prompt: req.prompt });
+    this.calls.push({ step, prompt: req.prompt, skills: req.agent.skills });
     this.active++;
     this.maxActive = Math.max(this.maxActive, this.active);
     try {

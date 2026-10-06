@@ -9,6 +9,7 @@ export const TASK_STATUSES = [
   'debugging', // debugger finds the root cause (bugs flagged by intake)
   'researching', // researcher answers external questions (flagged by intake)
   'planning', // architect writes plan.md
+  'awaiting_answer', // the architect's briefing question waited 15 minutes: parked until I answer
   'awaiting_plan_approval',
   'coding',
   'reviewing',
@@ -53,7 +54,7 @@ export const TERMINAL_STATUSES: TaskStatus[] = ['done', 'failed', 'discarded'];
 export type TaskKind = 'feature' | 'bug' | 'review';
 export type TaskSize = 'S' | 'M' | 'L';
 
-export type GateKind = 'plan' | 'push' | 'command' | 'review_post';
+export type GateKind = 'plan' | 'push' | 'command' | 'review_post' | 'question';
 export type GateStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 export type GateDecision = 'approve' | 'reject' | 'allow_once' | 'allow_always' | 'deny';
 
@@ -67,6 +68,7 @@ export function boardColumn(status: TaskStatus): string {
     case 'researching':
     case 'planning':
       return 'Planning';
+    case 'awaiting_answer':
     case 'awaiting_plan_approval':
     case 'awaiting_push_approval':
     case 'awaiting_review_post':

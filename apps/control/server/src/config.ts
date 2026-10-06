@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const appDir = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -21,6 +21,10 @@ export interface OfficeConfig {
   graphsDir: string;
   /** "Install globally" copies a skill here, for my own Claude Code sessions. */
   claudeSkillsDir: string;
+  /** Where the Team page looks for Claude Code skills to import (plugins and ~/.claude/skills). */
+  importRoots: Array<{ label: string; dir: string }>;
+  /** Files I attach to missions, waiting for the task that claims them. */
+  uploadsDir: string;
   /** Written by start.sh: the workspace the pixel office watches. */
   pixelWorkspaceFile: string;
   webDist: string;
@@ -44,6 +48,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): OfficeConfig {
     graphsDir: join(home, 'graphs'),
     pixelWorkspaceFile: join(home, 'pixel-workspace'),
     claudeSkillsDir: env.OFFICE_CLAUDE_SKILLS_DIR ?? join(homedir(), '.claude', 'skills'),
+    importRoots: env.OFFICE_IMPORT_ROOTS
+      ? env.OFFICE_IMPORT_ROOTS.split(delimiter).filter(Boolean).map((dir) => ({ label: dir, dir }))
+      : [
+          { label: '~/.claude/skills', dir: join(homedir(), '.claude', 'skills') },
+          { label: 'Claude Code plugins', dir: join(homedir(), '.claude', 'plugins') },
+          // The Claude desktop app keeps its plugins' skills here.
+          { label: 'Claude app plugins', dir: join(homedir(), 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions') },
+        ],
+    uploadsDir: join(home, 'uploads'),
     webDist: join(appDir, 'web', 'dist'),
     host: '127.0.0.1',
     port: Number(env.OFFICE_PORT ?? 4100),

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type Repo, type Task } from './api';
+import { api, type Repo, type Role, type Task } from './api';
 import { Icon, RoleIcon } from './icons';
+import { MissionSkills, useCatalog } from './Skills';
 
 /** What happens to a mission after launch, so the gates are no surprise. */
 const FLOW: Array<{ role: string; label: string; you?: boolean }> = [
@@ -37,6 +38,9 @@ export function MissionPanel({
   const [mode, setMode] = useState<'task' | 'review'>('task');
   const [prUrl, setPrUrl] = useState('');
   const [busy, setBusy] = useState(false);
+  const [skills, setSkills] = useState<Partial<Record<Role, string[]>>>({});
+  // Loaded once the panel is first opened, and again on each open (skills may have been imported since).
+  const catalog = useCatalog(onError, open);
   const briefRef = useRef<HTMLTextAreaElement>(null);
   const prRef = useRef<HTMLInputElement>(null);
 
@@ -61,8 +65,9 @@ export function MissionPanel({
     setBusy(true);
     try {
       const task =
-        mode === 'review' ? await api.createReview(prUrl.trim()) : await api.createTask({ repoId: repoId as number, input, kind });
+        mode === 'review' ? await api.createReview(prUrl.trim()) : await api.createTask({ repoId: repoId as number, input, kind, skills });
       setInput('');
+      setSkills({});
       setPrUrl('');
       onCreated(task);
     } catch (err) {
@@ -160,6 +165,7 @@ export function MissionPanel({
                         placeholder="Describe the task as you would to a teammate: what, why, and anything they should know (links, error messages, files)."
                       />
                     </label>
+                    <MissionSkills value={skills} onChange={setSkills} catalog={catalog} />
                     <div className="flow" aria-label="What happens next">
                       {FLOW.map((s, i) => (
                         <span key={i} className={`flow-step${s.you ? ' flow-you' : ''}`}>

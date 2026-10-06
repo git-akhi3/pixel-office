@@ -28,6 +28,9 @@ export const CONTRACTS = {
       needs_debugger: bool,
       needs_researcher: bool,
       design_review: bool,
+      /** Catalog skills per role, for roles the owner left empty. Checked against the catalog afterwards. */
+      skills: z.record(z.string(), z.array(z.string())).optional(),
+      skills_why: z.record(z.string(), z.string()).optional(),
     }),
     format: `---
 title: <short task title, under 60 characters>
@@ -36,6 +39,10 @@ size: S | M | L          # S: under an hour of focused work, M: half a day, L: m
 needs_debugger: true | false    # true only for bugs whose cause is unclear
 needs_researcher: true | false  # true only if external docs/APIs must be checked first
 design_review: true | false     # true for UI or architecture changes: the plan gets a design section
+skills:                  # optional: catalog skills for roles the owner hasn't picked; leave out when none fit
+  coder: [skill-name]
+skills_why:              # one line per role you picked for
+  coder: <why this skill fits this task>
 ---
 ## Request
 <the request restated in 2-4 lines, with anything ambiguous called out>

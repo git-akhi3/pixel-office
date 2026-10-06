@@ -122,13 +122,46 @@ export function loadAgents(agentsDirs: Dirs, skillsDir: Dirs, onError: (message:
 
 /** The agent with a repo's extra skills for its role added. */
 export function withRepoSkills(agent: AgentDef, repoSkills: Record<string, string[]>, skillsDirs: Dirs): AgentDef {
-  const extra = (repoSkills[agent.name] ?? []).filter((n) => !agent.skills.includes(n));
-  if (!extra.length) return agent;
-  return { ...agent, skills: [...agent.skills, ...extra], skillDefs: [...agent.skillDefs, ...extra.map((n) => loadSkill(skillsDirs, n))] };
+  return withSkills(agent, repoSkills[agent.name] ?? [], skillsDirs);
 }
+
+/**
+ * The agent with extra skills added (a mission's picks). With onMissing, a skill that no longer
+ * exists is skipped and reported instead of failing the step.
+ */
+export function withSkills(agent: AgentDef, names: string[], skillsDirs: Dirs, onMissing?: (name: string) => void): AgentDef {
+  const extra = [...new Set(names)].filter((n) => !agent.skills.includes(n));
+  if (!extra.length) return agent;
+  const defs: Skill[] = [];
+  for (const n of extra) {
+    try {
+      defs.push(loadSkill(skillsDirs, n));
+    } catch (e) {
+      if (!onMissing) throw e;
+      onMissing(n);
+    }
+  }
+  return { ...agent, skills: [...agent.skills, ...defs.map((d) => d.name)], skillDefs: [...agent.skillDefs, ...defs] };
+}
+
+/** A skill that only tells the agent to load other skills: useless here, where agents have no Skill tool. */
+export function isWrapperSkill(body: string): boolean {
+  return /\bSkill tool\b/i.test(body) && body.split('\n').filter((l) => l.trim()).length <= 4;
+}
+
+/**
+ * Skills are written for an interactive Claude Code session. In the office there is no chat and no
+ * sub-agents, so the agent is told what those instructions mean here.
+ */
+const SKILL_ADAPTER = `## How skills work in this office
+The skills below were written for an interactive Claude Code session. Here:
+- There is no live chat with the user. Where a skill says to ask the user or wait for their answer, follow the "Asking the owner" rules in your task message if it has them; otherwise list the question under Risks with the conservative choice.
+- There are no sub-agents and no Skill tool. Where a skill says to dispatch a sub-agent or call another skill, do that work yourself with your own tools (Read, Grep, Glob).
+- Your output format, file-scope and safety rules from the office always win over a skill.`;
 
 /** The text appended to Claude Code's system prompt for this agent. */
 export function systemPromptFor(agent: AgentDef): string {
+  if (!agent.skillDefs.length) return agent.prompt;
   const skills = agent.skillDefs.map((s) => `\n\n## Skill: ${s.name}\n${s.description}\n\n${s.body}`).join('');
-  return `${agent.prompt}${skills}`;
+  return `${agent.prompt}\n\n${SKILL_ADAPTER}${skills}`;
 }

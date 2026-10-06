@@ -2156,3 +2156,170 @@ input.mono {
     transition: none !important;
   }
 }
+
+/* ------------------------------------------------------------ skills */
+
+.disclosure {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  box-shadow: none;
+  border: 2px solid var(--border-soft);
+  color: var(--text);
+  text-transform: none;
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+}
+.disclosure:hover:not(:disabled) {
+  background: var(--panel-3);
+}
+.disclosure:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+.disclosure .hint {
+  margin-left: auto;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.disclosure .field-label {
+  flex: none;
+}
+.role-skills {
+  display: grid;
+  gap: 8px;
+  padding: 12px 10px;
+  background: var(--bg-deep);
+  border: 2px solid var(--border-soft);
+  border-top: none;
+}
+.role-skill-row {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+.role-skill-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+  font-size: var(--fs-sm);
+}
+.role-skill-name .role-icon {
+  padding: 2px;
+}
+.role-skill-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.skill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 28px;
+}
+.skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 2px 2px 8px;
+  background: var(--attention-bg);
+  color: var(--attention);
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 2px solid var(--attention);
+}
+.skill-chip .icon-btn {
+  padding: 4px;
+  color: var(--attention);
+}
+select.skill-add {
+  width: auto;
+  margin: 0;
+  padding: 3px 28px 3px 8px;
+  font-size: var(--fs-xs);
+  background-color: var(--panel-2);
+  border-style: dashed;
+}
+.task-skills {
+  margin: 0 0 16px;
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 28px 0 8px;
+}
+.panel .section-head h2 {
+  margin: 0;
+}
+.update-link {
+  margin-left: 8px;
+  color: var(--attention);
+}
+
+/* The Import panel is wider: skill descriptions and diffs need the room. */
+.drawer-wide {
+  width: min(640px, 100vw);
+}
+.import-group h3 {
+  margin: 18px 0 8px;
+  font-size: var(--fs-sm);
+  color: var(--attention);
+}
+.import-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.import-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px;
+  background: var(--panel-2);
+  border: 2px solid var(--border-soft);
+}
+.import-imported,
+.import-taken {
+  opacity: 0.7;
+}
+.import-update {
+  border-color: var(--attention);
+}
+.import-text {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.import-text .hint {
+  font-size: var(--fs-xs);
+}
+.update-preview h3 {
+  margin: 0 0 8px;
+  font-size: var(--fs-md);
+}
+.update-preview .diff {
+  max-height: 55vh;
+  overflow: auto;
+  box-shadow: none;
+}
+.import-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}

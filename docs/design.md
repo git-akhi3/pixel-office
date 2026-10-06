@@ -109,6 +109,33 @@ Model and effort can be changed per agent. PR writing is a skill the coder runs,
 - The agent runner doesn't depend on where it runs, so it can later move to a personal cloud server (with `claude setup-token`) or hand tasks to Claude Code cloud sessions (`claude --cloud`) without a rewrite.
 - The office tab connects to Pixel Agents through its existing hook events, as the "resident agents" commit does today.
 
+## Mission skills, briefings and attachments
+
+Agreed 2026-10-06 (phase 6). Build plan: [phase-6-plan.md](phase-6-plan.md).
+
+### Skills
+
+- **Three layers.** Role defaults (Team page, always on, kept small), mission skills (per task) and repo skills (per repo, per role). An agent gets the union for its role.
+- **Mission skills:** I can lock picks per role in the mission panel. At intake the manager fills the roles I left empty from the catalog (names and one-line descriptions only), with a reason per pick. I can change the coder, reviewer and tester picks at plan approval, and any role that hasn't started on the task page. Agents never load skills themselves: no Skill tool.
+- **Catalog:** the office's own skills (`apps/control/skills`, `~/.office/skills`). The Team page imports skills from Claude Code (plugins and `~/.claude/skills`) as snapshots into `~/.office/skills`, recording the source. A changed source shows "update available" with a diff; I decide. Skills that only call other skills (wrappers such as `grill-me`) are flagged, since office agents have no Skill tool.
+- Inside the office a skill's "ask the user" means a question round (below), and "dispatch a sub-agent" means look it up yourself with Read, Grep and Glob.
+
+### Briefing: grilling inside the planning step
+
+- **When:** a "Grill me" switch per mission: Auto (default), Always, Never. In Auto the manager turns it on for big tasks (L), design or architecture work, or whenever the request is unclear to it, and records why.
+- **Who:** the architect, in its normal planning session, with the `grilling` skill (a setting names the skill; a short built-in fallback applies when it isn't imported). `grill-with-docs` is out for now.
+- **How:** the architect ends a turn with a **question round** instead of the plan: every question it can ask without waiting on another answer, each with options and a recommended answer. The office opens a question gate, shows the round, collects the answers and sends them back into the same session. No question limit: it asks until it has clarity, then writes the plan. "Enough, start planning" works at any time; open points become assumptions under Risks.
+- **Where I answer:** both the board (task page and the office's Live panel) and the task's Slack thread. Rounds are shown one question at a time with Lock it in (the recommendation), You decide, option buttons, free text, Send what I've answered, and Enough. The first answer wins; the other surface updates ("answered on Slack").
+- **Waiting:** the session waits 15 minutes for the round, holding its slot. Then it parks: the task is `awaiting_answer` (Awaiting you), the slot is freed, answers given so far are kept. Answering resumes planning in a fresh session that reads the brief.
+- **Record:** the office writes every answered round to `brief.md`. Re-plans read it instead of asking again; the brief shows next to the plan at approval.
+
+### Attachments
+
+- Files (Markdown, text, PDF, images; 10 MB each, 25 MB per mission) and links can be added in the mission panel, or attached to the Slack DM that starts a task (`files:read` scope).
+- Stored with the task in `~/.office/tasks/<id>/attachments/` and listed on the task page.
+- The manager and architect are told to read them; the coder, reviewer and tester see the list and open files when needed.
+- The guard allows read-only access to that task's attachments folder only, through the Read tool. The rest of `~/.office` stays off-limits.
+
 ## Phases
 
 1. **Core pipeline:** repo list, runner, worktrees, handoffs, plan and push gates, safety rules, basic board, token tracking.
@@ -116,3 +143,4 @@ Model and effort can be changed per agent. PR writing is a skill the coder runs,
 3. **Reviews:** PR review flow, auto-pickup, comment editor, "fix it".
 4. **Smarts:** knowledge files, Graphify, agent and skill editor in the UI, usage-limit pausing.
 5. **Office tab:** Pixel Agents embedded and linked to tasks.
+6. **Mission skills and briefings:** skill catalog and import, per-mission skills picked by the manager, grilling in planning with answers on the board and in Slack, attachments.
