@@ -157,14 +157,14 @@ describe('SlackBridge', () => {
     expect(root.text).toContain('New task #1');
     const status = t.posted[1]!;
     expect(status.thread_ts).toBe(root.ts);
-    expect(status.text).toContain('coder');
+    expect(JSON.stringify(status.blocks)).toContain('coder working');
 
     t.db.update(schema.tasks).set({ status: 'reviewing' }).where(eq(schema.tasks.id, task.id)).run();
     t.bus.emit(task.id, 'step_start', { step: 'reviewing', role: 'reviewer' });
     await t.settle();
     expect(t.posted).toHaveLength(2);
     expect(t.updated.at(-1)).toMatchObject({ ts: status.ts });
-    expect(t.updated.at(-1)!.text).toContain('reviewer');
+    expect(JSON.stringify((t.updated.at(-1) as { blocks?: unknown }).blocks)).toContain('reviewer working');
   });
 
   it('posts a gate with buttons and edits it once decided', async () => {
@@ -177,6 +177,10 @@ describe('SlackBridge', () => {
     const actions = (msg.blocks as Array<{ type: string; elements?: Array<{ action_id?: string }> }>).find((b) => b.type === 'actions')!;
     expect(actions.elements!.map((e) => e.action_id).filter(Boolean)).toEqual([`office_gate:${gate.id}:approve`, `office_gate:${gate.id}:reject`]);
     expect(t.db.select().from(schema.gates).get()!.slackTs).toBe(msg.ts);
+    // The ask, a short summary, then the buttons last: nothing to scroll past on a phone.
+    const kinds = (msg.blocks as Array<{ type: string }>).map((b) => b.type);
+    expect(kinds).toEqual(['section', 'section', 'actions']);
+    expect(JSON.stringify(msg.blocks)).toContain('*Goal*\\nAdd greet().');
 
     t.bus.emit(task.id, 'gate_decided', { gateId: gate.id, kind: 'plan', decision: 'approve' });
     await t.settle();
@@ -193,6 +197,14 @@ describe('SlackBridge', () => {
     const texts = t.posted.map((p) => JSON.stringify(p.blocks ?? p.text));
     expect(texts.some((x) => x.includes('Milestones ready for approval'))).toBe(true);
     expect(t.posted.some((p) => p.text.includes('Split into 2 milestone tasks: #7, #8'))).toBe(true);
+  });
+
+  it('does not repeat a command permission as an alert: its gate message already asks', async () => {
+    const task = t.db.insert(schema.tasks).values({ repoId: t.repo.id, title: 'Run it', input: 'x', status: 'coding', slackChannel: DM, slackThreadTs: '50.1' }).returning().get();
+    t.bus.emit(task.id, 'alert', { kind: 'permission', message: 'Allow command? npm test' });
+    t.bus.emit(task.id, 'alert', { kind: 'tokens', message: 'Used 300,000 tokens.' });
+    await t.settle();
+    expect(t.posted.map((p) => p.text)).toEqual([':moneybag: Over budget\nUsed 300,000 tokens.']);
   });
 
   it('only obeys button taps from the owner', async () => {

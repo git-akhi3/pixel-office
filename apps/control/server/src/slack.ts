@@ -15,7 +15,8 @@ import type { TaskDocs } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
 import { listRepos } from './repos.js';
 import { SlackQuestions } from './slackQuestions.js';
-import { describeTask, duration, esc, listActive, tokens, type StatusContext } from './slackStatus.js';
+import { alertText, breakdownSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks } from './slackFormat.js';
+import { describeTask, duration, esc, listActive, stageOf, type StatusContext } from './slackStatus.js';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type Uploads } from './attachments.js';
 import type { SlackConfig } from './config.js';
 
@@ -74,6 +75,16 @@ export const ASSISTANT_TASKS_PER_HOUR = 5;
 const OWNER_ONLY = new Set(['approve', 'reject', 'discard', 'done', 'replan', 'send', 'enough']);
 
 type Sender = 'owner' | 'assistant';
+
+/** What a decided gate was about, for the line that replaces its buttons. */
+const DECIDED_WHAT: Record<string, string> = { plan: 'the plan', breakdown: 'the milestones', push: 'the push', review_post: 'the review', command: 'the command' };
+
+const GATE_HEADING = {
+  plan: 'Plan ready for approval',
+  breakdown: 'Milestones ready for approval (each becomes its own task)',
+  push: 'Ready to push and open a draft PR',
+  review_post: 'Draft review ready to post',
+} as const;
 
 export { esc };
 
@@ -383,8 +394,10 @@ export class SlackBridge {
         return this.onGate(task, event.payload as { gateId: number; kind: Gate['kind']; subject: string | null; status: string; auto: boolean });
       case 'gate_decided':
         return this.onGateDecided(task, event.payload as { gateId: number; decision: string; comment?: string });
-      case 'alert':
-        return void (await this.say(`:rotating_light: ${esc(String(event.payload.message ?? ''))}`, task));
+      case 'alert': {
+        const text = alertText(String(event.payload.kind ?? ''), String(event.payload.message ?? ''));
+        return void (text ? await this.say(text, task) : undefined);
+      }
       case 'pr_opened':
         return void (await this.say(`:rocket: Draft PR opened: ${String(event.payload.url)}`, task));
       case 'pr_merged':
@@ -434,29 +447,38 @@ export class SlackBridge {
     }
     if (g.kind === 'question') return; // posted question by question by SlackQuestions
     const link = `${this.deps.publicUrl}/#/task/${task.id}`;
-    let heading: string;
-    let body = '';
-    let buttons: unknown[];
-    if (g.kind === 'command') {
-      heading = ':lock: *An agent wants to run a command*';
-      body = `\`\`\`${clip(g.subject ?? '', 1500).replace(/```/g, "'''")}\`\`\``;
-      buttons = [this.button(g.gateId, 'allow_once', 'Allow once', 'primary'), this.button(g.gateId, 'allow_always', 'Always for this repo'), this.button(g.gateId, 'deny', 'Deny', 'danger')];
-    } else {
-      const label =
-        g.kind === 'plan' ? 'Plan ready for approval' : g.kind === 'breakdown' ? 'Milestones ready for approval (each becomes its own task)' : g.kind === 'push' ? 'Ready to push and open a draft PR' : 'Draft review ready to post';
-      heading = `:raised_hand: *${label}*`;
-      const docName = ({ plan: 'plan', breakdown: 'breakdown', review_post: 'pr-review' } as const)[g.kind as 'plan' | 'breakdown' | 'review_post'];
-      const doc = docName ? this.deps.docs.latest(task.id, docName) : null;
-      if (doc) body = esc(clip(doc.replace(/^---[\s\S]*?---\s*/, ''), 2000));
-      buttons = [this.button(g.gateId, 'approve', g.kind === 'review_post' ? 'Post review' : 'Approve', 'primary'), this.button(g.gateId, 'reject', 'Reject…', 'danger')];
-    }
+    const isCommand = g.kind === 'command';
+    const heading = isCommand ? ':lock: *Allow this command?*' : `:raised_hand: *${GATE_HEADING[g.kind as keyof typeof GATE_HEADING] ?? 'Needs your decision'}*`;
+    const body = isCommand ? `\`\`\`${clip(g.subject ?? '', 1500).replace(/```/g, "'''")}\`\`\`` : this.gateSummary(task, g.kind);
+    const buttons = isCommand
+      ? [this.button(g.gateId, 'allow_once', 'Allow once', 'primary'), this.button(g.gateId, 'allow_always', 'Always for this repo'), this.button(g.gateId, 'deny', 'Deny', 'danger')]
+      : [this.button(g.gateId, 'approve', g.kind === 'review_post' ? 'Post review' : 'Approve', 'primary'), this.button(g.gateId, 'reject', 'Reject…', 'danger')];
+    // A short summary with the buttons right under it; the full document is one tap away on the board.
     const blocks = [
-      { type: 'section', text: { type: 'mrkdwn', text: `${heading}\n*#${task.id}* ${esc(task.title)}` } },
-      ...(body ? [{ type: 'section', text: { type: 'mrkdwn', text: body } }] : []),
-      { type: 'actions', elements: [...buttons, { type: 'button', text: { type: 'plain_text', text: 'Open in office' }, url: link }] },
+      { type: 'section', text: { type: 'mrkdwn', text: `${heading}\n*#${task.id}* ${esc(clip(task.title, 90))}` } },
+      ...(body ? [{ type: 'section', text: { type: 'mrkdwn', text: clip(body, MAX_SECTION) } }] : []),
+      { type: 'actions', elements: [...buttons, { type: 'button', text: { type: 'plain_text', text: isCommand ? 'Open in office' : 'Read in full' }, url: link }] },
     ];
-    const ts = await this.say(`#${task.id} needs you: ${g.kind} gate`, task, blocks);
+    const ask = isCommand ? 'allow a command?' : (GATE_HEADING[g.kind as keyof typeof GATE_HEADING] ?? 'needs you').toLowerCase();
+    const ts = await this.say(`#${task.id} ${esc(clip(task.title, 60))}: ${ask}`, task, blocks);
     if (ts) this.deps.db.update(schema.gates).set({ slackTs: ts }).where(eq(schema.gates.id, g.gateId)).run();
+  }
+
+  /** A few lines about what the owner is being asked to approve. */
+  private gateSummary(task: Task, kind: Gate['kind']): string {
+    const { docs } = this.deps;
+    switch (kind) {
+      case 'plan':
+        return planSummary(docs.latest(task.id, 'plan') ?? '');
+      case 'breakdown':
+        return breakdownSummary(docs.latest(task.id, 'breakdown') ?? '');
+      case 'review_post':
+        return reviewPostSummary(docs.latest(task.id, 'pr-review') ?? '');
+      case 'push':
+        return pushSummary({ changes: docs.latest(task.id, 'changes'), review: docs.latest(task.id, 'review'), testReport: docs.latest(task.id, 'test-report') });
+      default:
+        return '';
+    }
   }
 
   private async onGateDecided(task: Task, d: { gateId: number; decision: string; comment?: string }): Promise<void> {
@@ -468,7 +490,7 @@ export class SlackBridge {
       channel: task.slackChannel,
       ts: gate.slackTs,
       text,
-      blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `${d.decision === 'approve' || d.decision.startsWith('allow') ? ':white_check_mark:' : ':no_entry:'} *${esc(verb)}* · ${esc(gate.kind)} gate · #${task.id} ${esc(task.title)}${d.comment ? `\n>${esc(clip(d.comment, 500))}` : ''}` } }],
+      blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `${d.decision === 'approve' || d.decision.startsWith('allow') ? ':white_check_mark:' : ':no_entry:'} *${esc(verb)}* · ${DECIDED_WHAT[gate.kind] ?? gate.kind}\n#${task.id} ${esc(clip(task.title, 90))}${d.comment ? `\n>${esc(clip(d.comment, 500))}` : ''}` } }],
     });
   }
 
@@ -490,18 +512,16 @@ export class SlackBridge {
     };
   }
 
-  private statusText(task: Task): string {
-    const column = boardColumn(task.status);
+  private statusView(task: Task): { text: string; blocks: unknown[] } {
     const running = isAgentStep(task.status);
-    const agent = running ? AGENT_STEPS[task.status] : null;
     const started = this.stepStartedAt.get(task.id) ?? task.updatedAt;
-    const parts = [`*#${task.id}* ${esc(task.title)}`, `${esc(task.status.replace(/_/g, ' '))} (${column})`];
-    if (agent) parts.push(agent);
-    if (running) parts.push(duration(this.now() - started));
-    parts.push(`${tokens(this.deps.pipeline.tokensUsed(task.id))} tokens`);
-    if (task.statusNote) parts.push(esc(clip(task.statusNote, 200)));
-    if (task.prUrl) parts.push(task.prUrl);
-    return parts.join(' · ');
+    return statusBlocks({
+      task,
+      agent: running ? (AGENT_STEPS[task.status] ?? null) : null,
+      elapsed: running ? duration(this.now() - started) : null,
+      stage: stageOf(task),
+      tokens: this.deps.pipeline.tokensUsed(task.id),
+    });
   }
 
   /** Posts or edits the task's single status message. */
@@ -510,15 +530,16 @@ export class SlackBridge {
       const fresh = this.deps.pipeline.getTask(task.id);
       const thread = await this.ensureThread(fresh);
       if (!thread) return;
-      const text = this.statusText(fresh);
-      if (this.lastStatusText.get(fresh.id) === text && fresh.slackStatusTs) return;
+      const view = this.statusView(fresh);
+      const key = JSON.stringify(view.blocks);
+      if (this.lastStatusText.get(fresh.id) === key && fresh.slackStatusTs) return;
       if (fresh.slackStatusTs) {
-        await this.deps.api.updateMessage({ channel: thread.channel, ts: fresh.slackStatusTs, text });
+        await this.deps.api.updateMessage({ channel: thread.channel, ts: fresh.slackStatusTs, ...view });
       } else {
-        const res = await this.deps.api.postMessage({ channel: thread.channel, thread_ts: thread.ts, text });
+        const res = await this.deps.api.postMessage({ channel: thread.channel, thread_ts: thread.ts, ...view });
         if (res.ts) this.deps.db.update(schema.tasks).set({ slackStatusTs: res.ts }).where(eq(schema.tasks.id, fresh.id)).run();
       }
-      this.lastStatusText.set(fresh.id, text);
+      this.lastStatusText.set(fresh.id, key);
     });
   }
 
