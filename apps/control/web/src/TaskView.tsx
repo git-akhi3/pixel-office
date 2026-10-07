@@ -104,7 +104,7 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
 
   useEffect(() => {
     if (!detail || docFile) return;
-    const order = ['plan', 'review', 'test-report', 'changes', 'blocked', 'diagnosis', 'research', 'task', 'pr', 'retro'];
+    const order = ['verify', 'plan', 'review', 'test-report', 'changes', 'blocked', 'diagnosis', 'research', 'task', 'pr', 'retro'];
     const newest = [...(detail.docs ?? [])].sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name))[0];
     if (newest) setDocFile((latestByName.get(newest.name) ?? []).at(-1)?.file ?? null);
   }, [detail, docFile, latestByName]);

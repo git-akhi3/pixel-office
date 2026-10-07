@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '../server/src/db/schema.js';
-import { alertText, breakdownSummary, planSummary, progressBar, pushSummary, reviewPostSummary, statusBlocks } from '../server/src/slackFormat.js';
+import { alertText, breakdownSummary, planSummary, progressBar, pushSummary, reviewPostSummary, statusBlocks, verificationText } from '../server/src/slackFormat.js';
 
 const PLAN = `---
 files_in_scope:
@@ -133,6 +133,13 @@ Adds a cache. One real problem.
     expect(out).toContain('Adds a cache. One real problem.');
     expect(out).toContain('• src/cache.ts:42 — never expires');
     expect(out).not.toContain('rename');
+  });
+});
+
+describe('verificationText', () => {
+  it('titles the report by verdict and escapes Slack markup', () => {
+    expect(verificationText('fail', 'POST /webhook returned 500 <@U1>')).toBe(':x: Live check failed\nPOST /webhook returned 500 &lt;@U1&gt;');
+    expect(verificationText('pass', 'ok').startsWith(':white_check_mark: Live check passed\n')).toBe(true);
   });
 });
 

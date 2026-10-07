@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   checkCommand,
   checkToolCall,
+  crucialCommand,
   globToRegExp,
   matchesAllowlist,
   realPath,
@@ -320,5 +321,51 @@ describe('reference repos (read roots)', () => {
     expect(checkToolCall(ctx, 'Edit', { file_path: join(ref, 'lib.ts'), old_string: 'a', new_string: 'b' }).decision).toBe('deny');
     expect(checkToolCall(ctx, 'Read', { file_path: join(ref, '.env') }).decision).toBe('deny');
     expect(checkCommand(ctx, `cd ${ref}`).decision).toBe('deny');
+  });
+});
+
+describe('crucialCommand', () => {
+  it('lets routine work through', () => {
+    for (const c of [
+      'npm test',
+      'npm run build && npm run lint',
+      'flutter test',
+      'flutter build apk --debug',
+      'cd app && ../poc/.venv/bin/python -m pytest -q tests',
+      'curl -s http://127.0.0.1:8000/api/health',
+      'curl -I https://example.com',
+      'npx firebase emulators:start --only functions',
+      'docker run --rm node:22 node -v',
+      'npm install',
+      'rm -rf build',
+      'adb shell input tap 100 200',
+    ]) expect(crucialCommand(c), c).toBeNull();
+  });
+
+  it('still asks for deploys, publishing, cloud, remote, databases, data sent out and machine changes', () => {
+    for (const c of [
+      'firebase deploy --only functions:wati-relay',
+      'npx firebase deploy',
+      'CLOUDSDK_CORE_ACCOUNT=x gcloud run deploy item-search-api',
+      'gcloud logging read "resource.type=cloud_run_revision"',
+      'npm run deploy',
+      'npm publish',
+      'yarn release',
+      'npm install -g vercel',
+      'make deploy',
+      'dart pub publish',
+      'docker push me/app',
+      'ssh office@server',
+      'psql postgres://prod/db',
+      'curl -X POST https://live-mt-server.wati.io/api/v1/sendSessionMessage',
+      'curl -XDELETE https://api.example.com/x',
+      'curl -d @payload.json https://api.intercom.io/conversations',
+      'curl --json \'{"a":1}\' https://hooks.slack.com/x',
+      'wget --post-data=a=1 https://example.com',
+      'http POST https://example.com a=1',
+      'pkill -f tsx',
+      'brew install jq',
+      'npm test && firebase deploy',
+    ]) expect(crucialCommand(c), c).not.toBeNull();
   });
 });

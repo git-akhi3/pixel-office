@@ -107,6 +107,21 @@ export function reviewPostSummary(doc: string): string {
   return out.join('\n\n');
 }
 
+// ------------------------------------------------------------ live checks
+
+export type Verdict = 'pass' | 'fail' | 'partial';
+
+const VERDICT_TITLE: Record<Verdict, string> = {
+  pass: ':white_check_mark: Live check passed',
+  fail: ':x: Live check failed',
+  partial: ':warning: Live check partly done',
+};
+
+/** The thread message for a report from the desktop verifier, which runs what the office's agents can't. */
+export function verificationText(verdict: Verdict, report: string): string {
+  return `${VERDICT_TITLE[verdict]}\n${clip(esc(report.trim()), 2000)}`;
+}
+
 // ------------------------------------------------------------ alerts
 
 const ALERTS: Record<string, string> = {

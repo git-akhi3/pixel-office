@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 
-export type DocName = 'task' | 'diagnosis' | 'research' | 'brief' | 'plan' | 'breakdown' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro' | 'pr-review';
+export type DocName = 'task' | 'diagnosis' | 'research' | 'brief' | 'plan' | 'breakdown' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro' | 'pr-review' | 'verify';
 
 export interface Contract {
   doc: DocName;

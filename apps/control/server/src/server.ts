@@ -267,6 +267,16 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     return { delivered: pipeline.steer(id.parse((req.params as { id: string }).id), text) };
   });
 
+  // A live check from the desktop verifier (real APIs, logs, devices): kept as verify.md and posted to the task's thread.
+  app.post('/api/tasks/:id/verification', async (req) => {
+    const taskId = id.parse((req.params as { id: string }).id);
+    const { verdict, report } = z.object({ verdict: z.enum(['pass', 'fail', 'partial']), report: z.string().trim().min(1).max(20_000) }).parse(req.body);
+    pipeline.getTask(taskId);
+    docs.save(taskId, 'verify', `---\nverdict: ${verdict}\n---\n${report}\n`);
+    bus.emit(taskId, 'verified', { verdict, report });
+    return { ok: true };
+  });
+
   app.post('/api/tasks/:id/replan', async (req) => {
     const { reason } = z.object({ reason: z.string().trim().min(1).max(4000) }).parse(req.body);
     return summary(pipeline.replanNow(id.parse((req.params as { id: string }).id), reason));
@@ -464,6 +474,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         usagePauseAt: z.number().min(0.5).max(1).optional(),
         grillSkill: z.string().regex(SKILL_NAME).optional(),
         sonnetForSmall: z.boolean().optional(),
+        autoAllowCommands: z.boolean().optional(),
       })
       .parse(req.body);
     if (body.grillSkill !== undefined) setSetting(db, 'grillSkill', body.grillSkill);
@@ -473,6 +484,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     if (body.reviewMinLines !== undefined) setSetting(db, 'reviewMinLines', body.reviewMinLines);
     if (body.usagePauseAt !== undefined) setSetting(db, 'usagePauseAt', body.usagePauseAt);
     if (body.sonnetForSmall !== undefined) setSetting(db, 'sonnetForSmall', body.sonnetForSmall);
+    if (body.autoAllowCommands !== undefined) setSetting(db, 'autoAllowCommands', body.autoAllowCommands);
     void pipeline.tick();
     return getSettings(db);
   });

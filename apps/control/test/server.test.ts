@@ -100,6 +100,24 @@ describe('server', () => {
     expect(detail.json().repo.name).toBe('app');
   });
 
+  it('saves a live check as verify.md and records it on the task', async () => {
+    const repo = await app.inject({ method: 'POST', url: '/api/repos', headers, payload: { name: 'app', path: repoPath } });
+    const task = await app.inject({ method: 'POST', url: '/api/tasks', headers, payload: { repoId: repo.json().id, input: 'Add a thing' } });
+    const taskId = task.json().id;
+
+    const bad = await app.inject({ method: 'POST', url: `/api/tasks/${taskId}/verification`, headers, payload: { verdict: 'great', report: 'x' } });
+    expect(bad.statusCode).toBe(400);
+    const missing = await app.inject({ method: 'POST', url: '/api/tasks/999/verification', headers, payload: { verdict: 'pass', report: 'x' } });
+    expect(missing.statusCode).toBe(400);
+
+    const ok = await app.inject({ method: 'POST', url: `/api/tasks/${taskId}/verification`, headers, payload: { verdict: 'fail', report: 'Webhook returned 500.' } });
+    expect(ok.statusCode).toBe(200);
+    const doc = await app.inject({ method: 'GET', url: `/api/tasks/${taskId}/docs/verify.md`, headers });
+    expect(doc.body).toBe('---\nverdict: fail\n---\nWebhook returned 500.\n');
+    const events = await app.inject({ method: 'GET', url: `/api/tasks/${taskId}/events`, headers });
+    expect(events.json().find((e: { type: string }) => e.type === 'verified').payload).toEqual({ verdict: 'fail', report: 'Webhook returned 500.' });
+  });
+
   it('validates settings', async () => {
     const r = await app.inject({ method: 'PUT', url: '/api/settings', headers, payload: { concurrency: 99 } });
     expect(r.statusCode).toBe(400);

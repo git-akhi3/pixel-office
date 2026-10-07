@@ -338,6 +338,58 @@ export function checkCommand(ctx: GuardContext, command: string): GuardDecision 
   return allow();
 }
 
+// ---------------------------------------------------------------- crucial commands
+
+/** Cloud, hosting and infrastructure CLIs: they act on live systems with my stored logins. */
+const CLOUD_CLIS = new Set(['gcloud', 'gsutil', 'bq', 'aws', 'az', 'kubectl', 'terraform', 'pulumi', 'helm', 'firebase', 'vercel', 'netlify', 'fly', 'flyctl', 'heroku', 'wrangler', 'eas', 'fastlane', 'supabase', 'railway', 'doctl']);
+/** Tools that reach other machines or send mail. */
+const REMOTE = new Set(['ssh', 'scp', 'sftp', 'rsync', 'ftp', 'telnet', 'nc', 'ncat', 'mail', 'sendmail']);
+/** Database clients: the connection string can point at production. */
+const DB_CLIENTS = new Set(['psql', 'mysql', 'mongo', 'mongosh', 'redis-cli', 'cqlsh']);
+/** Tools that change this machine outside the worktree, or stop running programs (the office itself). */
+const SYSTEM = new Set(['kill', 'pkill', 'killall', 'shutdown', 'reboot', 'brew', 'defaults', 'systemctl']);
+const PACKAGE_MANAGERS = new Set(['npm', 'yarn', 'pnpm', 'bun']);
+const RELEASE_WORD = /deploy|publish|release/i;
+
+/**
+ * Why a command still needs me even when commands are auto-allowed: it deploys, publishes, touches
+ * cloud or remote systems, sends data out, or changes the machine. Null when it is routine work
+ * (building, testing, reading, local servers). Checked per simple command; the guard's denies still apply first.
+ */
+export function crucialCommand(command: string): string | null {
+  for (const segment of splitCommand(command)) {
+    const tokens = (segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map((t) => t.replace(/^["']|["']$/g, ''));
+    // Skip leading VAR=value assignments and launchers that run the next word as the command.
+    while (tokens.length && (/^\w+=/.test(tokens[0]!) || ['npx', 'bunx', 'time', 'nohup'].includes(tokens[0]!))) tokens.shift();
+    if (tokens[0] === 'pnpm' && tokens[1] === 'dlx') tokens.splice(0, 2);
+    const tool = basename(tokens[0] ?? '');
+    const args = tokens.slice(1);
+    if (tool === 'firebase' && args[0]?.startsWith('emulators:')) continue;
+    if (CLOUD_CLIS.has(tool)) return `${tool} acts on live cloud systems`;
+    if (REMOTE.has(tool)) return `${tool} reaches another machine`;
+    if (DB_CLIENTS.has(tool)) return `${tool} connects to a database`;
+    if (SYSTEM.has(tool)) return `${tool} changes this machine or stops programs`;
+    if (tool === 'docker' && ['push', 'login'].includes(args[0] ?? '')) return `docker ${args[0]} talks to a registry`;
+    if (PACKAGE_MANAGERS.has(tool)) {
+      if (args.some((a) => a === '-g' || a === '--global')) return `${tool} global installs change this machine`;
+      const script = args[0] === 'run' ? args[1] : args[0];
+      if (args.includes('publish') || (script && RELEASE_WORD.test(script))) return `${tool} ${script ?? 'publish'} deploys or publishes`;
+    }
+    if (['make', 'just'].includes(tool) && args.some((a) => RELEASE_WORD.test(a))) return `${tool} target deploys or publishes`;
+    if (['flutter', 'dart'].includes(tool) && args[0] === 'pub' && args[1] === 'publish') return 'publishes a package';
+    if ((tool === 'twine' && args[0] === 'upload') || (tool === 'cargo' && args[0] === 'publish') || (tool === 'gem' && args[0] === 'push') || (tool === 'pod' && args[0] === 'trunk')) return 'publishes a package';
+    if (tool === 'curl') {
+      const sends = args.some((a) => /^-[a-zA-Z]*[dFT]/.test(a) || /^--(data|form|upload-file|json)/.test(a));
+      const method = args.findIndex((a) => a === '-X' || a === '--request' || /^-X\w/.test(a) || a.startsWith('--request='));
+      const verb = method === -1 ? 'GET' : (args[method]!.match(/^(?:-X|--request=)(\w+)$/)?.[1] ?? args[method + 1] ?? '').toUpperCase();
+      if (sends || !['GET', 'HEAD', 'OPTIONS'].includes(verb)) return 'curl sends data to a server';
+    }
+    if (tool === 'wget' && args.some((a) => /^--(post-data|post-file|method|body-data|body-file)/.test(a))) return 'wget sends data to a server';
+    if (['http', 'https', 'xh'].includes(tool) && args.some((a) => /^(POST|PUT|PATCH|DELETE)$/i.test(a))) return `${tool} sends data to a server`;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------- tool calls
 
 export function checkToolCall(ctx: GuardContext, tool: string, input: Record<string, unknown>): GuardDecision {

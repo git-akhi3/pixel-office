@@ -26,7 +26,7 @@ import { answersMessage, BRIEFING_WAIT_MS, briefDoc, MAX_BAD_ROUNDS, parseRound,
 import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, maxLane, stepRole, type GateDecision, type Lane, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
 import type { PrInfo, Publisher } from './github.js';
-import { matchesAnyGlob, realPath } from './guard.js';
+import { crucialCommand, matchesAnyGlob, realPath } from './guard.js';
 import { CONTRACTS, extractPr, normalizeOutput, parseMilestones, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
 import { laneAtIntake, laneOfDiff } from './lanes.js';
 import { buildPrompt, PICKABLE_ROLES } from './prompts.js';
@@ -874,6 +874,12 @@ export class Pipeline {
   }
 
   private requestPermission(taskId: number, subject: string, unmatched: string[]): Promise<PermissionAnswer> {
+    // Auto-allow: routine commands run at once (kept as an auto-approved gate); crucial ones still wait for me.
+    const crucial = crucialCommand(subject);
+    if (getSettings(this.deps.db).autoAllowCommands && !crucial) {
+      this.openGate(taskId, 'command', subject, true);
+      return Promise.resolve('allow_once');
+    }
     const gate = this.openGate(taskId, 'command', subject);
     const task = this.update(taskId, { statusNote: 'Waiting for you to allow a command.' });
     this.alert(task, 'permission', `Allow command? ${subject}`);

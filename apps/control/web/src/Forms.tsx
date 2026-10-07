@@ -350,6 +350,17 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
         </span>
       </label>
       <label className="switch">
+        <input type="checkbox" checked={s.autoAllowCommands} onChange={(e) => save({ autoAllowCommands: e.target.checked })} />
+        <span>
+          <strong>Auto-allow commands</strong>
+          <span className="hint">
+            Agents run commands off the allow-list without asking. Deploys, publishing, cloud, database and remote
+            tools, sending data with curl, and killing programs still ask you. Secrets, git push and writes outside the
+            worktree stay blocked either way.
+          </span>
+        </span>
+      </label>
+      <label className="switch">
         <input type="checkbox" checked={s.sonnetForSmall} onChange={(e) => save({ sonnetForSmall: e.target.checked })} />
         <span>
           <strong>Sonnet for small tasks</strong>

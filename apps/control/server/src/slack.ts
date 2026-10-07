@@ -15,7 +15,7 @@ import type { TaskDocs } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
 import { listRepos } from './repos.js';
 import { SlackQuestions } from './slackQuestions.js';
-import { alertText, breakdownSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks } from './slackFormat.js';
+import { alertText, breakdownSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks, verificationText, type Verdict } from './slackFormat.js';
 import { describeTask, duration, esc, listActive, stageOf, type StatusContext } from './slackStatus.js';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type Uploads } from './attachments.js';
 import type { SlackConfig } from './config.js';
@@ -410,6 +410,8 @@ export class SlackBridge {
         return void (await this.say(`:rocket: Draft PR opened: ${String(event.payload.url)}`, task));
       case 'pr_merged':
         return void (await this.say(`:tada: PR merged: ${String(event.payload.url)}`, task));
+      case 'verified':
+        return void (await this.say(verificationText(event.payload.verdict as Verdict, String(event.payload.report ?? '')), task));
       case 'review_posted':
         return void (await this.say(`:memo: Review posted: ${String(event.payload.url)}`, task));
       case 'epic_decided':
@@ -450,7 +452,7 @@ export class SlackBridge {
 
   private async onGate(task: Task, g: { gateId: number; kind: Gate['kind']; subject: string | null; status: string; auto: boolean }): Promise<void> {
     if (g.status !== 'pending') {
-      if (g.auto) await this.say(`:white_check_mark: ${g.kind === 'push' ? 'Push' : 'Gate'} auto-approved.`, task);
+      if (g.auto && g.kind !== 'command') await this.say(`:white_check_mark: ${g.kind === 'push' ? 'Push' : 'Gate'} auto-approved.`, task);
       return;
     }
     if (g.kind === 'question') return; // posted question by question by SlackQuestions

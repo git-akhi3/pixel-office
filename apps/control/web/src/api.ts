@@ -215,6 +215,7 @@ export interface GraphInfo {
 
 export interface Settings {
   autoApprovePush: boolean;
+  autoAllowCommands: boolean;
   concurrency: number;
   reviewAutoPickup: boolean;
   reviewMinLines: number;

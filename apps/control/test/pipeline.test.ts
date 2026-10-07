@@ -754,6 +754,28 @@ describe('pipeline', () => {
     expect(statusOf(task)).toBe('awaiting_plan_approval');
   });
 
+  it('auto-allows routine commands when turned on, but still asks for crucial ones', async () => {
+    setSetting(db, 'autoAllowCommands', true);
+    const answers: string[] = [];
+    runner.queue('intake', async (req) => {
+      answers.push(await req.askPermission('cargo build', ['cargo build'], 'not on the allow-list'));
+      answers.push(await req.askPermission('firebase deploy', ['firebase deploy'], 'not on the allow-list'));
+      return { text: docs.task() };
+    });
+    const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
+    await until(() => pipeline.pendingGates(task.id).length > 0);
+    expect(answers).toEqual(['allow_once']);
+    const gate = pipeline.pendingGates(task.id)[0]!;
+    expect(gate.subject).toBe('firebase deploy');
+    const auto = db.select().from(schema.gates).all().find((g) => g.subject === 'cargo build')!;
+    expect(auto).toMatchObject({ auto: true, status: 'approved' });
+
+    await pipeline.decideGate(gate.id, 'deny');
+    await settle();
+    expect(answers).toEqual(['allow_once', 'deny']);
+    expect(getRepo(db, repo.id).allowlist).not.toContain('cargo build');
+  });
+
   it('pauses on a usage limit and resumes after the reset time', async () => {
     const resetsAt = Math.floor(Date.now() / 1000) + 3600;
     runner.queue('intake', () => ({ status: 'rate_limited', resetsAt, text: '' }));
