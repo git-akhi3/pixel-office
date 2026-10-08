@@ -25,6 +25,10 @@ export const EXTERNAL_ACTIVE_THRESHOLD_MS = 120_000; // 2 minutes
 /** Remove external agents after this much inactivity */
 // export const EXTERNAL_STALE_TIMEOUT_MS = 300_000; // 5 minutes - deprecated
 export const EXTERNAL_STALE_CHECK_INTERVAL_MS = 30_000;
+/** Field agents (external sessions from outside the watched workspace) leave after this long with no transcript
+ *  writes. Headless SDK runs and desktop sessions left open never send SessionEnd, so without this they stay
+ *  forever; the global scan re-adopts one when its transcript moves again. */
+export const EXTERNAL_IDLE_DESPAWN_MS = 30 * 60_000; // 30 minutes
 /** Cooldown after user closes an agent via X. Must be > EXTERNAL_ACTIVE_THRESHOLD_MS
  *  so the file's mtime becomes stale before the dismissal expires. */
 export const DISMISSED_COOLDOWN_MS = 180_000; // 3 minutes

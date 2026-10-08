@@ -35,6 +35,7 @@ import {
   CLEAR_IDLE_THRESHOLD_MS,
   DEFAULT_MAX_CONTEXT_TOKENS,
   EXTERNAL_ACTIVE_THRESHOLD_MS,
+  EXTERNAL_IDLE_DESPAWN_MS,
   EXTERNAL_SCAN_INTERVAL_MS,
   EXTERNAL_STALE_CHECK_INTERVAL_MS,
   FILE_WATCHER_POLL_INTERVAL_MS,
@@ -1557,35 +1558,35 @@ function scanGlobalProjectDirs(
 }
 
 /**
- * Periodically removes stale external agents whose JSONL files
- * haven't been modified recently.
+ * External agents to remove: those whose JSONL file is gone (only without hooks; with hooks, SessionEnd and
+ * /clear reassignment handle it), and field agents idle past EXTERNAL_IDLE_DESPAWN_MS. Agents of the watched
+ * workspace, teammates and sub-agents (they follow their lead) and agents waiting on a permission stay.
  */
+export function staleExternalAgentIds(agents: AgentStateStore, now: number, hooksEnabled: boolean): number[] {
+  const ids: number[] = [];
+  for (const [id, agent] of agents) {
+    if (!agent.isExternal) continue;
+    let mtimeMs: number;
+    try {
+      mtimeMs = fs.statSync(agent.jsonlFile).mtimeMs;
+    } catch {
+      if (!hooksEnabled) ids.push(id);
+      continue;
+    }
+    if (agent.leadAgentId !== undefined || agent.permissionSent || isTrackedProjectDir(agent.projectDir)) continue;
+    if (now - mtimeMs > EXTERNAL_IDLE_DESPAWN_MS) ids.push(id);
+  }
+  return ids;
+}
+
+/** Periodically removes stale external agents (see staleExternalAgentIds). */
 export function startStaleExternalAgentCheck(
   agents: AgentStateStore,
   knownJsonlFiles: Set<string>,
   hooksEnabledRef?: { current: boolean },
 ): ReturnType<typeof setInterval> {
   return setInterval(() => {
-    // When hooks are active, SessionEnd handles agent cleanup.
-    if (hooksEnabledRef?.current) return;
-    const toRemove: number[] = [];
-
-    for (const [id, agent] of agents) {
-      if (!agent.isExternal) continue;
-
-      // Only despawn if the JSONL file has been deleted from disk.
-      // Inactive external agents stay alive so they can resume when
-      // the session continues (e.g., claude --resume).
-      try {
-        fs.statSync(agent.jsonlFile);
-        // File still exists — keep the agent alive regardless of mtime
-      } catch {
-        // File deleted — remove agent
-        toRemove.push(id);
-      }
-    }
-
-    for (const id of toRemove) {
+    for (const id of staleExternalAgentIds(agents, Date.now(), !!hooksEnabledRef?.current)) {
       const agent = agents.get(id);
       if (agent) {
         // Remove from knownJsonlFiles so the file can be re-adopted if it becomes active again
