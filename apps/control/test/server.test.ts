@@ -113,9 +113,16 @@ describe('server', () => {
     const ok = await app.inject({ method: 'POST', url: `/api/tasks/${taskId}/verification`, headers, payload: { verdict: 'fail', report: 'Webhook returned 500.' } });
     expect(ok.statusCode).toBe(200);
     const doc = await app.inject({ method: 'GET', url: `/api/tasks/${taskId}/docs/verify.md`, headers });
-    expect(doc.body).toBe('---\nverdict: fail\n---\nWebhook returned 500.\n');
+    expect(doc.body).toBe('---\nverdict: fail\nstage: build\n---\nWebhook returned 500.\n');
     const events = await app.inject({ method: 'GET', url: `/api/tasks/${taskId}/events`, headers });
-    expect(events.json().find((e: { type: string }) => e.type === 'verified').payload).toEqual({ verdict: 'fail', report: 'Webhook returned 500.' });
+    expect(events.json().find((e: { type: string }) => e.type === 'verified').payload).toEqual({ verdict: 'fail', report: 'Webhook returned 500.', stage: 'build' });
+
+    const deployed = await app.inject({ method: 'POST', url: `/api/tasks/${taskId}/verification`, headers, payload: { verdict: 'pass', report: 'Live.', stage: 'deployed', sha: '36d945d' } });
+    expect(deployed.statusCode).toBe(200);
+    const latest = await app.inject({ method: 'GET', url: `/api/tasks/${taskId}/docs/verify.md`, headers });
+    expect(latest.body).toBe('---\nverdict: pass\nstage: deployed\nsha: 36d945d\n---\nLive.\n');
+    const badSha = await app.inject({ method: 'POST', url: `/api/tasks/${taskId}/verification`, headers, payload: { verdict: 'pass', report: 'x', sha: 'not-a-sha' } });
+    expect(badSha.statusCode).toBe(400);
   });
 
   it('validates settings', async () => {

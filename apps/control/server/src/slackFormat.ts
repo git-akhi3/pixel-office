@@ -111,15 +111,16 @@ export function reviewPostSummary(doc: string): string {
 
 export type Verdict = 'pass' | 'fail' | 'partial';
 
-const VERDICT_TITLE: Record<Verdict, string> = {
-  pass: ':white_check_mark: Live check passed',
-  fail: ':x: Live check failed',
-  partial: ':warning: Live check partly done',
-};
+export type CheckStage = 'build' | 'pr' | 'deployed';
+
+const VERDICT_ICON: Record<Verdict, string> = { pass: ':white_check_mark:', fail: ':x:', partial: ':warning:' };
+const VERDICT_WORD: Record<Verdict, string> = { pass: 'passed', fail: 'failed', partial: 'partly done' };
+const STAGE_NAME: Record<CheckStage, string> = { build: 'Live check', pr: 'PR re-check', deployed: 'Production check' };
 
 /** The thread message for a report from the desktop verifier, which runs what the office's agents can't. */
-export function verificationText(verdict: Verdict, report: string): string {
-  return `${VERDICT_TITLE[verdict]}\n${clip(esc(report.trim()), 2000)}`;
+export function verificationText(verdict: Verdict, report: string, stage: CheckStage = 'build', sha?: string): string {
+  const at = sha ? ` (\`${sha.slice(0, 7)}\`)` : '';
+  return `${VERDICT_ICON[verdict]} ${STAGE_NAME[stage]} ${VERDICT_WORD[verdict]}${at}\n${clip(esc(report.trim()), 2000)}`;
 }
 
 // ------------------------------------------------------------ alerts

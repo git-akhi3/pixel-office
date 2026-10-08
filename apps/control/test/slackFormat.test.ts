@@ -141,6 +141,11 @@ describe('verificationText', () => {
     expect(verificationText('fail', 'POST /webhook returned 500 <@U1>')).toBe(':x: Live check failed\nPOST /webhook returned 500 &lt;@U1&gt;');
     expect(verificationText('pass', 'ok').startsWith(':white_check_mark: Live check passed\n')).toBe(true);
   });
+
+  it('names the stage and the commit it checked', () => {
+    expect(verificationText('partial', 'Not deployed yet.', 'deployed', '36d945d1c0ffee')).toBe(':warning: Production check partly done (`36d945d`)\nNot deployed yet.');
+    expect(verificationText('fail', 'x', 'pr', 'abcdef1').startsWith(':x: PR re-check failed (`abcdef1`)\n')).toBe(true);
+  });
 });
 
 describe('alertText', () => {

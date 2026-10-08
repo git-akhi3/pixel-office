@@ -98,7 +98,11 @@ Read the task's thread as it moves along. The messages that matter:
 | "Live check passed" + "Needs your OK to push" | "Needs you now": "#<n> <title>: verified, ready to push." |
 | "Blocked" / "Fixes did not work" / "Failed" | "Needs you now", with the office's reason in one line. |
 | "Draft PR opened" | Tell the requester it's built and in review. |
-| "PR merged" | Tell the requester it's done, and how to use it if that isn't obvious. Close the ledger line. |
+| "PR re-check failed" (new commits on an open PR broke something) | "Needs you now", with the failing behaviour in one line. |
+| "Production check passed" | Tell the requester it's live, and how to use it if that isn't obvious. |
+| "Production check failed" | "Needs you now", **interrupt Akhil right away**: something broke in production. Include the one-line cause from the report. Don't tell the requester it's live. |
+| "Production check partly done" (e.g. merged but not deployed after 24 h) | Put it in the digest: what's waiting, and what Akhil has to do. |
+| "PR merged" | Tell the requester it's merged and will be live after the deploy. Keep the ledger line open until "Production check passed" (or, for the Flutter app, which has no deploy, close it now). |
 
 ### 5. Akhil's view
 

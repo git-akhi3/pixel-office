@@ -15,7 +15,7 @@ import type { TaskDocs } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
 import { listRepos } from './repos.js';
 import { SlackQuestions } from './slackQuestions.js';
-import { alertText, breakdownSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks, verificationText, type Verdict } from './slackFormat.js';
+import { alertText, breakdownSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks, verificationText, type CheckStage, type Verdict } from './slackFormat.js';
 import { describeTask, duration, esc, listActive, stageOf, type StatusContext } from './slackStatus.js';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type Uploads } from './attachments.js';
 import type { SlackConfig } from './config.js';
@@ -411,7 +411,10 @@ export class SlackBridge {
       case 'pr_merged':
         return void (await this.say(`:tada: PR merged: ${String(event.payload.url)}`, task));
       case 'verified':
-        return void (await this.say(verificationText(event.payload.verdict as Verdict, String(event.payload.report ?? '')), task));
+        return void (await this.say(
+          verificationText(event.payload.verdict as Verdict, String(event.payload.report ?? ''), (event.payload.stage as CheckStage | undefined) ?? 'build', event.payload.sha as string | undefined),
+          task,
+        ));
       case 'review_posted':
         return void (await this.say(`:memo: Review posted: ${String(event.payload.url)}`, task));
       case 'epic_decided':
