@@ -518,6 +518,43 @@ export class OfficeState {
     return this.pickFromSeats(freeSeats, electronicsTiles);
   }
 
+  /** A director's extra character (a visiting agent): steps out of a portal near the area's centre.
+   *  Registered like a resident so scripts can name it; gone again with removeExtra. */
+  spawnExtra(name: string, label: string, area: string): number {
+    const existing = this.residentIds.get(name);
+    if (existing !== undefined && this.characters.has(existing)) return existing;
+    const id = this.nextResidentId--;
+    const centre = this.areaCentre(area);
+    const spot = (centre &&
+      this.closestFreeWalkableTile(Math.floor(centre.col), Math.floor(centre.row))) ??
+      this.walkableTiles[0] ?? { col: 1, row: 1 };
+    const pool = (this.layout.agentPalettes ?? []).filter((p) => Number.isInteger(p) && p >= 0);
+    const palette = pool.length > 0 ? pool[Math.abs(id) % pool.length] : 0;
+    const ch = createCharacter(id, palette, null, null, 0);
+    ch.tileCol = spot.col;
+    ch.tileRow = spot.row;
+    ch.x = spot.col * TILE_SIZE + TILE_SIZE / 2;
+    ch.y = spot.row * TILE_SIZE + TILE_SIZE / 2;
+    ch.isActive = false;
+    ch.state = CharacterState.IDLE;
+    ch.isResident = true;
+    ch.agentName = name;
+    ch.label = label;
+    ch.residentArea = area;
+    startMatrixEffect(ch, 'spawn');
+    this.characters.set(id, ch);
+    this.residentIds.set(name, id);
+    this.residentWalkable.set(id, this.areaWalkableTiles(area));
+    return id;
+  }
+
+  /** Sends an extra back through the portal; it is deleted once the effect ends. */
+  removeExtra(id: number): void {
+    for (const [name, rid] of this.residentIds) if (rid === id) this.residentIds.delete(name);
+    this.residentWalkable.delete(id);
+    this.removeAgent(id);
+  }
+
   /** The middle of an area (tile units, fractional), by label (case-insensitive), or null. */
   areaCentre(label: string): { col: number; row: number } | null {
     const tiles = this.layout.areaTiles;

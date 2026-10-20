@@ -77,6 +77,8 @@ import type {
 import { CharacterState, TILE_SIZE, TileType } from '../types.js';
 import { getWallInstances, hasWallSprites, wallColorToHex } from '../wallTiles.js';
 import { getCharacterSprite } from './characters.js';
+import type { DirectorEffect } from './director.js';
+import { renderDirectorEffects } from './directorEffects.js';
 import { renderMatrixEffect } from './matrixEffect.js';
 import { renderNightMode } from './nightMode.js';
 import { getPetSpriteData } from './petEntity.js';
@@ -921,6 +923,7 @@ export function renderFrame(
   showAreas?: boolean,
   activeAreaLabel?: string | null,
   pets?: Pet[],
+  effects?: readonly DirectorEffect[],
 ): { offsetX: number; offsetY: number } {
   // Clear
   ctx.clearRect(0, 0, canvasWidth, canvasHeight);
@@ -1004,6 +1007,11 @@ export function renderFrame(
   // Area labels (above bubbles + characters, below editor overlays)
   if (showAreas) {
     renderAreaLabels(ctx, areaTiles, areas, cols, rows, offsetX, offsetY, zoom);
+  }
+
+  // The director's effects (a flying brief, dust, lightning, confetti) on top of everything
+  if (effects && effects.length > 0) {
+    renderDirectorEffects(ctx, effects, offsetX, offsetY, zoom, canvasWidth, canvasHeight);
   }
 
   // Editor overlays

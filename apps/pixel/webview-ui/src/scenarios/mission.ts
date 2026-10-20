@@ -2,79 +2,123 @@
 export const MISSION_SCRIPT = `
 cinematic on
 extras off
-night on
+areas off
+night off
+music on
 camera at The Bridge
-camera zoom 3
-title "Pixel Office" 3
-wait 1
-gather The Bridge
-say fury "Listen up. Mission #42 just came in from Slack: login with a one-time code." 5
-say fury "Strange, plan it. Stark, build it. Banner, break it. Thor, you judge it." 5
-say cap "On it, Director." 2
-release all
-wait 1
+camera zoom 2.5
+title "PIXEL OFFICE" 3
+title "One mission, start to finish" 2.5
 
+# a field agent brings the brief in from Slack
+camera at Quinjet Bay
+camera zoom 3
+arrive hill "Agent Hill (S.H.I.E.L.D.)" Quinjet Bay
+say hill "Director. A new mission just landed in Slack." 3
+camera follow hill
+walk hill The Bridge
+camera at The Bridge
+camera zoom 2.5
+gather The Bridge
+handoff hill fury
+say hill "Mission #42: sign-in with a one-time code." 3.5
+say fury "Strange, plan it. Stark, build it. Banner, break it. Thor, you judge it. Parker, write it up." 6
+say cap "Assemble." 2
+release all
+leave hill
+
+# the plan
+camera zoom 3
 camera follow strange
-work strange "#42 Plan the one-time code login"
-say strange "I have seen 14 million ways to do this. One works." 4
-wait 3
+work strange "#42 Plan the one-time code sign-in"
+say strange "I have seen fourteen million ways to do this." 3.5
+wait 1.5
+say strange "One works." 2
 done strange
-say strange "The plan is written. Stark, it is yours." 3
-walk strange Stark Workshop
+handoff strange ironman
 say strange "Build it exactly like this." 3
 release strange
 
+# the build
 camera follow ironman
-work ironman "#42 Build the one-time code login"
-say ironman "Jarvis, scaffold the endpoint. Loki, the screen." 4
-work loki "#42 Login screen" &
-wait 4
-say hulkbuster "Standing by, boss." 2
+work ironman "#42 Build the one-time code sign-in"
+work loki "#42 Sign-in screen" &
+say ironman "Jarvis, scaffold the endpoint. Loki, make it pretty." 4
+wait 2
+say loki "Pretty is my whole brand." 3
+say hulkbuster "Armour on standby." 2
 done loki
 done ironman
-say ironman "Done. Send it to the big guy." 3
+handoff ironman hulk
+say ironman "Break it if you can, big guy." 3
 release ironman
+release loki
 
+# the smash test, round one
 camera follow hulk
-work hulk "#42 Smash-test the login"
+work hulk "#42 Smash-test the sign-in"
 say hulk "HULK TEST." 2
-wait 2
-say hulk "HULK FIND BUG." 3
+sound smash
+shake 0.6 7
+dust hulk
+wait 1
+say hulk "HULK FIND BUG. CODE EXPIRE WRONG." 3.5
 done hulk
-walk hulk Stark Workshop
-say hulk "Code broke. Fix." 3
+handoff hulk ironman
+say hulk "Fix." 2
 release hulk
+
+# the fix and round two
+camera follow ironman
 work ironman "#42 Fix the expiry check"
-wait 3
+say ironman "Off by one. Classic." 3
 done ironman
+handoff ironman hulk
+release ironman
+camera follow hulk
 work hulk "#42 Smash-test again"
-wait 3
+sound smash
+shake 0.4 4
+dust hulk
+wait 1
 say hulk "Hulk... happy." 3
 done hulk
-release all
+handoff hulk thor
+release hulk
 
+# the review
 camera follow thor
-work thor "#42 Review the login"
-say thor "By Odin's beard, this code is worthy." 4
+work thor "#42 Review the sign-in"
+say thor "By Odin's beard. Clean types, honest tests." 4
+sound thunder
+bolt thor
+say thor "This code is worthy." 3
 gate thor
-say fury "Akhil, Thor wants a push. Your call." 4
-wait 2
+say fury "Akhil, Thor wants to push. Your call." 4
+wait 1.5
 approve thor
 done thor
+handoff thor spidey
 release thor
 
+# the pull request
 camera follow spidey
 work spidey "#42 Write the pull request"
-say spidey "Your friendly neighbourhood PR writer, on it!" 4
+say spidey "Your friendly neighbourhood PR writer, on it." 4
 done spidey
 release spidey
 
+# shipped
 camera at The Bridge
-camera zoom 2
-night auto
+camera zoom 2.5
 gather The Bridge
+sound fanfare
+confetti The Bridge
 say fury "Mission #42 shipped. Shawarma, everyone." 4
 release all
-title "Pixel Office — your team, on deck" 4
+title "Pixel Office. Your team, on deck." 4
+music off
+areas on
+cinematic off
 end
 `;

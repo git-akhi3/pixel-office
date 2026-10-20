@@ -71,7 +71,7 @@ function playNote(
 const HERO_VOLUME = 0.05;
 
 /** A brass-like voice: three slightly detuned saws through a lowpass that opens on the attack. */
-function brass(ctx: AudioContext, freq: number, start: number, dur: number, vol: number): void {
+export function brass(ctx: BaseAudioContext, freq: number, start: number, dur: number, vol: number): void {
   const t = ctx.currentTime + start;
   const gain = ctx.createGain();
   const filter = ctx.createBiquadFilter();
@@ -97,11 +97,11 @@ function brass(ctx: AudioContext, freq: number, start: number, dur: number, vol:
   gain.connect(ctx.destination);
 }
 
-function chord(ctx: AudioContext, freqs: number[], start: number, dur: number, vol: number): void {
+export function chord(ctx: BaseAudioContext, freqs: number[], start: number, dur: number, vol: number): void {
   for (const f of freqs) brass(ctx, f, start, dur, vol);
 }
 
-function noiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
+export function noiseBuffer(ctx: BaseAudioContext, seconds: number): AudioBuffer {
   const buffer = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * seconds), ctx.sampleRate);
   const data = buffer.getChannelData(0);
   for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
@@ -109,7 +109,7 @@ function noiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
 }
 
 /** A timpani hit: a sine that drops in pitch plus a short burst of low noise. */
-function drum(ctx: AudioContext, start: number, vol: number, low = 65): void {
+export function drum(ctx: BaseAudioContext, start: number, vol: number, low = 65): void {
   const t = ctx.currentTime + start;
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -138,7 +138,7 @@ function drum(ctx: AudioContext, start: number, vol: number, low = 65): void {
 }
 
 /** A cymbal swell: high-passed noise that fades. */
-function crash(ctx: AudioContext, start: number, dur: number, vol: number): void {
+export function crash(ctx: BaseAudioContext, start: number, dur: number, vol: number): void {
   const t = ctx.currentTime + start;
   const noise = ctx.createBufferSource();
   noise.buffer = noiseBuffer(ctx, dur);
@@ -158,38 +158,45 @@ function crash(ctx: AudioContext, start: number, dur: number, vol: number): void
 const D3 = 146.83, E3 = 164.81, A3 = 220.0, B3 = 246.94;
 const D4 = 293.66, E4 = 329.63, FS4 = 369.99, G4 = 392.0, A4 = 440.0, B4 = 493.88, D5 = 587.33;
 
-/** Needs you: two brass hits stepping up, with a drum under each. About 0.7 s. */
-function playAssembleSting(ctx: AudioContext): void {
-  drum(ctx, 0, 0.5);
-  chord(ctx, [D3, A3, D4], 0, 0.22, HERO_VOLUME);
-  drum(ctx, 0.24, 0.4);
-  chord(ctx, [E3, B3, E4], 0.24, 0.42, HERO_VOLUME);
+/** Needs you: two brass hits stepping up, with a drum under each. About 0.7 s, from `at`. */
+export function assembleSting(ctx: BaseAudioContext, at = 0): void {
+  drum(ctx, at, 0.5);
+  chord(ctx, [D3, A3, D4], at, 0.22, HERO_VOLUME);
+  drum(ctx, at + 0.24, 0.4);
+  chord(ctx, [E3, B3, E4], at + 0.24, 0.42, HERO_VOLUME);
 }
 
-/** Done: a short fanfare — an arpeggio up to a held top note, a turn, and a resolve. About 2.8 s. */
-function playVictoryFanfare(ctx: AudioContext): void {
+/** Done: a short fanfare — an arpeggio up to a held top note, a turn, and a resolve. About 2.8 s, from `at`. */
+export function victoryFanfare(ctx: BaseAudioContext, at = 0): void {
   const v = HERO_VOLUME;
   // the call
-  drum(ctx, 0, 0.55);
-  brass(ctx, D4, 0.0, 0.13, v);
-  brass(ctx, FS4, 0.15, 0.13, v);
-  brass(ctx, A4, 0.3, 0.13, v);
-  drum(ctx, 0.46, 0.6);
-  brass(ctx, D5, 0.46, 0.5, v);
-  chord(ctx, [D3, A3, FS4], 0.46, 0.5, v * 0.55);
+  drum(ctx, at, 0.55);
+  brass(ctx, D4, at, 0.13, v);
+  brass(ctx, FS4, at + 0.15, 0.13, v);
+  brass(ctx, A4, at + 0.3, 0.13, v);
+  drum(ctx, at + 0.46, 0.6);
+  brass(ctx, D5, at + 0.46, 0.5, v);
+  chord(ctx, [D3, A3, FS4], at + 0.46, 0.5, v * 0.55);
   // the turn
-  brass(ctx, B4, 1.0, 0.2, v);
-  brass(ctx, A4, 1.22, 0.2, v);
-  brass(ctx, G4, 1.44, 0.22, v);
-  chord(ctx, [B3, D4], 1.0, 0.66, v * 0.5);
-  drum(ctx, 1.44, 0.45);
-  brass(ctx, A4, 1.68, 0.24, v);
-  chord(ctx, [A3, E4], 1.68, 0.24, v * 0.5);
+  brass(ctx, B4, at + 1.0, 0.2, v);
+  brass(ctx, A4, at + 1.22, 0.2, v);
+  brass(ctx, G4, at + 1.44, 0.22, v);
+  chord(ctx, [B3, D4], at + 1.0, 0.66, v * 0.5);
+  drum(ctx, at + 1.44, 0.45);
+  brass(ctx, A4, at + 1.68, 0.24, v);
+  chord(ctx, [A3, E4], at + 1.68, 0.24, v * 0.5);
   // the resolve
-  drum(ctx, 1.95, 0.8);
-  crash(ctx, 1.95, 1.1, 0.05);
-  brass(ctx, D5, 1.95, 0.85, v);
-  chord(ctx, [D3, A3, D4, FS4], 1.95, 0.85, v * 0.6);
+  drum(ctx, at + 1.95, 0.8);
+  crash(ctx, at + 1.95, 1.1, 0.05);
+  brass(ctx, D5, at + 1.95, 0.85, v);
+  chord(ctx, [D3, A3, D4, FS4], at + 1.95, 0.85, v * 0.6);
+}
+
+/** The page's audio context, created on first use and resumed when it can be. */
+export function getAudioContext(): AudioContext {
+  if (!audioCtx) audioCtx = new AudioContext();
+  if (audioCtx.state === 'suspended') void audioCtx.resume();
+  return audioCtx;
 }
 
 export async function playDoneSound(): Promise<void> {
@@ -204,7 +211,7 @@ export async function playDoneSound(): Promise<void> {
       await audioCtx.resume();
     }
     if (isAvengersTheme()) {
-      playVictoryFanfare(audioCtx);
+      victoryFanfare(audioCtx);
       return;
     }
     // Ascending two-note chime: E5 → B5
@@ -226,7 +233,7 @@ export async function playPermissionSound(): Promise<void> {
       await audioCtx.resume();
     }
     if (isAvengersTheme()) {
-      playAssembleSting(audioCtx);
+      assembleSting(audioCtx);
       return;
     }
     // Descending two-note tap: A5 → E5

@@ -40,6 +40,15 @@ export const matrixGreenBright = (a: number): string => `rgba(0, 255, 65, ${a})`
 export const matrixGreenMid = (a: number): string => `rgba(0, 170, 40, ${a})`;
 export const matrixGreenDim = (a: number): string => `rgba(0, 85, 20, ${a})`;
 
+// Director effects (office/engine/directorEffects.ts)
+export const DIRECTOR_BRIEF_FILL = 'rgba(255, 236, 170, 1)';
+export const DIRECTOR_BRIEF_INK = 'rgba(120, 90, 40, 1)';
+export const directorBriefGlow = (a: number): string => `rgba(255, 200, 80, ${a})`;
+export const directorDust = (a: number): string => `rgba(205, 195, 175, ${a})`;
+export const directorFlash = (a: number): string => `rgba(235, 245, 255, ${a})`;
+export const directorBolt = (a: number): string => `rgba(210, 235, 255, ${a})`;
+export const DIRECTOR_CONFETTI = ['#ff5c5c', '#ffd23f', '#3fd0ff', '#7cff6b', '#ff8ae2', '#ffffff'];
+
 // Night mode (office/engine/nightMode.ts): the dark wash, its vignette and the glow colours
 export const nightWash = (a: number): string => `rgba(6, 10, 30, ${a})`;
 export const nightVignette = (a: number): string => `rgba(0, 0, 8, ${a})`;

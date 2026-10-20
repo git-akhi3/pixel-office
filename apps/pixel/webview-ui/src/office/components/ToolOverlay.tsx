@@ -184,8 +184,10 @@ export function ToolOverlay({
         const isSub =
           ch.isSubagent || (!!ch.isResident && subagentCharacters.some((s) => s.id === id));
 
-        // A scenario can keep the labels of passing sessions off the deck.
+        // A scenario can keep the labels of passing sessions off the deck, and a speaking
+        // character's dialogue bubble takes the label's place.
         if (officeState.director.hideExtras && !ch.isResident && !isSub && !isSelected) return null;
+        if (officeState.director.dialogues.has(id) && !isSelected) return null;
 
         // Only show for hovered or selected agents (unless always-show is on, or it is working in the embedded view)
         const shown = workingOnly

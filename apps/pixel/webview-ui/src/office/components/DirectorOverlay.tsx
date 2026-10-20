@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
+import { playLive } from '../../audio/cinematic.js';
 import { CHARACTER_SITTING_OFFSET_PX, TOOL_OVERLAY_VERTICAL_OFFSET } from '../../constants.js';
 import { characterName } from '../../embedRoster.js';
-import { playDoneSound, playPermissionSound } from '../../notificationSound.js';
 import { DIALOGUE_CHARS_PER_SEC } from '../engine/director.js';
 import { setNightSetting } from '../engine/nightMode.js';
 import type { OfficeState } from '../engine/officeState.js';
@@ -14,8 +14,10 @@ interface DirectorOverlayProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
   zoom: number;
   panRef: React.RefObject<{ x: number; y: number }>;
-  /** Lets the director cut the view's zoom (`camera zoom n`). */
+  /** Lets the director move the view's zoom (`camera zoom n`), eased over a few frames. */
   onZoomChange?: (zoom: number) => void;
+  /** Lets the director switch the room-name overlay (`areas on|off`). */
+  onShowAreas?: (show: boolean) => void;
 }
 
 /** Dialogue bubbles, title cards and letterbox bars for a scenario the director is playing. */
@@ -25,14 +27,14 @@ export function DirectorOverlay({
   zoom,
   panRef,
   onZoomChange,
+  onShowAreas,
 }: DirectorOverlayProps) {
   const [, setTick] = useState(0);
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+  const easedZoom = useRef<number | null>(null);
   useEffect(() => {
-    officeState.director.onSound = (kind) => {
-      void (kind === 'done' ? playDoneSound() : playPermissionSound());
-    };
+    officeState.director.onSound = playLive;
     let rafId = 0;
     const tick = () => {
       const d = officeState.director;
@@ -40,16 +42,28 @@ export function DirectorOverlay({
         setNightSetting(d.nightRequest);
         d.nightRequest = null;
       }
+      if (d.areasRequest !== null) {
+        onShowAreas?.(d.areasRequest);
+        d.areasRequest = null;
+      }
       if (d.cameraZoom !== null && onZoomChange) {
-        const device = Math.round(d.cameraZoom * (window.devicePixelRatio || 1));
-        if (device !== zoomRef.current) onZoomChange(device);
+        // Ease toward the target in quarter steps (the sprite cache is keyed by zoom).
+        const target = d.cameraZoom * (window.devicePixelRatio || 1);
+        let z = easedZoom.current ?? zoomRef.current;
+        z += (target - z) * 0.08;
+        if (Math.abs(target - z) < 0.05) z = target;
+        easedZoom.current = z;
+        const stepped = Math.round(z * 4) / 4;
+        if (stepped !== zoomRef.current) onZoomChange(stepped);
+      } else {
+        easedZoom.current = null;
       }
       setTick((n) => n + 1);
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [officeState, onZoomChange]);
+  }, [officeState, onZoomChange, onShowAreas]);
 
   const director = officeState.director;
   const el = containerRef.current;
@@ -92,13 +106,17 @@ export function DirectorOverlay({
         const shown = Math.min(d.text.length, Math.floor(d.age * DIALOGUE_CHARS_PER_SEC));
         const fade = Math.min(1, (d.duration - d.age) / 0.4);
         const name = characterName(d.id, ch, officeState.residentIds).replace(/\s*\(.*\)$/, '');
+        // No room above the character (the top of the frame, or the letterbox bar): speak below it.
+        const barPx = director.cinematic ? el.clientHeight * 0.09 : 0;
+        const roomAbove = y - 30 - barPx;
+        const below = roomAbove < 110;
         return (
           <div
             key={d.id}
-            className="absolute flex flex-col pixel-panel border-border px-10 pt-6 pb-8 -translate-x-1/2 -translate-y-full"
+            className={`absolute flex flex-col pixel-panel border-border px-10 pt-6 pb-8 -translate-x-1/2${below ? '' : ' -translate-y-full'}`}
             style={{
               left: x,
-              top: y - 30,
+              top: below ? y + 70 : y - 30,
               width: 'max-content',
               maxWidth: 300,
               opacity: fade,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { renderSoundtrack } from './audio/cinematic.js';
 import { toMajorMinor } from './changelogData.js';
 import { BottomToolbar } from './components/BottomToolbar.js';
 import { ChangelogModal } from './components/ChangelogModal.js';
@@ -72,6 +73,11 @@ declare global {
       isDone: () => boolean;
       errors: () => string[];
       scenarios: string[];
+      /** Wall-clock ms when the running scenario started, and its clock in seconds. */
+      startedAt: () => number;
+      clock: () => number;
+      /** The scenario's soundtrack so far as a base64 WAV (for the recorder). */
+      renderAudio: () => Promise<string>;
     };
   }
 }
@@ -88,6 +94,12 @@ window.pixelDirector = {
   isDone: () => getOfficeState().director.done,
   errors: () => getOfficeState().director.errors,
   scenarios: Object.keys(SCENARIOS),
+  startedAt: () => getOfficeState().director.startedAt,
+  clock: () => getOfficeState().director.clock,
+  renderAudio: () => {
+    const d = getOfficeState().director;
+    return renderSoundtrack(d.soundLog, d.clock + 2);
+  },
 };
 
 function App() {
@@ -641,6 +653,7 @@ function App() {
                 zoom={editor.zoom}
                 panRef={editor.panRef}
                 onZoomChange={editor.handleZoomChange}
+                onShowAreas={setShowAreas}
               />
             </>
           ) : (

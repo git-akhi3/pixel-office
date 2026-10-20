@@ -251,8 +251,14 @@ export function OfficeCanvas({
           const layout = officeState.getLayout();
           const mapW = layout.cols * TILE_SIZE * zoom;
           const mapH = layout.rows * TILE_SIZE * zoom;
-          const targetX = mapW / 2 - cameraFocus.x * zoom;
-          const targetY = mapH / 2 - cameraFocus.y * zoom;
+          // Clamp so the view never slides past the deck's edge (a map smaller than the
+          // viewport stays centred on that axis).
+          const clamp = (v: number, span: number) => {
+            const limit = Math.max(0, (span - (span > 0 ? 0 : 0)) / 2);
+            return Math.max(-limit, Math.min(limit, v));
+          };
+          const targetX = clamp(mapW / 2 - cameraFocus.x * zoom, Math.max(0, mapW - w));
+          const targetY = clamp(mapH / 2 - cameraFocus.y * zoom, Math.max(0, mapH - h));
           const dx = targetX - panRef.current.x;
           const dy = targetY - panRef.current.y;
           if (
@@ -278,16 +284,21 @@ export function OfficeCanvas({
         };
 
         const layout = officeState.getLayout();
+        const director = officeState.director;
+        const shake = director.shakeOffset();
+        const characters = director.hideExtras
+          ? officeState.getCharacters().filter((c) => c.isResident || c.isSubagent)
+          : officeState.getCharacters();
         const { offsetX, offsetY } = renderFrame(
           ctx,
           w,
           h,
           officeState.tileMap,
           officeState.furniture,
-          officeState.getCharacters(),
+          characters,
           zoom,
-          panRef.current.x,
-          panRef.current.y,
+          panRef.current.x + shake.x,
+          panRef.current.y + shake.y,
           selectionRender,
           editorRender,
           layout.tileColors,
@@ -299,6 +310,7 @@ export function OfficeCanvas({
           showAreas,
           activeAreaLabel,
           officeState.pets,
+          director.effects,
         );
         offsetRef.current = { x: offsetX, y: offsetY };
 

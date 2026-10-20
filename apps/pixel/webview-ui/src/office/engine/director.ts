@@ -17,7 +17,15 @@
  *   gate <who>                               needs-approval bubble and sting
  *   approve <who>
  *   release <who | all>                      hands control back to the idle wander
- *   extras off | on                          hide the labels of sessions that are not heroes
+ *   handoff <from> <to>                      from walks up to to and passes a glowing brief
+ *   arrive <name> "Label" <area>             a new character steps out of a portal in the area
+ *   leave <who>                              the character leaves through a portal
+ *   shake [seconds] [pixels]                 the camera shakes
+ *   dust <who> | bolt <who> | flash | confetti <who|area>
+ *   sound <kind>                             portal, handoff, smash, thunder, ding, sting, fanfare
+ *   music on | off
+ *   areas off | on                           the room name overlay
+ *   extras off | on                          sessions that are not heroes leave the shot
  *   end
  *
  * `who` is a resident's role (coder) or hero name (ironman, hulk, cap, fury...). Directed
@@ -43,6 +51,32 @@ export interface TitleCard {
   duration: number;
 }
 
+export type DirectorEffect =
+  | { kind: 'brief'; x0: number; y0: number; x1: number; y1: number; age: number; duration: number }
+  | { kind: 'dust'; x: number; y: number; age: number; duration: number }
+  | { kind: 'flash'; age: number; duration: number }
+  | { kind: 'bolt'; x: number; y: number; age: number; duration: number }
+  | { kind: 'confetti'; x: number; y: number; age: number; duration: number };
+
+export type SoundKind =
+  | 'portal'
+  | 'handoff'
+  | 'smash'
+  | 'thunder'
+  | 'ding'
+  | 'sting'
+  | 'fanfare'
+  | 'talk'
+  | 'music';
+
+/** One entry of the soundtrack: when (scenario seconds) and what; `seconds` and `pitch` for talk, `seconds` 1/0 for music on/off. */
+export interface SoundEvent {
+  t: number;
+  kind: SoundKind;
+  seconds?: number;
+  pitch?: number;
+}
+
 type Wait = (dt: number) => boolean; // true when finished
 
 interface Command {
@@ -64,14 +98,24 @@ export class Director {
   cameraZoom: number | null = null;
   /** A `night` command waiting for the UI layer to apply it (the engine does not render). */
   nightRequest: 'auto' | 'on' | 'off' | null = null;
-  /** `extras off`: labels of characters that are not heroes stay hidden. */
+  /** `extras off`: characters that are not heroes (and their labels) stay out of the shot. */
   hideExtras = false;
+  /** An `areas` command waiting for the UI layer to apply it. */
+  areasRequest: boolean | null = null;
+  /** Effects in flight, drawn by the renderer (office/engine/directorEffects.ts). */
+  effects: DirectorEffect[] = [];
+  /** A camera shake in flight. */
+  shake: { age: number; duration: number; pixels: number } | null = null;
+  /** Seconds since the scenario started, and everything that made a sound, for the soundtrack. */
+  clock = 0;
+  startedAt = 0;
+  soundLog: SoundEvent[] = [];
   playing = false;
   done = false;
   /** Commands the director could not run, with their line numbers. */
   errors: string[] = [];
   /** Plays the office's sounds; set by the UI layer (the engine stays free of browser audio). */
-  onSound: ((kind: 'done' | 'permission') => void) | null = null;
+  onSound: ((event: SoundEvent) => void) | null = null;
   private queue: Command[] = [];
   private wait: Wait | null = null;
   private pendingScript: string | null = null;
@@ -100,11 +144,34 @@ export class Director {
     this.cinematic = false;
     this.hideExtras = false;
     this.cameraZoom = null;
+    this.effects = [];
+    this.shake = null;
     this.playing = false;
     this.pendingScript = null;
   }
 
+  /** Where the camera shake puts the view this frame. */
+  shakeOffset(): { x: number; y: number } {
+    const s = this.shake;
+    if (!s) return { x: 0, y: 0 };
+    const k = s.pixels * (1 - s.age / s.duration);
+    return { x: (Math.random() * 2 - 1) * k, y: (Math.random() * 2 - 1) * k };
+  }
+
+  private sound(kind: SoundKind, extra: Partial<SoundEvent> = {}): void {
+    const event: SoundEvent = { t: this.clock, kind, ...extra };
+    this.soundLog.push(event);
+    this.onSound?.(event);
+  }
+
   update(dt: number): void {
+    if (this.playing) this.clock += dt;
+    for (const e of this.effects) e.age += dt;
+    this.effects = this.effects.filter((e) => e.age < e.duration);
+    if (this.shake) {
+      this.shake.age += dt;
+      if (this.shake.age >= this.shake.duration) this.shake = null;
+    }
     for (const [id, d] of this.dialogues) {
       d.age += dt;
       if (d.age >= d.duration) this.dialogues.delete(id);
@@ -117,6 +184,9 @@ export class Director {
       this.queue = parseScript(this.pendingScript);
       this.pendingScript = null;
       this.playing = true;
+      this.clock = 0;
+      this.soundLog = [];
+      this.startedAt = Date.now();
     }
     if (!this.playing) return;
     if (this.wait) {
@@ -166,6 +236,89 @@ export class Director {
       case 'extras':
         this.hideExtras = a[0] === 'off';
         return null;
+      case 'areas':
+        this.areasRequest = a[0] !== 'off';
+        return null;
+      case 'music':
+        this.sound('music', { seconds: a[0] === 'off' ? 0 : 1 });
+        return null;
+      case 'sound':
+        this.sound((a[0] ?? 'ding') as SoundKind);
+        return null;
+      case 'shake':
+        this.shake = { age: 0, duration: num(a[0], 0.5), pixels: num(a[1], 5) };
+        return null;
+      case 'flash':
+        this.effects.push({ kind: 'flash', age: 0, duration: num(a[0], 0.35) });
+        return null;
+      case 'dust': {
+        const ch = this.who(a[0]);
+        this.effects.push({ kind: 'dust', x: ch.x, y: ch.y, age: 0, duration: 0.7 });
+        return null;
+      }
+      case 'bolt': {
+        const ch = this.who(a[0]);
+        this.effects.push({ kind: 'bolt', x: ch.x, y: ch.y - 16, age: 0, duration: 0.5 });
+        this.effects.push({ kind: 'flash', age: 0, duration: 0.25 });
+        return null;
+      }
+      case 'confetti': {
+        const p = this.pointFor(a.join(' '));
+        if (!p) throw new Error(`confetti where: ${a.join(' ')}`);
+        this.effects.push({ kind: 'confetti', x: p.x, y: p.y - 24, age: 0, duration: 2.5 });
+        return null;
+      }
+      case 'handoff': {
+        const from = this.who(a[0]);
+        const to = this.who(a[1]);
+        this.direct(from);
+        this.direct(to);
+        const spot = this.os.closestFreeWalkable(to.tileCol, to.tileRow, from.id);
+        if (!spot) throw new Error('no room beside ' + a[1]);
+        const already = from.tileCol === spot.col && from.tileRow === spot.row;
+        if (!already && !this.os.walkToTile(from.id, spot.col, spot.row)) throw new Error('no path');
+        const arrive = arrival([from]);
+        let passing = -1;
+        return (dt) => {
+          if (passing < 0) {
+            if (!arrive(dt)) return false;
+            from.dir = directionToward(from, to.tileCol + 0.5, to.tileRow + 0.5);
+            to.dir = directionToward(to, from.tileCol + 0.5, from.tileRow + 0.5);
+            this.effects.push({
+              kind: 'brief',
+              x0: from.x,
+              y0: from.y - 14,
+              x1: to.x,
+              y1: to.y - 14,
+              age: 0,
+              duration: 0.8,
+            });
+            this.sound('handoff');
+            passing = 0;
+          }
+          passing += dt;
+          return passing >= 1.0;
+        };
+      }
+      case 'arrive': {
+        const name = a[0];
+        const label = a[1] ?? name;
+        const area = a.slice(2).join(' ');
+        if (!name || !area) throw new Error('arrive <name> "Label" <area>');
+        const id = this.os.spawnExtra(name, label, area);
+        const ch = this.os.characters.get(id);
+        if (!ch) throw new Error('could not spawn ' + name);
+        this.direct(ch);
+        this.sound('portal');
+        return () => ch.matrixEffect === null;
+      }
+      case 'leave': {
+        const ch = this.who(a[0]);
+        this.dialogues.delete(ch.id);
+        this.os.removeExtra(ch.id);
+        this.sound('portal');
+        return () => !this.os.characters.has(ch.id);
+      }
       case 'camera':
         return this.camera(a);
       case 'walk': {
@@ -189,6 +342,10 @@ export class Director {
         const text = a[1] ?? '';
         const duration = num(a[2], Math.max(2, 1 + text.length / 14));
         this.dialogues.set(ch.id, { id: ch.id, text, age: 0, duration });
+        this.sound('talk', {
+          seconds: Math.min(duration, text.length / DIALOGUE_CHARS_PER_SEC),
+          pitch: pitchFor(ch.label ?? ch.agentName ?? ''),
+        });
         return timer(duration);
       }
       case 'gather': {
@@ -209,13 +366,13 @@ export class Director {
         ch.directedTask = null;
         this.os.setAgentActive(ch.id, false);
         this.os.showWaitingBubble(ch.id, false);
-        this.onSound?.('done');
+        this.sound('ding');
         return null;
       }
       case 'gate': {
         const ch = this.who(a[0]);
         this.os.showPermissionBubble(ch.id);
-        this.onSound?.('permission');
+        this.sound('sting');
         return null;
       }
       case 'approve': {
@@ -253,7 +410,7 @@ export class Director {
         return null;
       }
       case 'zoom':
-        this.cameraZoom = Math.max(1, Math.round(num(a[1], 2)));
+        this.cameraZoom = Math.max(0.5, num(a[1], 2));
         return null;
       case 'free':
         this.os.cameraFollowId = null;
@@ -441,6 +598,13 @@ function num(s: string | undefined, fallback: number): number {
 
 function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** A voice pitch per character (0..1), stable across runs. */
+function pitchFor(name: string): number {
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 1000;
+  return h / 1000;
 }
 
 function directionToward(ch: Character, col: number, row: number): Direction {
