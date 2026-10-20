@@ -11,10 +11,19 @@ export const MAX_ROWS = 64;
 export const WALK_SPEED_PX_PER_SEC = 48;
 export const WALK_FRAME_DURATION_SEC = 0.15;
 export const TYPE_FRAME_DURATION_SEC = 0.3;
-export const WANDER_PAUSE_MIN_SEC = 2.0;
-export const WANDER_PAUSE_MAX_SEC = 20.0;
+export const WANDER_PAUSE_MIN_SEC = 1.5;
+export const WANDER_PAUSE_MAX_SEC = 9.0;
 export const WANDER_MOVES_BEFORE_REST_MIN = 3;
 export const WANDER_MOVES_BEFORE_REST_MAX = 6;
+/** Off-duty characters never sit back down at a laptop: after a few wander moves they linger
+ *  standing where they are for this long, then roam again. */
+export const IDLE_LINGER_MIN_SEC = 8.0;
+export const IDLE_LINGER_MAX_SEC = 20.0;
+/** Chance that an idle move heads for a tile beside another idle character, to chat. */
+export const IDLE_CHAT_CHANCE = 0.6;
+/** How long two characters face each other once one has walked over. */
+export const IDLE_CHAT_MIN_SEC = 6.0;
+export const IDLE_CHAT_MAX_SEC = 14.0;
 export const SEAT_REST_MIN_SEC = 120.0;
 export const SEAT_REST_MAX_SEC = 240.0;
 
@@ -30,6 +39,12 @@ export const MATRIX_HEAD_COLOR = '#ccffcc';
 export const matrixGreenBright = (a: number): string => `rgba(0, 255, 65, ${a})`;
 export const matrixGreenMid = (a: number): string => `rgba(0, 170, 40, ${a})`;
 export const matrixGreenDim = (a: number): string => `rgba(0, 85, 20, ${a})`;
+
+// Night mode (office/engine/nightMode.ts): the dark wash, its vignette and the glow colours
+export const nightWash = (a: number): string => `rgba(6, 10, 30, ${a})`;
+export const nightVignette = (a: number): string => `rgba(0, 0, 8, ${a})`;
+export const nightGlow = (r: number, g: number, b: number, a: number): string =>
+  `rgba(${r}, ${g}, ${b}, ${a})`;
 export const MATRIX_TRAIL_OVERLAY_ALPHA = 0.6;
 export const MATRIX_TRAIL_EMPTY_ALPHA = 0.5;
 export const MATRIX_TRAIL_MID_THRESHOLD = 0.33;

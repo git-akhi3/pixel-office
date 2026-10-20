@@ -361,9 +361,11 @@ def helicarrier() -> Office:
 
     o.area("The Archive", "#4fb0a0", 0, 1, 14, 12, (hero("researcher", "Vision (researcher)", "vision"),))
     o.area("Sanctum", "#e08a3c", 14, 1, 34, 12, (hero("architect", "Strange (architect)", "strange", ("designer",)),))
-    o.area("Stark Workshop", "#8ea0c8", 34, 1, 48, 12, (hero("coder", "Iron Man (developer)", "ironman"), hero("ui-coder", "Loki (UI developer)", "loki")))
+    o.area("Stark Workshop", "#8ea0c8", 34, 1, 48, 12, (hero("coder", "Iron Man (developer)", "ironman"), hero("ui-coder", "Loki (UI developer)", "loki"),
+                                                         hero("hulkbuster", "Hulkbuster (armour)", "hulkbuster")))
     o.area("Red Room", "#e05a6e", 0, 12, 14, 23, (hero("debugger", "Widow (debugger)", "widow"),))
-    o.area("The Bridge", "#5aa8e8", 14, 12, 34, 23, (hero("manager", "Fury (manager)", "fury"),))
+    o.area("The Bridge", "#5aa8e8", 14, 12, 34, 23, (hero("manager", "Fury (manager)", "fury"),
+                                                      hero("captain", "Captain America (lead)", "cap")))
     o.area("Smash Lab", "#8ccc64", 34, 12, 48, 23, (hero("tester", "Hulk (tester)", "hulk"),))
     o.area("Quinjet Bay", "#9aa6be", 0, 23, 14, 34)
     o.area("Daily Bugle", "#d8c8a8", 14, 23, 34, 34, (hero("pr-writer", "Spidey (PR writer)", "spidey"),))

@@ -260,15 +260,14 @@ export class OfficeState {
   // same type (see addSubagent) instead of a transient Subtask character.
 
   /** Free seat inside `area` (preferring desks), else any free seat. */
+  /** A free seat in the resident's own room. A hero whose room is full gets none and stands:
+   *  it must not take another hero's desk (Cap on the Bridge would otherwise end up on Hulk's stool). */
   private findResidentSeat(area?: string): string | null {
     const electronics = this.buildElectronicsTileSet();
     const free = [...this.seats.entries()].filter(([, s]) => !s.assigned).map(([uid]) => uid);
-    if (area) {
-      const inArea = free.filter((uid) => this.seatZone(uid) === area);
-      const pick = this.pickFromSeats(inArea, electronics);
-      if (pick) return pick;
-    }
-    return this.pickFromSeats(free, electronics);
+    if (!area) return this.pickFromSeats(free, electronics);
+    const inArea = free.filter((uid) => this.seatZone(uid) === area);
+    return this.pickFromSeats(inArea, electronics);
   }
 
   /** Create, update or remove resident characters to match layout.residents. */
@@ -1278,6 +1277,7 @@ export class OfficeState {
           this.seats,
           this.tileMap,
           this.blockedTiles,
+          this.characters,
         ),
       );
 

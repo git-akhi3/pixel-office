@@ -222,6 +222,18 @@ def _head_down(s: Sprite, h: Hero, g: dict) -> None:
             s.rect(e, 8, e + 1, 9, WHITE)
             s.px(e + (1 if e < cx else 0), 10, WHITE)
         return
+    if h.hair_style == "cap":
+        blue = h.torso
+        s.rect(x0, y0, x1, 10, blue)  # the cowl, down to just under the eyes; chin and mouth stay bare
+        s.hline(cx, cx + 1, y0 + 1, WHITE)  # the A
+        s.dots([(cx - 1, y0 + 2), (cx + 2, y0 + 2)], WHITE)
+        s.hline(cx - 1, cx + 2, y0 + 3, WHITE)
+        s.dots([(cx - 1, y0 + 4), (cx + 2, y0 + 4)], WHITE)
+        s.dots([(x0, y0 + 3), (x0 + 1, y0 + 3), (x1 - 1, y0 + 3), (x1, y0 + 3)], WHITE)  # wings
+        for e in ex:
+            s.px(e, 8, WHITE); s.px(e + 1, 8, EYE_DARK); s.rect(e, 9, e + 1, 9, EYE_DARK)
+        s.hline(cx, cx + 1, 12, shade(h.skin, 0.72))  # mouth
+        return
     if h.hair_style == "vision":
         s.rect(x0, y0, x1, 13, h.skin)
         ridge = shade(h.skin, 0.72)
@@ -275,6 +287,12 @@ def _head_up(s: Sprite, h: Hero, g: dict) -> None:
         ridge = shade(h.skin, 0.72)
         s.vline(x0 + 2, y0, 10, ridge); s.vline(x1 - 2, y0, 10, ridge); s.hline(x0 + 3, x1 - 3, y0, ridge)
         return
+    if h.hair_style == "cap":
+        s.rect(x0, y0, x1, 13, h.torso)
+        seam = shade(h.torso, 0.78)
+        s.vline((x0 + x1) // 2, y0 + 1, 12, seam); s.vline((x0 + x1) // 2 + 1, y0 + 1, 12, seam)
+        s.dots([(x0, y0 + 3), (x0 + 1, y0 + 3), (x1 - 1, y0 + 3), (x1, y0 + 3)], WHITE)
+        return
     s.rect(x0, y0, x1, 13, h.skin)
     if h.hair_style == "bald" or not h.hair:
         s.hline(x0 + 3, x0 + 5, y0 + 1, shade(h.skin, 1.2))
@@ -312,6 +330,12 @@ def _head_right(s: Sprite, h: Hero, g: dict) -> None:
         return
     s.rect(x0, y0, x1, 13, h.skin)
     s.px(x1 + 1, 10, h.skin)  # nose
+    if h.hair_style == "cap":
+        s.rect(x0, y0, x1, 10, h.torso)  # cowl over the top of the head
+        s.rect(x0, 11, face - 1, 13, h.torso)  # and round the back
+        s.dots([(face - 1, y0 + 3), (face, y0 + 3)], WHITE)  # wing
+        s.px(x1 - 2, 8, WHITE); s.px(x1 - 2, 9, EYE_DARK)
+        return
     if h.hair_style == "vision":
         ridge = shade(h.skin, 0.72)
         s.vline(face, y0, 10, ridge); s.hline(x0 + 1, face - 1, y0, ridge)
@@ -511,6 +535,63 @@ def loki_post(s: Sprite, d: str, f: int) -> None:
         s.vline(8, 15, 21, gold); s.hline(6, 10, 22, gold)
 
 
+def buster_post(s: Sprite, d: str, f: int) -> None:
+    """Hulkbuster: the big geometry in Stark's red and gold, with pauldrons, a chest plate and a reactor."""
+    gold, red = rgb(225, 175, 55), rgb(190, 30, 40)
+    glow, core, seam = rgb(120, 215, 255), rgb(235, 250, 255), shade(red, 0.7)
+    if d == DOWN:
+        s.rect(1, 14, 4, 16, gold); s.rect(11, 14, 14, 16, gold)  # pauldrons over the shoulders
+        s.rect(1, 10, 2, 13, gold); s.rect(13, 10, 14, 13, gold)  # jaw plates
+        s.rect(6, 16, 9, 19, shade(gold, 0.9))  # chest plate
+        s.rect(7, 17, 8, 18, glow); s.px(7, 17, core)  # arc reactor
+        s.vline(5, 16, 21, seam); s.vline(10, 16, 21, seam)
+        s.hline(4, 11, 22, gold)  # belt
+        s.rect(4, 24, 6, 25, gold); s.rect(9, 24, 11, 25, gold)  # knee plates
+    elif d == UP:
+        s.rect(1, 14, 4, 16, gold); s.rect(11, 14, 14, 16, gold)
+        s.rect(6, 17, 9, 19, rgb(70, 70, 82)); s.dots([(6, 18), (9, 18)], glow)  # back thrusters
+        s.hline(4, 11, 22, gold)
+        s.rect(4, 24, 6, 25, gold); s.rect(9, 24, 11, 25, gold)
+    else:
+        s.rect(8, 14, 12, 16, gold)  # the near pauldron
+        s.hline(5, 11, 22, gold); s.hline(6, 10, 25, gold)
+        s.vline(9, 16, 21, seam)
+
+
+def _shield(s: Sprite, cx: float, cy: float, r: float) -> None:
+    """The round shield: red, white, red rings round a blue centre with a white star."""
+    red, blue = rgb(200, 30, 40), rgb(40, 70, 165)
+    s.disc(cx, cy, r, red)
+    s.disc(cx, cy, r - 1, WHITE)
+    s.disc(cx, cy, r - 2, red)
+    s.disc(cx, cy, r - 3, blue)
+    s.px(int(cx), int(cy), WHITE)
+
+
+def cap_pre(s: Sprite, d: str, f: int) -> None:
+    """Drawn behind the body: the shield on his back (seated or in profile)."""
+    if d == DOWN and f in (TYPE1, TYPE2, READ1, READ2):
+        _shield(s, 7.5, 19.0, 4.6)
+    elif d == RIGHT:
+        _shield(s, 4.5, 18.5, 3.6)
+
+
+def cap_post(s: Sprite, d: str, f: int) -> None:
+    red, white, belt = rgb(200, 30, 40), WHITE, rgb(110, 70, 40)
+    if d == DOWN:
+        s.dots([(7, 16), (8, 16), (7, 18), (8, 18)], white); s.hline(6, 9, 17, white)  # the star
+        s.hline(5, 10, 20, white); s.hline(5, 10, 21, red)  # stripes
+        s.hline(5, 10, 22, belt)
+        if f in (WALK1, WALK2, WALK3):
+            _shield(s, 3.5, 19.5, 3.5)  # on the left arm while walking
+    elif d == UP:
+        _shield(s, 7.5, 18.5, 4.2)  # slung on his back
+        s.hline(5, 10, 22, belt)
+    else:
+        s.hline(6, 10, 20, white); s.hline(6, 10, 21, red)
+        s.hline(6, 10, 22, belt)
+
+
 def agent_post(s: Sprite, d: str, f: int) -> None:
     shirt, tie, shades, wire = rgb(238, 238, 244), rgb(28, 28, 34), rgb(16, 16, 20), rgb(220, 220, 230)
     if d == DOWN:
@@ -556,6 +637,13 @@ def hero_list() -> list[Hero]:
     for i, (skin, (hair, style)) in enumerate(zip(skins, hairs)):
         heroes.append(Hero(f"agent{i}", "Agent", skin=skin, hair=hair, hair_style=style, torso=rgb(30, 30, 38),
                            pants=rgb(30, 30, 38), boots=rgb(22, 22, 28), post=agent_post))
+    # Appended after the field agents so every earlier palette index stays put.
+    heroes.append(Hero("hulkbuster", "Hulkbuster", skin=rgb(225, 175, 55), hair_style="iron", big=True,
+                       torso=rgb(190, 30, 40), arm=rgb(225, 175, 55), hand=rgb(225, 175, 55), pants=rgb(190, 30, 40),
+                       boots=rgb(225, 175, 55), post=buster_post))
+    heroes.append(Hero("cap", "Captain America", skin=rgb(236, 196, 166), hair_style="cap",
+                       torso=rgb(40, 70, 165), arm=rgb(40, 70, 165), hand=rgb(200, 30, 40), pants=rgb(40, 70, 165),
+                       boots=rgb(140, 45, 40), pre=cap_pre, post=cap_post))
     return heroes
 
 

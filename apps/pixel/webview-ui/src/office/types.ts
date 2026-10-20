@@ -58,6 +58,8 @@ export interface Seat {
 
 export interface FurnitureInstance {
   sprite: SpriteData;
+  /** Furniture id the instance was placed as (undefined for wall tiles); night mode keys its glows on it. */
+  type?: string;
   /** Pixel x (top-left) */
   x: number;
   /** Pixel y (top-left) */
@@ -217,6 +219,8 @@ export interface Character {
   wanderTimer: number;
   /** Number of wander moves completed in current roaming cycle */
   wanderCount: number;
+  /** Character this one is walking over to (or standing with) for a chat while idle. */
+  chatWith?: number | null;
   /** Max wander moves before returning to seat for rest */
   wanderLimit: number;
   /** Whether the agent is actively working */

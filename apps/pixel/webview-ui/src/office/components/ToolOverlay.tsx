@@ -133,6 +133,7 @@ export function ToolOverlay({
 
   const selectedId = officeState.selectedAgentId;
   const hoveredId = officeState.hoveredAgentId;
+  const layoutTheme = officeState.getLayout().theme;
 
   // All character IDs
   const allIds = [...agents, ...subagentCharacters.map((s) => s.id)];
@@ -191,6 +192,21 @@ export function ToolOverlay({
 
         // Position above character
         const { x: screenX, y: screenY } = labelAnchor(ch);
+
+        // An off-duty resident wears just its name, so a full office is not a wall of "Idle" bars.
+        if (ch.isResident && !isSub && !ch.isActive && !isSelected && !isHovered) {
+          return (
+            <div
+              key={id}
+              className="absolute border-border px-5 pt-1 pb-2 pixel-panel whitespace-nowrap text-2xs leading-none -translate-x-1/2 -translate-y-full"
+              style={{ left: screenX, top: screenY, pointerEvents: 'none', opacity: 0.55, zIndex: 40 }}
+              data-testid="agent-name"
+              data-agent-id={id}
+            >
+              {tagName(id)}
+            </div>
+          );
+        }
 
         if (tagBottoms && !isSelected && !isHovered) {
           const sub = subagentCharacters.find((s) => s.id === id);
@@ -279,6 +295,15 @@ export function ToolOverlay({
             ch.bubbleType,
             ch.waitingAwaitingInput ?? false,
           );
+          // A session's label names what it is on (its project), not the command it is running;
+          // selecting the character still reveals the live tool.
+          const stateLabel =
+            activityText === 'Needs approval' ||
+            activityText === WAITING_INPUT_ACTIVITY_TEXT ||
+            activityText === 'Idle';
+          if (!stateLabel && !isSelected && ch.folderName) {
+            activityText = layoutTheme === 'avengers' ? `Mission: ${ch.folderName}` : ch.folderName;
+          }
         }
 
         // Determine dot color
@@ -295,11 +320,17 @@ export function ToolOverlay({
           dotColor = 'var(--color-status-active)';
         }
 
-        // Team info
+        // Who this is: the theme's hero name ("Iron Man (developer)"), else the role, else a
+        // field agent of the theme / the session's project.
+        const fieldName = layoutTheme === 'avengers' ? 'Field agent' : (ch.folderName ?? null);
         const teamRoleLabel = ch.isTeamLead
           ? 'LEAD'
-          : ch.agentName || (compact && ch.isResident ? tagName(id) : null);
-        const hasExtraLines = !!(ch.folderName || teamRoleLabel);
+          : (ch.label ?? ch.agentName ?? (isSub ? null : fieldName));
+        const folderLine =
+          ch.folderName && teamRoleLabel !== ch.folderName && !activityText.includes(ch.folderName)
+            ? ch.folderName
+            : null;
+        const hasExtraLines = !!(folderLine || teamRoleLabel);
 
         // Context gauge. Every agent gets one — lead, teammate, adopted,
         // headless — as soon as it has taken a turn. Sub-agents never do: they
@@ -353,9 +384,9 @@ export function ToolOverlay({
                 >
                   {activityText}
                 </span>
-                {ch.folderName && (
+                {folderLine && (
                   <span className="text-2xs leading-none overflow-hidden text-ellipsis block">
-                    {ch.folderName}
+                    {folderLine}
                   </span>
                 )}
               </div>

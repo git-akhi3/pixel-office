@@ -15,7 +15,9 @@
     "agent2": 17,
     "agent3": 18,
     "agent4": 19,
-    "agent5": 20
+    "agent5": 20,
+    "hulkbuster": 21,
+    "cap": 22
   },
   "heroes": {
     "manager": "Fury",

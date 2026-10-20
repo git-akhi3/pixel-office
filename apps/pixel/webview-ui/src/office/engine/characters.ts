@@ -1,7 +1,10 @@
 import {
   DEFAULT_MAX_CONTEXT_TOKENS,
-  SEAT_REST_MAX_SEC,
-  SEAT_REST_MIN_SEC,
+  IDLE_CHAT_CHANCE,
+  IDLE_CHAT_MAX_SEC,
+  IDLE_CHAT_MIN_SEC,
+  IDLE_LINGER_MAX_SEC,
+  IDLE_LINGER_MIN_SEC,
   TYPE_FRAME_DURATION_SEC,
   WALK_FRAME_DURATION_SEC,
   WALK_SPEED_PX_PER_SEC,
@@ -89,6 +92,53 @@ export function createCharacter(
   };
 }
 
+/**
+ * A free tile beside another off-duty character inside `walkableTiles`, to walk over for a chat.
+ * Null when nobody is around (or `others` is not given).
+ */
+function chatSpot(
+  ch: Character,
+  walkableTiles: Array<{ col: number; row: number }>,
+  blockedTiles: Set<string>,
+  others: ReadonlyMap<number, Character> | undefined,
+): { col: number; row: number; withId: number } | null {
+  if (!others) return null;
+  const allowed = new Set(walkableTiles.map((t) => `${t.col},${t.row}`));
+  const standing = new Set<string>();
+  for (const o of others.values()) if (o.id !== ch.id) standing.add(`${o.tileCol},${o.tileRow}`);
+  const spots: Array<{ col: number; row: number; withId: number }> = [];
+  for (const o of others.values()) {
+    if (o.id === ch.id || o.isActive || o.state !== CharacterState.IDLE || o.matrixEffect) continue;
+    for (const [dc, dr] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      const col = o.tileCol + dc;
+      const row = o.tileRow + dr;
+      const key = `${col},${row}`;
+      if (allowed.has(key) && !blockedTiles.has(key) && !standing.has(key))
+        spots.push({ col, row, withId: o.id });
+    }
+  }
+  return spots.length > 0 ? spots[Math.floor(Math.random() * spots.length)] : null;
+}
+
+/** Both characters turn to face each other; the partner stays put for the chat. */
+function startChat(ch: Character, others: ReadonlyMap<number, Character> | undefined): boolean {
+  const partner = ch.chatWith != null ? others?.get(ch.chatWith) : undefined;
+  ch.chatWith = null;
+  if (!partner || partner.isActive || partner.state !== CharacterState.IDLE) return false;
+  if (Math.abs(partner.tileCol - ch.tileCol) + Math.abs(partner.tileRow - ch.tileRow) !== 1) return false;
+  ch.dir = directionBetween(ch.tileCol, ch.tileRow, partner.tileCol, partner.tileRow);
+  partner.dir = directionBetween(partner.tileCol, partner.tileRow, ch.tileCol, ch.tileRow);
+  const pause = randomRange(IDLE_CHAT_MIN_SEC, IDLE_CHAT_MAX_SEC);
+  ch.wanderTimer = pause;
+  partner.wanderTimer = Math.max(partner.wanderTimer, pause);
+  return true;
+}
+
 export function updateCharacter(
   ch: Character,
   dt: number,
@@ -96,6 +146,7 @@ export function updateCharacter(
   seats: Map<string, Seat>,
   tileMap: TileTypeVal[][],
   blockedTiles: Set<string>,
+  others?: ReadonlyMap<number, Character>,
 ): void {
   ch.frameTimer += dt;
 
@@ -105,12 +156,8 @@ export function updateCharacter(
         ch.frameTimer -= TYPE_FRAME_DURATION_SEC;
         ch.frame = (ch.frame + 1) % 2;
       }
-      // If no longer active, stand up and start wandering (after seatTimer expires)
+      // Off duty: nobody sits at a laptop they are not using. Stand up right away.
       if (!ch.isActive) {
-        if (ch.seatTimer > 0) {
-          ch.seatTimer -= dt;
-          break;
-        }
         ch.seatTimer = 0; // clear sentinel
         ch.state = CharacterState.IDLE;
         ch.frame = 0;
@@ -164,30 +211,17 @@ export function updateCharacter(
       // Countdown wander timer
       ch.wanderTimer -= dt;
       if (ch.wanderTimer <= 0) {
-        // Check if we've wandered enough — return to seat for a rest
-        if (ch.wanderCount >= ch.wanderLimit && ch.seatId) {
-          const seat = seats.get(ch.seatId);
-          if (seat) {
-            const path = findPath(
-              ch.tileCol,
-              ch.tileRow,
-              seat.seatCol,
-              seat.seatRow,
-              tileMap,
-              blockedTiles,
-            );
-            if (path.length > 0) {
-              ch.path = path;
-              ch.moveProgress = 0;
-              ch.state = CharacterState.WALK;
-              ch.frame = 0;
-              ch.frameTimer = 0;
-              break;
-            }
-          }
+        // Wandered enough: linger standing here for a while, then roam again.
+        if (ch.wanderCount >= ch.wanderLimit) {
+          ch.wanderCount = 0;
+          ch.wanderLimit = randomInt(WANDER_MOVES_BEFORE_REST_MIN, WANDER_MOVES_BEFORE_REST_MAX);
+          ch.wanderTimer = randomRange(IDLE_LINGER_MIN_SEC, IDLE_LINGER_MAX_SEC);
+          break;
         }
         if (walkableTiles.length > 0) {
-          const target = walkableTiles[Math.floor(Math.random() * walkableTiles.length)];
+          const chat =
+            Math.random() < IDLE_CHAT_CHANCE ? chatSpot(ch, walkableTiles, blockedTiles, others) : null;
+          const target = chat ?? walkableTiles[Math.floor(Math.random() * walkableTiles.length)];
           const path = findPath(
             ch.tileCol,
             ch.tileRow,
@@ -203,6 +237,7 @@ export function updateCharacter(
             ch.frame = 0;
             ch.frameTimer = 0;
             ch.wanderCount++;
+            ch.chatWith = chat?.withId ?? null;
           }
         }
         ch.wanderTimer = randomRange(WANDER_PAUSE_MIN_SEC, WANDER_PAUSE_MAX_SEC);
@@ -237,31 +272,12 @@ export function updateCharacter(
             }
           }
         } else {
-          // Check if arrived at assigned seat — sit down for a rest before wandering again
-          if (ch.seatId) {
-            const seat = seats.get(ch.seatId);
-            if (seat && ch.tileCol === seat.seatCol && ch.tileRow === seat.seatRow) {
-              ch.state = CharacterState.TYPE;
-              ch.dir = seat.facingDir;
-              // seatTimer < 0 is a sentinel from setAgentActive(false) meaning
-              // "turn just ended" — skip the long rest so idle transition is immediate
-              if (ch.seatTimer < 0) {
-                ch.seatTimer = 0;
-              } else {
-                ch.seatTimer = randomRange(SEAT_REST_MIN_SEC, SEAT_REST_MAX_SEC);
-              }
-              ch.wanderCount = 0;
-              ch.wanderLimit = randomInt(
-                WANDER_MOVES_BEFORE_REST_MIN,
-                WANDER_MOVES_BEFORE_REST_MAX,
-              );
-              ch.frame = 0;
-              ch.frameTimer = 0;
-              break;
-            }
-          }
+          // Off duty: stand here (facing a chat partner when there is one), never sit back down.
+          ch.seatTimer = 0;
           ch.state = CharacterState.IDLE;
-          ch.wanderTimer = randomRange(WANDER_PAUSE_MIN_SEC, WANDER_PAUSE_MAX_SEC);
+          if (!startChat(ch, others)) {
+            ch.wanderTimer = randomRange(WANDER_PAUSE_MIN_SEC, WANDER_PAUSE_MAX_SEC);
+          }
         }
         ch.frame = 0;
         ch.frameTimer = 0;
@@ -292,6 +308,7 @@ export function updateCharacter(
 
       // If became active while wandering, repath to seat
       if (ch.isActive && ch.seatId) {
+        ch.chatWith = null;
         const seat = seats.get(ch.seatId);
         if (seat) {
           const lastStep = ch.path[ch.path.length - 1];

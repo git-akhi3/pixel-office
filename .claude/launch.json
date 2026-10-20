@@ -4,14 +4,30 @@
     {
       "name": "office",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "office"],
+      "runtimeArgs": [
+        "run",
+        "office"
+      ],
       "port": 4100
     },
     {
       "name": "board-dev",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--config", "apps/control/web/vite.config.ts"],
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "apps/control/web/vite.config.ts"
+      ],
       "port": 5173
+    },
+    {
+      "name": "pixel",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "pixel"
+      ],
+      "port": 3100
     }
   ]
 }
