@@ -55,6 +55,8 @@ our simulation footage with the real screen captures and generated title cards).
 
 ## Order of work
 
-1. Director mode: scenario parser, `say` bubbles, `gather`, `handoff`, scripted `work/done`, `?scenario=`.
-2. The `mission.yaml` scenario and the Playwright recorder.
+1. ~~Director mode: scenario parser, `say` bubbles, `gather`, scripted `work/done`, `?scenario=`.~~ Built 2026-10-20
+   (`office/engine/director.ts`, `scenarios/mission.ts`, `scripts/record-scenario.mjs`). Still to add: `handoff` with a
+   travelling brief, portal `arrive`/`leave`, impact beats (shake, dust, lightning), hero close-up portraits.
+2. ~~The mission scenario and the Playwright recorder.~~ First cut done; iterate on the script and pacing.
 3. OpenMontage setup and a first `hybrid` run on the raw footage; iterate on narration and pacing.
