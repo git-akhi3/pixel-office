@@ -182,14 +182,14 @@ describe('steering a hero', () => {
     const out = await t.run('steer', { task: task.id, hero: 'thor', note: 'check the empty case' });
     expect(out).toContain("Thor isn't working");
     expect(out).toContain('Iron Man is');
-    expect(t.calls).toEqual([`note:${task.id}:For Thor (reviewer), when they next work on this: check the empty case`]);
+    expect(t.calls).toEqual([`note:${task.id}:Meant for Thor (reviewer): check the empty case`]);
     expect(t.hostCalls).toEqual([]);
   });
 
   it('keeps it for the next run when nothing is running, or when the hero cannot be reached now', async () => {
     const t = setup();
     const waiting = t.add({ status: 'awaiting_plan_approval' });
-    expect(await t.run('steer', { task: waiting.id, hero: 'Strange', note: 'x' })).toContain('saved for their next run');
+    expect(await t.run('steer', { task: waiting.id, hero: 'Strange', note: 'x' })).toContain('saved for the next step of the task');
     expect(t.calls[0]).toContain('note:');
     const task = t.add({ status: 'coding', frontend: true });
     t.state.steerAnswer = 'next_step';

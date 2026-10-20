@@ -29,6 +29,9 @@ const FALLBACK_MS = 5 * MIN;
 
 export const laneKey = (task: Pick<Task, 'lane'>): LaneKey => (isSolo(task) ? 'solo' : 'standard');
 
+/** Before intake picks a lane, most tasks end up solo (the default). */
+const journeyLane = (task: Task): LaneKey => (task.lane === null && ['queued', 'intake'].includes(task.status) ? 'solo' : laneKey(task));
+
 /** The median of recent successful runs of this step for tasks of this lane, with how many runs it rests on. */
 export function medianStep(db: Db, lane: LaneKey, step: TaskStatus): { ms: number; samples: number } | null {
   const rows = db
@@ -54,7 +57,6 @@ const GATE_FOR_STATUS: Partial<Record<TaskStatus, string>> = {
   awaiting_push_approval: 'merge',
   pr_open: 'merge',
   awaiting_merge_approval: 'merge',
-  pushing: 'merge',
   awaiting_review_post: 'review post',
 };
 
@@ -67,7 +69,7 @@ function placeOf(task: Task): TaskStatus | null {
 function journey(task: Task, at: TaskStatus, reviewAdded: boolean): Item[] {
   if (task.kind === 'review') return [{ agent: 'reviewing_pr' }, { gate: 'review post' }];
   if (at === 'splitting' || at === 'awaiting_breakdown_approval') return [{ agent: 'splitting' }, { gate: 'milestone approval' }];
-  if (laneKey(task) === 'solo') {
+  if (journeyLane(task) === 'solo') {
     // A solo change is reviewed once only when it is big; whether it is isn't known until it's built.
     return [{ agent: 'intake' }, { agent: 'coding' }, ...(reviewAdded || at === 'reviewing' ? [{ agent: 'reviewing' as const }] : []), { gate: 'merge' }, { agent: 'retro' }];
   }
@@ -76,7 +78,8 @@ function journey(task: Task, at: TaskStatus, reviewAdded: boolean): Item[] {
     ...(task.needsDebugger || at === 'debugging' ? [{ agent: 'debugging' as const }] : []),
     ...(task.needsResearcher || at === 'researching' ? [{ agent: 'researching' as const }] : []),
     { agent: 'planning' },
-    { gate: 'plan approval' },
+    // Plans go ahead on their own unless a briefing shaped them (or one was sent back: then it's waiting now).
+    ...(task.grill || at === 'awaiting_plan_approval' ? [{ gate: 'plan approval' }] : []),
     { agent: 'coding' },
     { agent: 'reviewing' },
     { agent: 'testing' },
@@ -124,12 +127,13 @@ export function estimateRemaining(db: Db, task: Task, stepElapsedMs: number): Et
   else if (at === 'awaiting_answer') {
     cursor = path.findIndex((i) => 'agent' in i && (i.agent === 'planning' || i.agent === 'splitting'));
     extraGates.push('your answers');
-  } else if (at === 'merging' || at === 'posting_review') cursor = path.findIndex((i) => 'agent' in i && i.agent === 'retro');
+  } else if (at === 'pushing') cursor = path.findIndex((i) => 'gate' in i && i.gate === 'merge');
+  else if (at === 'merging' || at === 'posting_review') cursor = path.findIndex((i) => 'agent' in i && i.agent === 'retro');
   else if (at === 'queued') cursor = 0;
   else cursor = path.findIndex((i) => 'agent' in i && i.agent === at);
   if (cursor < 0) return null;
 
-  const lane = laneKey(task);
+  const lane = journeyLane(task);
   const sources = new Set<'history' | 'defaults'>();
   const usual = (step: TaskStatus): number => {
     const seen = medianStep(db, lane, step);
@@ -158,7 +162,7 @@ export function estimateRemaining(db: Db, task: Task, stepElapsedMs: number): Et
     remainingMs,
     steps,
     gates,
-    waitingNow: 'gate' in path[cursor]! || at === 'awaiting_answer',
+    waitingNow: ('gate' in path[cursor]! && at !== 'pushing') || at === 'awaiting_answer',
     basis: sources.size === 2 ? 'mixed' : sources.has('history') ? 'history' : 'defaults',
     overrun,
     halted: ['paused', 'blocked', 'stopped'].includes(task.status),

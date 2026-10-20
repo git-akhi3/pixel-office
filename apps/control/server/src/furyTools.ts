@@ -93,13 +93,13 @@ export function buildDeskTools(ctx: DeskToolContext): DeskTool[] {
         const current = running ? stepRole(t.status, t) : undefined;
         if (!hero || hero.role === current) {
           const name = heroForRole(current ?? '')?.name ?? 'the team';
-          const where = pipeline.steer(id, note);
+          const where = pipeline.steer(id, note, ctx.sender === 'owner' ? 'owner' : 'assistant');
           if (where === 'live' && current) host.expectHeroReply(id, current);
           return where === 'live' ? `Sent to ${name} now; their next words will be posted here.` : `Nobody I can reach is working on #${id} right now, so it is saved for the next step.`;
         }
         // Not working: leave the note for their next run, without interrupting whoever is.
-        pipeline.leaveNote(id, `For ${hero.name} (${hero.role}), when they next work on this: ${note}`);
-        return `${hero.name} isn't working on #${id} right now${current ? ` (${heroForRole(current)?.name ?? current} is)` : ''}, so it is saved for their next run.`;
+        pipeline.leaveNote(id, `Meant for ${hero.name} (${hero.role}): ${note}`, ctx.sender === 'owner' ? 'owner' : 'assistant');
+        return `${hero.name} isn't working on #${id} right now${current ? ` (${heroForRole(current)?.name ?? current} is)` : ''}. The note is saved for the next step of the task, whoever does it, marked as meant for ${hero.name}.`;
       },
     ),
 
@@ -153,7 +153,7 @@ export function buildDeskTools(ctx: DeskToolContext): DeskTool[] {
       },
     ),
 
-    def('approve', 'Approves a gate that is waiting on the owner: the plan, the milestone split, a review post or the merge (the merge happens now). Command prompts are answered with their buttons, not here.', { gate: z.number().int().describe('The gate number from task_status.') }, async ({ gate }) => {
+    def('approve', 'Approves a gate that is waiting on the owner: the plan, the milestone split, a review post, the merge (it merges now, and deploys to staging when the repo has a staging deploy without the extra tap), "deploy now" (deploys the merged change to staging) or "roll back" (puts staging back after a failed check). Command prompts are answered with their buttons, not here.', { gate: z.number().int().describe('The gate number from task_status.') }, async ({ gate }) => {
       owner('approve');
       const g = openGate(db, gate);
       await pipeline.decideGate(g.id, 'approve' satisfies GateDecision);
@@ -162,12 +162,14 @@ export function buildDeskTools(ctx: DeskToolContext): DeskTool[] {
 
     def(
       'reject',
-      'Rejects a waiting gate and sends the task back with what to change.',
-      { gate: z.number().int().describe('The gate number from task_status.'), comment: z.string().min(1).describe("What to change, in the owner's words.") },
+      'Rejects a waiting gate. Plan, split, review post and merge: the task goes back with what to change (a comment is required). "Deploy now": the change stays merged but is not deployed, and the task finishes (the comment is ignored: to change something first, say so and start a new task). "Roll back": staging is kept as it is.',
+      { gate: z.number().int().describe('The gate number from task_status.'), comment: z.string().optional().describe("What to change, in the owner's words (required except for deploy and roll back).") },
       async ({ gate, comment }) => {
         owner('reject');
         const g = openGate(db, gate);
         await pipeline.decideGate(g.id, 'reject' satisfies GateDecision, comment);
+        if (g.kind === 'deploy') return `#${g.taskId} stays merged and is not deployed to staging.`;
+        if (g.kind === 'rollback') return `Kept staging as it is for #${g.taskId}.`;
         return `Sent the ${g.kind} back on #${g.taskId} with the owner's note.`;
       },
     ),

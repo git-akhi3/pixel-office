@@ -71,8 +71,10 @@ describe('estimateRemaining', () => {
     const { db, task } = setup();
     const eta = estimateRemaining(db, task({ lane: 'standard', status: 'planning' }), 0)!;
     expect(eta.steps).toEqual(['planning', 'coding', 'reviewing', 'testing', 'retro']);
-    expect(eta.gates).toEqual(['plan approval', 'merge']);
+    // Plans go ahead on their own: only a briefed task stops for plan approval.
+    expect(eta.gates).toEqual(['merge']);
     expect(eta.remainingMs).toBe((6 + 10 + 4 + 5 + 1) * MIN);
+    expect(estimateRemaining(db, task({ lane: 'standard', status: 'planning', grill: true }), 0)!.gates).toEqual(['plan approval', 'merge']);
   });
 
   it('adds the debugger and researcher only when the task needs them', () => {
