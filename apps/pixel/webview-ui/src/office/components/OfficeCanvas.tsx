@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react';
 
 import {
-  CAMERA_FOLLOW_LERP,
   CAMERA_FOLLOW_SNAP_THRESHOLD,
+  CAMERA_FOLLOW_TIME_CONSTANT_SEC,
   PAN_MARGIN_FRACTION,
   ZOOM_MAX,
   ZOOM_MIN,
@@ -13,6 +13,7 @@ import { transport } from '../../transport/index.js';
 import { getColorizedSprite } from '../colorize.js';
 import { canPlaceFurniture, getWallPlacementRow } from '../editor/editorActions.js';
 import type { EditorState } from '../editor/editorState.js';
+import { renderDirectorHud } from '../engine/directorHud.js';
 import { startGameLoop } from '../engine/gameLoop.js';
 import type { OfficeState } from '../engine/officeState.js';
 import type {
@@ -81,6 +82,7 @@ export function OfficeCanvas({
   const isEraseDraggingRef = useRef(false);
   // Zoom scroll accumulator for trackpad pinch sensitivity
   const zoomAccumulatorRef = useRef(0);
+  const editorZoom = zoom;
 
   // Clamp pan so the map edge can't go past a margin inside the viewport
   const clampPan = useCallback(
@@ -129,14 +131,20 @@ export function OfficeCanvas({
       observer.observe(containerRef.current);
     }
 
+    let frameDt = 0;
+    officeState.director.captureFrame = () => canvas.toDataURL('image/jpeg', 0.92);
     const stop = startGameLoop(canvas, {
       update: (dt) => {
-        officeState.update(dt);
+        frameDt = officeState.director.takeDt(dt);
+        officeState.update(frameDt);
       },
       render: (ctx) => {
         // Canvas dimensions are in device pixels
         const w = canvas.width;
         const h = canvas.height;
+        // The director's eased camera zoom (CSS px per sprite px) outranks the editor's.
+        const viewZoom = officeState.director.viewZoom;
+        const zoom = viewZoom !== null ? viewZoom * (window.devicePixelRatio || 1) : editorZoom;
 
         // Build editor render state
         let editorRender: EditorRenderState | undefined;
@@ -261,6 +269,8 @@ export function OfficeCanvas({
           const targetY = clamp(mapH / 2 - cameraFocus.y * zoom, Math.max(0, mapH - h));
           const dx = targetX - panRef.current.x;
           const dy = targetY - panRef.current.y;
+          // Time-based easing (the same motion at any frame rate, and frozen between recorder steps).
+          const k = 1 - Math.exp(-frameDt / CAMERA_FOLLOW_TIME_CONSTANT_SEC);
           if (
             Math.abs(dx) < CAMERA_FOLLOW_SNAP_THRESHOLD &&
             Math.abs(dy) < CAMERA_FOLLOW_SNAP_THRESHOLD
@@ -268,8 +278,8 @@ export function OfficeCanvas({
             panRef.current = { x: targetX, y: targetY };
           } else {
             panRef.current = {
-              x: panRef.current.x + dx * CAMERA_FOLLOW_LERP,
-              y: panRef.current.y + dy * CAMERA_FOLLOW_LERP,
+              x: panRef.current.x + dx * k,
+              y: panRef.current.y + dy * k,
             };
           }
         }
@@ -287,7 +297,7 @@ export function OfficeCanvas({
         const director = officeState.director;
         const shake = director.shakeOffset();
         const characters = director.hideExtras
-          ? officeState.getCharacters().filter((c) => c.isResident || c.isSubagent)
+          ? officeState.getCharacters().filter((c) => c.isResident)
           : officeState.getCharacters();
         const { offsetX, offsetY } = renderFrame(
           ctx,
@@ -313,6 +323,11 @@ export function OfficeCanvas({
           director.effects,
         );
         offsetRef.current = { x: offsetX, y: offsetY };
+        // Recording: the HUD goes on the canvas (the recorder reads frames from it, not the DOM).
+        if (director.stepMode) {
+          renderDirectorHud(ctx, director, characters, offsetX, offsetY, zoom, w, h, window.devicePixelRatio || 1);
+        }
+        director.frameRendered();
 
         // Store delete/rotate button bounds for hit-testing
         deleteButtonBoundsRef.current = editorRender?.deleteButtonBounds ?? null;

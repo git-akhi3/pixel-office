@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { playLive } from '../../audio/cinematic.js';
 import { CHARACTER_SITTING_OFFSET_PX, TOOL_OVERLAY_VERTICAL_OFFSET } from '../../constants.js';
@@ -30,9 +30,6 @@ export function DirectorOverlay({
   onShowAreas,
 }: DirectorOverlayProps) {
   const [, setTick] = useState(0);
-  const zoomRef = useRef(zoom);
-  zoomRef.current = zoom;
-  const easedZoom = useRef<number | null>(null);
   useEffect(() => {
     officeState.director.onSound = playLive;
     let rafId = 0;
@@ -46,18 +43,7 @@ export function DirectorOverlay({
         onShowAreas?.(d.areasRequest);
         d.areasRequest = null;
       }
-      if (d.cameraZoom !== null && onZoomChange) {
-        // Ease toward the target in quarter steps (the sprite cache is keyed by zoom).
-        const target = d.cameraZoom * (window.devicePixelRatio || 1);
-        let z = easedZoom.current ?? zoomRef.current;
-        z += (target - z) * 0.08;
-        if (Math.abs(target - z) < 0.05) z = target;
-        easedZoom.current = z;
-        const stepped = Math.round(z * 4) / 4;
-        if (stepped !== zoomRef.current) onZoomChange(stepped);
-      } else {
-        easedZoom.current = null;
-      }
+      void onZoomChange; // the camera zoom is applied per frame by the canvas (director.viewZoom)
       setTick((n) => n + 1);
       rafId = requestAnimationFrame(tick);
     };
@@ -67,14 +53,16 @@ export function DirectorOverlay({
 
   const director = officeState.director;
   const el = containerRef.current;
-  if (!el) return null;
+  if (!el || director.stepMode) return null; // recording: the HUD is drawn on the canvas
   const hasContent = director.dialogues.size > 0 || director.title || director.cinematic;
   if (!hasContent) return null;
 
+  const liveZoom =
+    director.viewZoom !== null ? director.viewZoom * (window.devicePixelRatio || 1) : zoom;
   const project = overlayProjection(
     officeState.getLayout(),
     { width: el.clientWidth, height: el.clientHeight },
-    zoom,
+    liveZoom,
     panRef.current,
     window.devicePixelRatio || 1,
   );

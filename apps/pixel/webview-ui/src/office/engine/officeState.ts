@@ -340,6 +340,7 @@ export class OfficeState {
   /** Resident whose name matches a sub-agent type, if it is free to take the job. */
   residentFor(agentType: string | undefined): number | null {
     if (!agentType) return null;
+    if (this.director.playing) return null; // the director has the cast; live work gets a transient
     const id = this.residentIds.get(this.residentAliases.get(agentType) ?? agentType);
     if (id === undefined) return null;
     for (const busy of this.subagentMeta.keys()) if (busy === id) return null;

@@ -902,7 +902,49 @@ export interface SelectionRenderState {
   characters: Map<number, Character>;
 }
 
+/**
+ * Renders a frame at any zoom. Sprites are cached per integer zoom, so a fractional zoom (the
+ * director's eased camera) renders at the nearest integer and scales the whole canvas by the rest
+ * with nearest-neighbour sampling: smooth motion, no cache churn.
+ */
 export function renderFrame(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  canvasHeight: number,
+  tileMap: TileTypeVal[][],
+  furniture: FurnitureInstance[],
+  characters: Character[],
+  zoom: number,
+  panX: number,
+  panY: number,
+  selection?: SelectionRenderState,
+  editor?: EditorRenderState,
+  tileColors?: Array<ColorValue | null>,
+  layoutCols?: number,
+  layoutRows?: number,
+  carpetTiles?: Array<CarpetTile | null>,
+  areas?: AreaDefinition[],
+  areaTiles?: Array<string | null>,
+  showAreas?: boolean,
+  activeAreaLabel?: string | null,
+  pets?: Pet[],
+  effects?: readonly DirectorEffect[],
+): { offsetX: number; offsetY: number } {
+  const renderZoom = Math.max(1, Math.round(zoom));
+  const s = zoom / renderZoom;
+  if (Math.abs(s - 1) < 1e-6) {
+    return renderFrameAt(ctx, canvasWidth, canvasHeight, tileMap, furniture, characters, zoom, panX, panY, selection, editor, tileColors, layoutCols, layoutRows, carpetTiles, areas, areaTiles, showAreas, activeAreaLabel, pets, effects);
+  }
+  ctx.save();
+  ctx.setTransform(s, 0, 0, s, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  const r = renderFrameAt(ctx, canvasWidth / s, canvasHeight / s, tileMap, furniture, characters, renderZoom, panX / s, panY / s, selection, editor, tileColors, layoutCols, layoutRows, carpetTiles, areas, areaTiles, showAreas, activeAreaLabel, pets, effects);
+  ctx.restore();
+  // (Editor button bounds stay in the scaled space; the editor never runs at a fractional zoom.)
+  return { offsetX: r.offsetX * s, offsetY: r.offsetY * s };
+}
+
+function renderFrameAt(
   ctx: CanvasRenderingContext2D,
   canvasWidth: number,
   canvasHeight: number,

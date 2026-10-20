@@ -4,55 +4,89 @@
  *
  *   node scripts/record-scenario.mjs [scenario=mission] [out=demo/raw/<scenario>.mp4] [url=http://127.0.0.1:3100]
  *
- * Opens the office at 1920x1080 in headless Chrome, plays `?scenario=<name>`, waits for the director
- * to finish, asks the page to render the scenario's soundtrack (Web Audio, offline) and muxes the
- * two with ffmpeg into an H.264/AAC mp4. The raw recording (.webm) and the soundtrack (.wav) are
- * kept beside it. Set PW_CHANNEL=chrome to use the installed Google Chrome.
+ * Frame-accurate: the page freezes real time and the recorder advances it one frame at a time
+ * (30 fps), screenshotting each frame, so the result is perfectly smooth no matter how fast the
+ * capture runs. The page then renders the scenario's soundtrack offline (Web Audio) and ffmpeg
+ * muxes frames and audio into an H.264/AAC mp4. Set PW_CHANNEL=chrome to use the installed Chrome.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import ffmpeg from 'ffmpeg-static';
 import { chromium } from 'playwright';
 
+const FPS = 30;
+const TAIL_SEC = 2.5;
 const [scenario = 'mission', outArg, base = 'http://127.0.0.1:3100'] = process.argv.slice(2);
 const out = resolve(outArg ?? `demo/raw/${scenario}.mp4`);
 const stem = out.replace(/\.[a-z0-9]+$/i, '');
+const frames = `${stem}-frames`;
 mkdirSync(dirname(out), { recursive: true });
+rmSync(frames, { recursive: true, force: true });
+mkdirSync(frames);
 
 const browser = await chromium.launch({
   headless: true,
   channel: process.env.PW_CHANNEL || undefined,
   args: ['--autoplay-policy=no-user-gesture-required'],
 });
-const context = await browser.newContext({
-  viewport: { width: 1920, height: 1080 },
-  deviceScaleFactor: 1,
-  recordVideo: { dir: dirname(out), size: { width: 1920, height: 1080 } },
-});
-const pageCreatedAt = Date.now();
+const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
 const page = await context.newPage();
 page.on('console', (m) => { if (m.type() === 'error') console.error('[page]', m.text()); });
 await page.goto(`${base}/?scenario=${encodeURIComponent(scenario)}`);
 await page.waitForFunction(() => window.pixelDirector?.isPlaying(), null, { timeout: 60_000 });
-console.log('scenario started');
-await page.waitForFunction(() => window.pixelDirector?.isDone(), null, { timeout: 15 * 60_000 });
+// Freeze time now; every step below is one frame.
+await page.evaluate((fps) => window.pixelDirector?.record(fps), FPS);
+console.log('scenario started, capturing frames');
+
+// Frames come straight from the canvas (the page draws its HUD onto it while recording), so no
+// compositor screenshot is ever awaited.
+const capture = async () => {
+  const url = await page.evaluate(() => window.pixelDirector?.frame() ?? '');
+  if (!url) throw new Error('no frame');
+  return Buffer.from(url.slice(url.indexOf(',') + 1), 'base64');
+};
+let n = 0;
+let tail = -1;
+let last = null;
+const started = Date.now();
+for (;;) {
+  await page.evaluate(() => window.pixelDirector?.step());
+  let jpg;
+  try {
+    jpg = await capture();
+  } catch (e) {
+    console.error(`frame ${n}: ${e.message}, retrying`);
+    try {
+      jpg = await capture();
+    } catch {
+      jpg = last; // keep the previous frame rather than stall
+    }
+  }
+  if (jpg) {
+    writeFileSync(join(frames, `f${String(n).padStart(6, '0')}.jpg`), jpg);
+    last = jpg;
+  }
+  n++;
+  if (tail < 0 && (await page.evaluate(() => window.pixelDirector?.isDone()))) tail = n + TAIL_SEC * FPS;
+  if (tail >= 0 && n >= tail) break;
+  if (n > FPS * 900) break; // 15 minutes, something is stuck
+  if (n % (FPS * 10) === 0) {
+    const sec = n / FPS;
+    const rate = n / ((Date.now() - started) / 1000);
+    console.log(`  ${sec.toFixed(0)} s of video (${rate.toFixed(1)} frames/s)`);
+  }
+}
 const errors = await page.evaluate(() => window.pixelDirector?.errors() ?? []);
-const startedAt = await page.evaluate(() => window.pixelDirector?.startedAt() ?? 0);
-await page.waitForTimeout(2000);
 const audio = await page.evaluate(() => window.pixelDirector?.renderAudio());
-const video = page.video();
-await context.close();
-renameSync(await video.path(), `${stem}.webm`);
 await browser.close();
 if (errors.length) console.error('script errors:\n  ' + errors.join('\n  '));
 
 writeFileSync(`${stem}.wav`, Buffer.from(audio, 'base64'));
-// The recording starts when the page opens; the soundtrack at the scenario's first command.
-const lead = Math.max(0, (startedAt - pageCreatedAt) / 1000 - 0.05);
 execFileSync(ffmpeg, [
-  '-y', '-ss', lead.toFixed(3), '-i', `${stem}.webm`, '-i', `${stem}.wav`,
-  '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
-  '-pix_fmt', 'yuv420p', '-r', '30', '-c:a', 'aac', '-b:a', '192k', '-shortest', out,
+  '-y', '-framerate', String(FPS), '-i', join(frames, 'f%06d.jpg'), '-i', `${stem}.wav`,
+  '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'slow', '-crf', '17',
+  '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', out,
 ], { stdio: ['ignore', 'ignore', 'inherit'] });
-console.log(`wrote ${out}`);
+rmSync(frames, { recursive: true, force: true });
+console.log(`wrote ${out} (${(n / FPS).toFixed(1)} s)`);

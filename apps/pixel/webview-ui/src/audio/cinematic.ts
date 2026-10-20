@@ -268,5 +268,10 @@ export async function renderSoundtrack(log: readonly SoundEvent[], duration: num
   }
   if (musicFrom !== null) scheduleMusic(ctx, musicFrom, duration);
   const buffer = await ctx.startRendering();
+  // A soft limiter: nothing clips, loud hits round off instead.
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const data = buffer.getChannelData(c);
+    for (let i = 0; i < data.length; i++) data[i] = Math.tanh(data[i] * 1.4) * 0.85;
+  }
   return wavBase64(buffer);
 }

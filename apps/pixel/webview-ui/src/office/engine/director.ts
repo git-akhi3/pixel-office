@@ -94,8 +94,17 @@ export class Director {
   dialogues = new Map<number, Dialogue>();
   title: TitleCard | null = null;
   cinematic = false;
-  /** Zoom the view should cut to, in CSS pixels per sprite pixel (the UI scales by the display), or null. */
+  /** Zoom the camera is heading for, in CSS pixels per sprite pixel (the UI scales by the display), or null. */
   cameraZoom: number | null = null;
+  /** The zoom the view shows right now, eased toward cameraZoom every update; null = the editor's zoom. */
+  viewZoom: number | null = null;
+  /** Recording: the loop advances only by the steps the recorder asks for (fixed timestep). */
+  stepMode = false;
+  /** Recording: returns the canvas as an image data URL; set by the canvas component. */
+  captureFrame: (() => string) | null = null;
+  private pendingDt = 0;
+  private framesSinceStep = 0;
+  private stepResolve: (() => void) | null = null;
   /** A `night` command waiting for the UI layer to apply it (the engine does not render). */
   nightRequest: 'auto' | 'on' | 'off' | null = null;
   /** `extras off`: characters that are not heroes (and their labels) stay out of the shot. */
@@ -144,10 +153,45 @@ export class Director {
     this.cinematic = false;
     this.hideExtras = false;
     this.cameraZoom = null;
+    this.viewZoom = null;
     this.effects = [];
     this.shake = null;
     this.playing = false;
     this.pendingScript = null;
+  }
+
+  /** Recording: freeze real time; every `step()` advances the office by one frame of `fps`. */
+  record(fps: number): void {
+    this.stepMode = true;
+    this.stepDt = 1 / fps;
+  }
+  private stepDt = 1 / 30;
+
+  /** Advances one frame and resolves once that frame (and the overlays' next tick) has rendered. */
+  step(): Promise<void> {
+    this.pendingDt = this.stepDt;
+    this.framesSinceStep = 0;
+    return new Promise((resolve) => {
+      this.stepResolve = resolve;
+    });
+  }
+
+  /** The time the game loop should advance this frame: real time, or the pending step when recording. */
+  takeDt(realDt: number): number {
+    if (!this.stepMode) return realDt;
+    const dt = this.pendingDt;
+    this.pendingDt = 0;
+    return dt;
+  }
+
+  /** Called by the canvas after each render; the second render after a step settles the overlays. */
+  frameRendered(): void {
+    if (!this.stepResolve) return;
+    if (++this.framesSinceStep >= 1) {
+      const resolve = this.stepResolve;
+      this.stepResolve = null;
+      resolve();
+    }
   }
 
   /** Where the camera shake puts the view this frame. */
@@ -166,6 +210,13 @@ export class Director {
 
   update(dt: number): void {
     if (this.playing) this.clock += dt;
+    if (this.cameraZoom !== null) {
+      // Ease toward the target zoom with a 0.45 s time constant (frame-rate independent).
+      this.viewZoom =
+        this.viewZoom === null
+          ? this.cameraZoom
+          : this.viewZoom + (this.cameraZoom - this.viewZoom) * (1 - Math.exp(-dt / 0.45));
+    }
     for (const e of this.effects) e.age += dt;
     this.effects = this.effects.filter((e) => e.age < e.duration);
     if (this.shake) {

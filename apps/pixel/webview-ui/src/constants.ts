@@ -40,6 +40,14 @@ export const matrixGreenBright = (a: number): string => `rgba(0, 255, 65, ${a})`
 export const matrixGreenMid = (a: number): string => `rgba(0, 170, 40, ${a})`;
 export const matrixGreenDim = (a: number): string => `rgba(0, 85, 20, ${a})`;
 
+// Director HUD drawn on the canvas while recording (office/engine/directorHud.ts): the DOM panels' look
+export const HUD_PANEL_BG = '#1e1e2e';
+export const HUD_PANEL_BORDER = '#4a4a6a';
+export const HUD_TEXT = 'rgba(255, 255, 255, 0.9)';
+export const HUD_ACCENT = '#746fff';
+export const HUD_BLACK = '#000000';
+export const HUD_FONT = "'FS Pixel Sans'";
+
 // Director effects (office/engine/directorEffects.ts)
 export const DIRECTOR_BRIEF_FILL = 'rgba(255, 236, 170, 1)';
 export const DIRECTOR_BRIEF_INK = 'rgba(120, 90, 40, 1)';
@@ -122,6 +130,8 @@ export const WALL_COLOR = '#3A3A5C';
 
 // ── Camera ───────────────────────────────────────────────────
 export const CAMERA_FOLLOW_LERP = 0.1;
+/** Seconds for the camera follow to cover ~63% of the way to its target (time-based easing). */
+export const CAMERA_FOLLOW_TIME_CONSTANT_SEC = 0.35;
 export const CAMERA_FOLLOW_SNAP_THRESHOLD = 0.5;
 
 // ── Zoom ─────────────────────────────────────────────────────

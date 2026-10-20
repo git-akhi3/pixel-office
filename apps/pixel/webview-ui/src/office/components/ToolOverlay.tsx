@@ -121,12 +121,14 @@ export function ToolOverlay({
   }, []);
 
   const el = containerRef.current;
-  if (!el) return null;
+  if (!el || officeState.director.stepMode) return null; // recording: tags are drawn on the canvas
+  const viewZoom = officeState.director.viewZoom;
+  const liveZoom = viewZoom !== null ? viewZoom * (window.devicePixelRatio || 1) : zoom;
   const project = overlayProjection(
     officeState.getLayout(),
     // Layout size, like OfficeCanvas: stays right when an embedding page scales the view.
     { width: el.clientWidth, height: el.clientHeight },
-    zoom,
+    liveZoom,
     panRef.current,
     window.devicePixelRatio || 1,
   );

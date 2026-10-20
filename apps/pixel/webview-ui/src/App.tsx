@@ -78,6 +78,11 @@ declare global {
       clock: () => number;
       /** The scenario's soundtrack so far as a base64 WAV (for the recorder). */
       renderAudio: () => Promise<string>;
+      /** Frame-accurate recording: freeze time, then advance one frame per step(). */
+      record: (fps: number) => void;
+      step: () => Promise<void>;
+      /** The current frame as a JPEG data URL (recording). */
+      frame: () => string;
     };
   }
 }
@@ -100,6 +105,9 @@ window.pixelDirector = {
     const d = getOfficeState().director;
     return renderSoundtrack(d.soundLog, d.clock + 2);
   },
+  record: (fps) => getOfficeState().director.record(fps),
+  step: () => getOfficeState().director.step(),
+  frame: () => getOfficeState().director.captureFrame?.() ?? '',
 };
 
 function App() {
