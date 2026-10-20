@@ -28,7 +28,7 @@ interface Posted {
   ts: string;
 }
 
-function setup(repoNames: string[] = ['alpha'], assistant = false) {
+function setup(repoNames: string[] = ['alpha'], assistant = false, canCustomize?: boolean) {
   const db: Db = openDb(join(mkdtempSync(join(tmpdir(), 'slack-')), 'office.db'));
   const bus = new EventBus(db);
   for (const name of repoNames) db.insert(schema.repos).values({ name, path: `/tmp/${name}`, defaultBranch: 'main' }).run();
@@ -121,6 +121,7 @@ function setup(repoNames: string[] = ['alpha'], assistant = false) {
     desk: { runner, conversations },
     ownerId: OWNER,
     botUserId: 'U0BOT0001',
+    ...(canCustomize === undefined ? {} : { canCustomize }),
     ...(assistant ? { channelId: CH, assistantIds: [INSTINCT] } : {}),
     publicUrl: 'http://127.0.0.1:4100',
     api,
@@ -484,6 +485,17 @@ describe('heroes speak', () => {
     t.bus.emit(task.id, 'step_end', { step: 'reviewing', role: 'reviewer', status: 'ok' });
     await t.settle();
     expect(t.posted.filter((p) => p.username)).toEqual([]);
+  });
+
+  it("labels hero posts by name when the app lacks the permission (Slack would silently drop the custom name)", async () => {
+    const plain = setup(['alpha'], false, false);
+    await plain.bridge.start();
+    const t2 = plain.db.insert(schema.tasks).values({ repoId: plain.repo.id, title: 'x', input: 'x', status: 'reviewing', slackChannel: DM, slackThreadTs: '50.1' }).returning().get();
+    plain.docsByName.review = '---\nverdict: pass\nblocking: 0\n---\n## Summary\nFine.';
+    plain.bus.emit(t2.id, 'step_end', { step: 'reviewing', role: 'reviewer', status: 'ok' });
+    await plain.settle();
+    const msg = plain.posted.find((p) => p.text.startsWith('*Thor:*'))!;
+    expect(msg.username).toBeUndefined();
   });
 
   it('posts the first words of a hero the owner steered under their name, once', async () => {

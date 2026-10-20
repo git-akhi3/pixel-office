@@ -68,6 +68,12 @@ export interface SlackBridgeDeps {
   assistantIds?: string[];
   /** This bot's own Slack user id, so a leading @mention of it can be told from one meant for someone else. */
   botUserId?: string;
+  /**
+   * Whether the bot may post under a hero's name (chat:write.customize). Without it Slack silently
+   * ignores the name, so the office labels hero posts in the text instead. Unknown: try, and fall back
+   * on an error.
+   */
+  canCustomize?: boolean;
   /** Where "Open in office" links point. */
   publicUrl: string;
   api: SlackApi;
@@ -155,6 +161,7 @@ export class SlackBridge {
   readonly questions: SlackQuestions;
 
   constructor(private deps: SlackBridgeDeps) {
+    if (deps.canCustomize === false) this.noCustomize = true;
     this.questions = new SlackQuestions({ ...deps, thread: (task) => this.ensureThread(task) });
   }
 
@@ -787,8 +794,12 @@ export async function startSlack(config: SlackConfig, deps: Omit<SlackBridgeDeps
   let bridge: SlackBridge | null = null;
   try {
     await app.init();
-    const botUserId = (await app.client.auth.test()).user_id;
-    bridge = new SlackBridge({ ...deps, ownerId: config.ownerId, channelId: config.channelId, assistantIds: config.assistantIds, botUserId, api });
+    const auth = await app.client.auth.test();
+    const botUserId = auth.user_id;
+    const scopes = (auth.response_metadata as { scopes?: string[] } | undefined)?.scopes;
+    const canCustomize = scopes ? scopes.includes('chat:write.customize') : undefined;
+    if (canCustomize === false) console.warn('Slack: the app lacks chat:write.customize, so heroes post as the app with their name in the text. Reinstall the app to the workspace to add it, then restart the office.');
+    bridge = new SlackBridge({ ...deps, ownerId: config.ownerId, channelId: config.channelId, assistantIds: config.assistantIds, botUserId, canCustomize, api });
     listen(app, bridge, config);
     await app.start();
     await bridge.start();
