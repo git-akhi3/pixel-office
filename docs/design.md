@@ -77,11 +77,11 @@ Model and effort can be changed per agent. PR writing is a skill the coder runs,
 - **Board tab:** columns Queued → Planning → Awaiting you → Building → Review/Test → Done. Task detail shows the plan, handoff documents, diff, test report, token use and the gate bar. Works on a phone screen.
 - **Office tab:** the Pixel Agents scene, mostly unchanged. Characters are linked to running tasks, and clicking one opens its task in a panel.
 - **Slack:** a bot in a personal Slack workspace, connected over Socket Mode (outbound, no public URL).
-  - DM it a task to create one.
+  - Talk to Fury, the manager, in plain language (DM it, or the shared office channel): ask for a task, ask how one is going, steer a hero, approve or ask for changes.
   - One thread per task, with a single live status message edited about every 10 seconds (agent, plan step, time, tokens, last action).
   - New messages only for milestones, gates and alerts.
   - Approve, reject or open-in-office buttons at gates.
-  - Thread commands: `pause`, `resume`, `stop`, `steer: <text>` (sent to the running agent), `replan: <reason>`, `status`.
+  - Everything else is said in words in the thread; Fury turns it into the same actions the board has (pause, resume, stop, steer, replan, approve, reject). Heroes post their own handoffs under their own names.
 - **Remote access:** Cloudflare Tunnel plus Cloudflare Access (Google login) on a subdomain of my own domain. The Mac must stay awake.
 
 ## PR review flow

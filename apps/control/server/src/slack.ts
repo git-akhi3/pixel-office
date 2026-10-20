@@ -1,29 +1,38 @@
-// The Slack side of the office: DM the bot to start a task, then follow it in that message's thread.
+// The Slack side of the office: talk to Fury in plain language, then follow each task in its thread.
 //
-// One thread per task, with a single status message edited about every 10 seconds. New messages
-// only for gates, milestones and alerts. Everything the owner types or taps goes through the same
-// Pipeline calls the board uses. Only the owner's messages and button taps are honoured.
+// Every message from the owner (or the allowed assistant) is a turn of a conversation with Fury
+// (fury.ts), one conversation per Slack thread. Fury acts through tools (furyTools.ts) that make the
+// same Pipeline calls the board does. One thread per task, with a single status message edited about
+// every 10 seconds; new messages only for gates, milestones and alerts, and the heroes post their own
+// handoffs under their own names. Only the owner's button taps are honoured.
 
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import { and, eq } from 'drizzle-orm';
 import type { Db } from './db/index.js';
 import { schema } from './db/index.js';
 import type { Gate, Task } from './db/schema.js';
-import { boardColumn, isAgentStep, stepRole, TERMINAL_STATUSES, type GateDecision } from './domain.js';
+import { isAgentStep, stepRole, TERMINAL_STATUSES, type GateDecision } from './domain.js';
 import type { BusMessage, EventBus } from './events.js';
 import type { TaskDocs } from './handoffs.js';
+import { CONTRACTS } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
 import { listRepos } from './repos.js';
+import { changedFiles } from './worktree.js';
 import { SlackLink } from './slackLink.js';
 import { SlackQuestions } from './slackQuestions.js';
-import { alertText, breakdownSummary, mergeSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks, verificationText, type CheckStage, type Verdict } from './slackFormat.js';
-import { describeTask, duration, esc, listActive, stageOf, type StatusContext } from './slackStatus.js';
+import { alertText, breakdownSummary, handoffText, mergeSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks, verificationText, type CheckStage, type Verdict } from './slackFormat.js';
+import { duration, esc, stageOf, waitingOnYou, type StatusContext } from './slackStatus.js';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type Uploads } from './attachments.js';
 import type { SlackConfig } from './config.js';
+import type { ConversationStore } from './conversations.js';
+import { NO_REPLY, type DeskRunner } from './fury.js';
+import { buildDeskTools, type DeskHost, type Sender } from './furyTools.js';
+import { heroForRole, type Hero } from './heroes.js';
 
 /** The slice of Slack's Web API the bridge uses (so tests can fake it). */
 export interface SlackApi {
-  postMessage(args: { channel: string; text: string; thread_ts?: string; blocks?: unknown[] }): Promise<{ ts?: string }>;
+  /** `username` and `icon_emoji` post as a hero; they need the chat:write.customize scope. */
+  postMessage(args: { channel: string; text: string; thread_ts?: string; blocks?: unknown[]; username?: string; icon_emoji?: string }): Promise<{ ts?: string }>;
   updateMessage(args: { channel: string; ts: string; text: string; blocks?: unknown[] }): Promise<unknown>;
   openDm(userId: string): Promise<string>;
   /** Downloads a file shared in Slack (needs the files:read scope). */
@@ -65,6 +74,8 @@ export interface SlackBridgeDeps {
   now?: () => number;
   /** Where files attached to a Slack task message are stored until the task claims them. */
   uploads?: Uploads;
+  /** Fury: runs a turn of the conversation, and remembers each thread's session. */
+  desk: { runner: DeskRunner; conversations: ConversationStore };
 }
 
 const STATUS_REFRESH_MS = 10_000;
@@ -72,10 +83,13 @@ const PR_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
 const MAX_SECTION = 2800;
 /** An assistant may start this many tasks per hour: a loop or a chatty assistant must not queue unlimited work. */
 export const ASSISTANT_TASKS_PER_HOUR = 5;
-/** Commands only the owner may give: they approve work, discard it or let commands run. */
-const OWNER_ONLY = new Set(['approve', 'reject', 'discard', 'done', 'replan', 'send', 'enough']);
-
-type Sender = 'owner' | 'assistant';
+/**
+ * An assistant's messages are answered by Fury, so two bots could keep each other talking for ever.
+ * Past this many an hour its messages are ignored (once, with a note).
+ */
+export const ASSISTANT_TURNS_PER_HOUR = 40;
+/** A hero's first words after being steered are posted under their name only if they come within this long. */
+const HERO_REPLY_WINDOW_MS = 15 * 60 * 1000;
 
 /** What a decided gate was about, for the line that replaces its buttons. */
 const DECIDED_WHAT: Record<string, string> = { plan: 'the plan', breakdown: 'the milestones', push: 'the push', merge: 'the merge', review_post: 'the review', command: 'the command' };
@@ -94,30 +108,38 @@ function clip(text: string, max = MAX_SECTION): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-export const HELP = [
-  '*Start a task:* DM me `<repo>: what to build or fix` (the repo name is optional when only one is registered), or paste a GitHub PR link to review it. Add a line `ref: other-repo` to let the agents read other repos (never change them). `status` on its own lists every active task.',
-  '*In a task thread:* `status` · `pause` / `stop` · `resume` · `steer: <note to the agent>` · `replan: <why>` · `approve` · `reject: <what to change>` · `discard` · `done`',
-  "*When the architect asks you something:* tap a button, or reply in the thread with your answer. `send` sends what you've answered so far; `enough` lets it plan now.",
-].join('\n');
+const FURY = heroForRole('manager')!;
 
-/** While the architect has a question open, only these count as commands; anything else answers it. */
-const BARE_COMMANDS = new Set(['status', 'pause', 'stop', 'resume', 'discard', 'send', 'enough', 'help']);
-function isExplicitCommand(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  return BARE_COMMANDS.has(t.replace(/[.!]$/, '')) || /^(steer|replan)\s*:/.test(t);
+interface Incoming {
+  user?: string;
+  channel: string;
+  ts: string;
+  thread_ts?: string;
+  text?: string;
+  subtype?: string;
+  bot_id?: string;
+  files?: SlackFile[];
 }
 
 export class SlackBridge {
   private dm: string | null = null;
   private unsubscribe: (() => void) | null = null;
   private timer: NodeJS.Timeout | null = null;
-  /** The owner's DM message that is creating a task right now: it becomes that task's thread. */
+  /** The thread a task being created right now becomes the task thread of: the conversation it was asked for in. */
   private claim: { channel: string; ts: string } | null = null;
   private stepStartedAt = new Map<number, number>();
   private lastStatusText = new Map<number, string>();
   private lastStatus = new Map<number, string>();
   private threadLocks = new Map<number, Promise<unknown>>();
+  /** One turn at a time per conversation, so its session id never forks. */
+  private deskLocks = new Map<string, Promise<unknown>>();
   private assistantStarts: number[] = [];
+  private assistantTurns: number[] = [];
+  private assistantCapNoted = false;
+  /** Heroes the owner just steered: their next words are posted in the thread under their name. */
+  private heroReplies = new Map<number, { role: string; at: number }>();
+  /** Set once Slack says the app can't post under another name (the chat:write.customize scope is missing). */
+  private noCustomize = false;
   /** The architect's briefing questions in task threads. */
   readonly questions: SlackQuestions;
 
@@ -144,37 +166,36 @@ export class SlackBridge {
   }
 
   async announce(): Promise<void> {
-    await this.say(`Pixel Office is online. Board: ${this.deps.publicUrl}\n${HELP}`);
+    await this.say(`Pixel Office is online. Board: ${this.deps.publicUrl}\nTell me what you need in your own words: a task to start, how one is going, or what to change.`);
   }
 
   // ------------------------------------------------------------ incoming: messages
 
   /**
-   * A message in the owner's DM, or in the shared assistant channel. The owner may do anything.
+   * A message in the owner's DM, or in the shared assistant channel. It goes to Fury, who answers in the
+   * message's thread (a top-level message starts one). The owner may do anything Fury has a tool for.
    * An assistant (Instinct) may start tasks, ask for status, steer, pause and resume, only in that channel.
    */
-  async onMessage(msg: { user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string; files?: SlackFile[] }): Promise<void> {
+  async onMessage(msg: Incoming): Promise<void> {
     const sender = this.senderOf(msg);
     if (!sender) return;
     let text = (msg.text ?? '').trim();
-    // "@Instinct what's the status?" is for someone else: stay out of it. "@Pixel Office <command>" is for me.
+    // "@Instinct what's the status?" is for someone else: stay out of it. "@Pixel Office <message>" is for me.
     const lead = text.match(/^<@([UW][A-Z0-9]+)(?:\|[^>]*)?>[\s,:]*/);
     if (lead) {
       if (lead[1] !== this.deps.botUserId) return;
       text = text.slice(lead[0].length).trim();
     }
-    const threadReply = !!msg.thread_ts && msg.thread_ts !== msg.ts;
-    if (sender === 'owner' && msg.files?.length && (threadReply || !text)) {
-      // Files only attach to the message that starts a task, together with its text.
-      await this.reply(msg.channel, msg.thread_ts ?? msg.ts, ':paperclip: Files attach only to a new task message, sent with its text (`<repo>: what to do`). These were not attached.');
-      if (!text) return;
-    }
     if (!text) return;
+    const threadTs = msg.thread_ts ?? msg.ts;
+    if (sender === 'assistant') {
+      const turn = this.assistantMayTalk();
+      if (turn !== 'yes') return void (turn === 'once' ? await this.reply(msg.channel, threadTs, `:no_entry: Limit reached: an assistant gets ${ASSISTANT_TURNS_PER_HOUR} turns an hour. Ask the owner.`) : undefined);
+    }
     try {
-      if (msg.thread_ts && msg.thread_ts !== msg.ts) await this.onThreadMessage(msg.channel, msg.thread_ts, text, sender);
-      else await this.onNewTask(msg.channel, msg.ts, text, sender, sender === 'owner' ? (msg.files ?? []) : []);
+      await this.deskTurn(msg, sender, text, sender === 'owner' ? (msg.files ?? []) : []);
     } catch (e) {
-      await this.reply(msg.channel, msg.thread_ts ?? msg.ts, `:warning: ${esc((e as Error).message)}`);
+      await this.reply(msg.channel, threadTs, `:warning: ${esc((e as Error).message)}`);
     }
   }
 
@@ -189,28 +210,125 @@ export class SlackBridge {
     return null;
   }
 
-  private async onNewTask(channel: string, ts: string, text: string, sender: Sender, files: SlackFile[] = []): Promise<void> {
-    const assistant = sender === 'assistant';
-    if (/^(help|\?)$/i.test(text)) return void (await this.reply(channel, ts, HELP));
-    if (/^(status|tasks)[?.!]*$/i.test(text)) return void (await this.reply(channel, ts, listActive(this.statusContext())));
-    const pr = text.match(PR_URL)?.[0];
-    // An assistant must be explicit (`repo: ...` or a PR link). A stray "thanks!" must never become a task.
-    const parsed = pr ? null : this.parseTask(text, !assistant);
-    if (!pr && !parsed?.repoId) return void (parsed?.error && !assistant ? await this.reply(channel, ts, parsed.error) : undefined);
-    if (assistant && !this.assistantMayStart()) {
-      return void (await this.reply(channel, ts, `:no_entry: Limit reached: an assistant can start ${ASSISTANT_TASKS_PER_HOUR} tasks an hour. Ask the owner.`));
+  private assistantMayTalk(): 'yes' | 'once' | 'no' {
+    const hourAgo = this.now() - 60 * 60 * 1000;
+    this.assistantTurns = this.assistantTurns.filter((t) => t > hourAgo);
+    if (this.assistantTurns.length >= ASSISTANT_TURNS_PER_HOUR) {
+      const first = !this.assistantCapNoted;
+      this.assistantCapNoted = true;
+      return first ? 'once' : 'no';
     }
-    this.claim = { channel, ts };
-    try {
-      if (pr) {
-        const task = await this.deps.pipeline.createReviewTask(pr);
-        await this.reply(channel, ts, `Reviewing PR as task #${task.id}. I'll post the draft here when it's ready.`);
-        return;
+    this.assistantCapNoted = false;
+    this.assistantTurns.push(this.now());
+    return 'yes';
+  }
+
+  // ------------------------------------------------------------ Fury
+
+  /** Runs one turn of the thread's conversation and posts Fury's answer in it. */
+  private deskTurn(msg: Incoming, sender: Sender, text: string, files: SlackFile[]): Promise<void> {
+    const { channel } = msg;
+    const threadTs = msg.thread_ts ?? msg.ts;
+    const key = `${channel}:${threadTs}`;
+    const prev = this.deskLocks.get(key) ?? Promise.resolve();
+    const turn = prev
+      .catch(() => undefined)
+      .then(async () => {
+        const { runner, conversations } = this.deps.desk;
+        const tools = buildDeskTools({ sender, db: this.deps.db, pipeline: this.deps.pipeline, status: this.statusContext(), host: this.host(sender, channel, threadTs, files) });
+        const reply = await runner.run({ prompt: this.briefing(channel, threadTs, sender, text, files), sessionId: conversations.get(channel, threadTs), tools });
+        if (reply.sessionId) conversations.set(channel, threadTs, reply.sessionId);
+        const answer = reply.text.trim();
+        // Nothing to say (an assistant's thanks): stay quiet so two bots don't keep each other talking.
+        if (!answer || answer === NO_REPLY) return;
+        await this.sayAs(FURY, clip(answer, 3500), { channel, ts: threadTs });
+      });
+    this.deskLocks.set(key, turn.catch(() => undefined));
+    return turn;
+  }
+
+  /** The header the office writes above the sender's words: facts Fury can rely on. */
+  private briefing(channel: string, threadTs: string, sender: Sender, text: string, files: SlackFile[]): string {
+    const { db, pipeline } = this.deps;
+    const repos = listRepos(db);
+    const lines = [
+      `From: ${sender === 'owner' ? 'the owner' : 'the assistant (Instinct)'}`,
+      `Repos: ${repos.length ? repos.map((r) => r.name).join(', ') : 'none registered'}`,
+    ];
+    const task = this.taskForThread(channel, threadTs);
+    if (task) {
+      const waiting = waitingOnYou(task, pipeline.pendingGates(task.id));
+      lines.push(`This thread's task: #${task.id} "${task.title}", ${task.status.replace(/_/g, ' ')}${waiting ? `; waiting on the owner: ${waiting}` : ''}`);
+      const q = sender === 'owner' ? this.questions.openQuestion(task.id) : undefined;
+      if (q) {
+        lines.push(`Open question from the architect (id ${q.id}): ${q.title}\n${q.body}${q.options.length ? `\nOptions: ${q.options.join(' | ')}` : ''}${q.recommended ? `\nRecommended: ${q.recommended}` : ''}`);
       }
-      const { ids, problems } = await this.fetchFiles(files);
-      const task = this.deps.pipeline.createTask({ repoId: parsed!.repoId!, input: parsed!.input!, refRepos: parsed!.refRepos, ...(ids.length ? { attachments: ids } : {}) });
-      const attached = ids.length ? ` with ${ids.length} attachment${ids.length === 1 ? '' : 's'}` : '';
-      await this.reply(channel, ts, `Task #${task.id} queued${attached}. Updates will appear in this thread.${problems.length ? `\n:warning: Not attached: ${esc(problems.join('; '))}` : ''}`);
+    } else {
+      lines.push("This thread's task: none yet");
+    }
+    if (files.length) lines.push(`Files attached to this message: ${files.map((f) => f.name ?? 'file').join(', ')}`);
+    return `${lines.join('\n')}\n\nMessage:\n${text}`;
+  }
+
+  /** What Fury's tools need from the bridge: the thread, the message's files and the assistant's task limit. */
+  private host(sender: Sender, channel: string, threadTs: string, files: SlackFile[]): DeskHost {
+    return {
+      startTask: (a) => this.startTask(sender, channel, threadTs, files, a),
+      reviewPr: (url) => this.reviewPr(sender, channel, threadTs, url),
+      expectHeroReply: (taskId, role) => void this.heroReplies.set(taskId, { role, at: this.now() }),
+    };
+  }
+
+  /**
+   * Starts a task for Fury. The thread the conversation is in becomes the task's thread (its status
+   * message, gate buttons and updates go there), unless that thread already belongs to a task: then
+   * the new one gets its own thread in the owner's DM.
+   */
+  private async startTask(sender: Sender, channel: string, threadTs: string, files: SlackFile[], a: Parameters<DeskHost['startTask']>[0]): Promise<string> {
+    const repos = listRepos(this.deps.db);
+    if (repos.length === 0) throw new Error('No repos registered yet. Add one on the board under Repos first.');
+    const byName = (n: string) => repos.find((r) => r.name.toLowerCase() === n.trim().toLowerCase());
+    const registered = repos.map((r) => r.name).join(', ');
+    const repo = a.repo ? byName(a.repo) : repos.length === 1 ? repos[0] : undefined;
+    if (!repo) throw new Error(a.repo ? `Not registered: "${a.repo}". Registered: ${registered}.` : `Which repo? Registered: ${registered}.`);
+    const unknown = a.refRepos.filter((n) => !byName(n));
+    if (unknown.length) throw new Error(`Not registered: ${unknown.join(', ')}. Registered: ${registered}.`);
+    if (sender === 'assistant' && !this.assistantMayStart()) throw new Error(`Limit reached: an assistant can start ${ASSISTANT_TASKS_PER_HOUR} tasks an hour. Ask the owner.`);
+    const { ids, problems } = await this.fetchFiles(files);
+    const here = !this.taskForThread(channel, threadTs);
+    // Set only around the synchronous create, so nothing else created meanwhile takes this thread.
+    this.claim = here ? { channel, ts: threadTs } : null;
+    let task: Task;
+    try {
+      task = this.deps.pipeline.createTask({
+        repoId: repo.id,
+        input: a.request,
+        refRepos: a.refRepos.map((n) => byName(n)!.id),
+        ...(a.links.length ? { links: a.links } : {}),
+        ...(a.lane !== 'auto' ? { lane: a.lane } : {}),
+        ...(ids.length ? { attachments: ids } : {}),
+      });
+    } finally {
+      this.claim = null;
+    }
+    const attached = ids.length ? ` with ${ids.length} attachment${ids.length === 1 ? '' : 's'}` : '';
+    return [
+      `Started #${task.id} on ${repo.name}${attached}: "${task.title}".`,
+      here ? 'Its updates will appear in this thread.' : "This thread already has a task, so the new one has its own thread in the owner's DM.",
+      problems.length ? `Not attached: ${problems.join('; ')}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  private async reviewPr(sender: Sender, channel: string, threadTs: string, text: string): Promise<string> {
+    const url = text.match(PR_URL)?.[0];
+    if (!url) throw new Error('That is not a GitHub pull request link (https://github.com/<owner>/<repo>/pull/<n>).');
+    if (sender === 'assistant' && !this.assistantMayStart()) throw new Error(`Limit reached: an assistant can start ${ASSISTANT_TASKS_PER_HOUR} tasks an hour. Ask the owner.`);
+    this.claim = this.taskForThread(channel, threadTs) ? null : { channel, ts: threadTs };
+    try {
+      const task = await this.deps.pipeline.createReviewTask(url);
+      return `Reviewing the PR as #${task.id}. The draft review will be posted for the owner to approve.`;
     } finally {
       this.claim = null;
     }
@@ -252,99 +370,12 @@ export class SlackBridge {
     return true;
   }
 
-  private parseTask(text: string, allowDefaultRepo = true): { repoId?: number; input?: string; refRepos?: number[]; error?: string } {
-    const repos = listRepos(this.deps.db);
-    if (repos.length === 0) return { error: 'No repos registered yet. Add one on the board under Repos first.' };
-    // A "ref: other-repo, another" line names repos the agents may read but not change.
-    const byName = (n: string) => repos.find((r) => r.name.toLowerCase() === n.toLowerCase());
-    const refLine = text.match(/^\s*refs?\s*:\s*(.+)$/im);
-    const refNames = refLine ? refLine[1]!.split(/[\s,]+/).filter(Boolean) : [];
-    const unknown = refNames.filter((n) => !byName(n));
-    if (unknown.length) return { error: `Not registered: ${unknown.map((n) => `\`${esc(n)}\``).join(', ')}. Registered: ${repos.map((r) => `\`${esc(r.name)}\``).join(', ')}.` };
-    const refRepos = refNames.map((n) => byName(n)!.id);
-    const rest = refLine ? text.replace(refLine[0], '').trim() : text;
-    const m = rest.match(/^([\w.-]+)\s*:\s*([\s\S]+)$/);
-    const named = m && byName(m[1]!);
-    if (named) return { repoId: named.id, input: m![2]!.trim(), refRepos };
-    if (repos.length === 1 && allowDefaultRepo) return { repoId: repos[0]!.id, input: rest, refRepos };
-    return { error: `Which repo? Start with \`<repo>: ...\`. Registered: ${repos.map((r) => `\`${esc(r.name)}\``).join(', ')}.` };
-  }
-
   private taskForThread(channel: string, threadTs: string): Task | undefined {
     return this.deps.db
       .select()
       .from(schema.tasks)
       .where(and(eq(schema.tasks.slackChannel, channel), eq(schema.tasks.slackThreadTs, threadTs)))
       .get();
-  }
-
-  private async onThreadMessage(channel: string, threadTs: string, text: string, sender: Sender): Promise<void> {
-    const task = this.taskForThread(channel, threadTs);
-    if (!task) {
-      // A reply in a thread that has no task (say, under the bot's help message): an explicit task starts one here.
-      if (PR_URL.test(text) || this.parseTask(text, false).repoId) return void (await this.onNewTask(channel, threadTs, text, sender));
-      return void (sender === 'owner' ? await this.reply(channel, threadTs, 'This thread has no task. Start one with a new message, or reply here with `<repo>: what to do`.') : undefined);
-    }
-    const say = (t: string) => this.reply(channel, threadTs, t);
-    const { pipeline } = this.deps;
-    const [, word = '', rest = ''] = text.match(/^(\w+)\s*:?\s*([\s\S]*)$/) ?? [];
-    const command = word.toLowerCase();
-    if (sender === 'assistant' && OWNER_ONLY.has(command)) {
-      return void (await say(`:no_entry: \`${command}\` needs the owner. Ask them to do it in this thread or on the board.`));
-    }
-    // An assistant's chatter that isn't a command is ignored, not answered, so two bots never loop.
-    if (sender === 'assistant' && !['status', 'pause', 'stop', 'resume', 'steer'].includes(command)) return;
-    // Only the owner answers the architect. While a question is open, a reply is an answer unless it is
-    // a bare command word ("stop") or an explicit "steer:" / "replan:": "Discard the legacy table" is an answer.
-    if (sender === 'owner' && this.questions.openQuestion(task.id) && !isExplicitCommand(text) && this.questions.onThreadReply(task.id, text)) return;
-    switch (command) {
-      case 'status': {
-        return void (await say(describeTask(pipeline.getTask(task.id), this.statusContext())));
-      }
-      case 'pause':
-      case 'stop':
-        await pipeline.action(task.id, 'stop');
-        return void (await say('Stopped. The worktree is kept; say `resume` to continue.'));
-      case 'resume':
-        await pipeline.action(task.id, 'resume');
-        return void (await say('Resumed.'));
-      case 'discard':
-        await pipeline.action(task.id, 'discard');
-        return void (await say('Discarded.'));
-      case 'done':
-        await pipeline.action(task.id, 'done');
-        return void (await say('Marked done.'));
-      case 'steer': {
-        if (!rest.trim()) return void (await say('Say what: `steer: <note>`.'));
-        const where = pipeline.steer(task.id, rest.trim());
-        return void (await say(where === 'live' ? 'Sent to the running agent.' : 'Saved for the next step.'));
-      }
-      case 'replan': {
-        if (!rest.trim()) return void (await say('Say why: `replan: <reason>`.'));
-        pipeline.replanNow(task.id, rest.trim());
-        return void (await say('Sent back to the architect for a new plan.'));
-      }
-      case 'send':
-      case 'enough':
-        if (sender !== 'owner') return;
-        pipeline.briefingAction(task.id, command);
-        return;
-      case 'approve':
-      case 'reject': {
-        const gate = this.approvalGate(task.id);
-        if (!gate) return void (await say('Nothing is waiting for approval.'));
-        if (word.toLowerCase() === 'reject' && !rest.trim()) return void (await say('Say what to change: `reject: <what to change>`.'));
-        await pipeline.decideGate(gate.id, word.toLowerCase() as GateDecision, rest.trim() || undefined);
-        return;
-      }
-      default:
-        return void (await say(HELP));
-    }
-  }
-
-  /** The pending plan, push or review gate of a task (command gates are answered with their buttons). */
-  private approvalGate(taskId: number): Gate | undefined {
-    return this.deps.pipeline.pendingGates(taskId).find((g) => g.kind !== 'command' && g.kind !== 'question');
   }
 
   // ------------------------------------------------------------ incoming: buttons
@@ -360,7 +391,7 @@ export class SlackBridge {
     if (!gate) return 'That gate no longer exists.';
     if (decision === 'reject') {
       const task = this.deps.pipeline.getTask(gate.taskId);
-      await this.say(`To reject, reply in the thread with \`reject: <what to change>\`.`, task);
+      await this.say('Tell me what to change, here in the thread, and I will send it back.', task);
       return null;
     }
     try {
@@ -399,7 +430,10 @@ export class SlackBridge {
         this.stepStartedAt.set(taskId, this.now());
         return this.renderStatus(task);
       case 'step_end':
+        if (event.payload.status === 'ok') void this.handoff(task, event.payload).catch((e) => console.warn(`Slack: ${(e as Error).message}`));
         return this.renderStatus(task);
+      case 'text':
+        return this.heroSpeaks(task, event.payload);
       case 'gate':
         return this.onGate(task, event.payload as { gateId: number; kind: Gate['kind']; subject: string | null; status: string; auto: boolean });
       case 'gate_decided':
@@ -417,7 +451,8 @@ export class SlackBridge {
       case 'review_added':
         return void (await this.say(`:mag: The change is big (${esc(String(event.payload.reason ?? ''))}), so the reviewer checks it before the PR opens.`, task));
       case 'verified':
-        return void (await this.say(
+        return void (await this.sayAs(
+          heroForRole('verifier'),
           verificationText(event.payload.verdict as Verdict, String(event.payload.report ?? ''), (event.payload.stage as CheckStage | undefined) ?? 'build', event.payload.sha as string | undefined),
           task,
         ));
@@ -451,7 +486,7 @@ export class SlackBridge {
     } else if (previous && ['paused', 'blocked', 'stopped'].includes(task.status)) {
       const word = task.status === 'stopped' ? 'Stopped' : task.status === 'paused' ? 'Paused' : 'Blocked';
       await this.renderStatus(task);
-      await this.say(`:double_vertical_bar: ${word}.${task.statusNote ? ` ${esc(task.statusNote)}` : ''} Say \`resume\` when ready.`, task);
+      await this.say(`:double_vertical_bar: ${word}.${task.statusNote ? ` ${esc(task.statusNote)}` : ''} Tell me to resume it when you are ready.`, task);
     } else if (previous) {
       await this.renderStatus(task);
     }
@@ -592,19 +627,76 @@ export class SlackBridge {
 
   /** A message in a task's thread (or a plain DM when no task is given). Returns its ts. */
   private async say(text: string, task?: Task, blocks?: unknown[]): Promise<string | undefined> {
-    if (!task) {
+    return this.sayAs(undefined, text, task, blocks);
+  }
+
+  /**
+   * Like say, but under a hero's name and emoji when one is given. A task's thread is looked up for a
+   * task; a `{ channel, ts }` is that thread itself.
+   */
+  private async sayAs(hero: Hero | undefined, text: string, to?: Task | { channel: string; ts: string }, blocks?: unknown[]): Promise<string | undefined> {
+    if (!to) {
       if (!this.dm) return undefined;
-      return (await this.deps.api.postMessage({ channel: this.dm, text })).ts;
+      return (await this.post({ channel: this.dm, text }, hero)).ts;
     }
+    if (!('id' in to)) return (await this.post({ channel: to.channel, thread_ts: to.ts, text, ...(blocks ? { blocks } : {}) }, hero)).ts;
+    const task = to;
     return this.withThread(task.id, async () => {
       const thread = await this.ensureThread(this.deps.pipeline.getTask(task.id));
       if (!thread) return undefined;
-      return (await this.deps.api.postMessage({ channel: thread.channel, thread_ts: thread.ts, text, ...(blocks ? { blocks } : {}) })).ts;
+      return (await this.post({ channel: thread.channel, thread_ts: thread.ts, text, ...(blocks ? { blocks } : {}) }, hero)).ts;
     });
+  }
+
+  /**
+   * Posts, under the hero's name if the app may. Without the chat:write.customize scope Slack refuses a
+   * custom name: the message is then posted as the app, with the hero's name in front of it, so it is
+   * never lost.
+   */
+  private async post(args: { channel: string; text: string; thread_ts?: string; blocks?: unknown[] }, hero?: Hero): Promise<{ ts?: string }> {
+    if (!hero) return this.deps.api.postMessage(args);
+    if (!this.noCustomize) {
+      try {
+        return await this.deps.api.postMessage({ ...args, username: hero.name, icon_emoji: hero.emoji });
+      } catch (e) {
+        const reason = (e as { data?: { error?: string } }).data?.error ?? (e as Error).message;
+        if (/missing_scope|not_allowed_token_type|invalid_arguments/.test(reason)) this.noCustomize = true;
+        console.warn(`Slack: could not post as ${hero.name} (${reason}); posting as the app. Reinstall the app to add chat:write.customize.`);
+      }
+    }
+    return this.deps.api.postMessage({ ...args, text: `*${hero.name}:* ${args.text}` });
   }
 
   private async reply(channel: string, threadTs: string, text: string): Promise<void> {
     await this.deps.api.postMessage({ channel, thread_ts: threadTs, text });
+  }
+
+  // ------------------------------------------------------------ heroes speak
+
+  /** A hero's handoff when their step ends: the plan, "done: 4 files", the review verdict, the test result. */
+  private async handoff(task: Task, payload: Record<string, unknown>): Promise<void> {
+    const hero = heroForRole(String(payload.role ?? ''));
+    const step = String(payload.step ?? '');
+    if (!hero || !(step in CONTRACTS)) return;
+    // The pipeline saves the step's document right after announcing that the step ended.
+    await new Promise((resolve) => setImmediate(resolve));
+    const fresh = this.deps.pipeline.getTask(task.id);
+    const doc = this.deps.docs.latest(task.id, CONTRACTS[step as keyof typeof CONTRACTS].doc);
+    let files: number | null = null;
+    if (step === 'coding' && fresh.worktreePath && fresh.baseSha) files = (await changedFiles(fresh.worktreePath, fresh.baseSha).catch(() => null))?.length ?? null;
+    const text = handoffText(step, doc, files);
+    if (text) await this.sayAs(hero, text, fresh);
+  }
+
+  /** The first words of a hero the owner just steered are posted under their name. */
+  private async heroSpeaks(task: Task, payload: Record<string, unknown>): Promise<void> {
+    const waiting = this.heroReplies.get(task.id);
+    if (!waiting) return;
+    this.heroReplies.delete(task.id);
+    const hero = heroForRole(waiting.role);
+    const text = String(payload.text ?? '').trim();
+    if (!hero || !text || this.now() - waiting.at > HERO_REPLY_WINDOW_MS) return;
+    await this.sayAs(hero, esc(clip(text, 900)), task);
   }
 }
 

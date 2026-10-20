@@ -33,6 +33,7 @@ Runtime data (database, task documents, worktrees, knowledge files, graphs) live
 - Run `install` from your usual terminal: it records that shell's PATH (and `OFFICE_HOME` / `OFFICE_PORT` if you set them), so the office finds node, git, gh and each repo's tools (flutter, uv, …). Run it again after changing your PATH or moving this checkout.
 - Log: `~/.office/server.log` (`~/.office/pixel.log` for the pixel office).
 - Slack reconnects by itself after Wi-Fi drops and sleep, and when the office starts before the network is up (`server/src/slackLink.ts`).
+- In Slack you talk to Fury in plain language: there are no commands (`server/src/fury.ts`). Heroes post under their own names, which needs the `chat:write.customize` scope in `tools/slack-app-manifest.yml` (reinstall the app). More in [docs/status.md](docs/status.md).
 
 ## Pixel office
 

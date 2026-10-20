@@ -112,6 +112,61 @@ export function reviewPostSummary(doc: string): string {
   return out.join('\n\n');
 }
 
+// ------------------------------------------------------------ hero handoffs
+
+/** The first line of a section, as one inline sentence. */
+function firstLine(body: string, heading: string, width: number): string {
+  const text = section(body, heading).split('\n').map((l) => l.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').trim()).find(Boolean);
+  return text ? clip(inline(text), width) : '';
+}
+
+/**
+ * What a hero says when a step ends, from the document it handed off: one or two lines. `files` is how
+ * many files the build touched (the bridge asks git; without it the changes list is counted).
+ * null when there is nothing to add.
+ */
+export function handoffText(step: string, doc: string | null, files: number | null): string | null {
+  if (!doc) return null;
+  const { meta, body } = parseDoc(doc);
+  switch (step) {
+    case 'planning': {
+      const goal = firstLine(body, 'Goal', 200);
+      const checks = items(section(body, 'Acceptance criteria')).length;
+      const touched = Array.isArray(meta.files_in_scope) ? meta.files_in_scope.length : 0;
+      return [`Plan is ready${goal ? `: ${goal}` : '.'}`, [checks ? plural(checks, 'check') : '', touched ? `touches ${plural(touched, 'file')}` : ''].filter(Boolean).join(', ')].filter(Boolean).join('\n');
+    }
+    case 'splitting':
+      return `Split into ${plural(Number(meta.milestones) || parseMilestones(doc).length, 'milestone')}.`;
+    case 'debugging': {
+      const cause = firstLine(body, 'Root cause', 220);
+      return cause ? `Found the cause: ${cause}` : null;
+    }
+    case 'researching': {
+      const answers = items(section(body, 'Answers')).length;
+      return answers ? `Research is in: ${plural(answers, 'answer')}.` : 'Research is in.';
+    }
+    case 'coding': {
+      if (meta.status === 'blocked') return null; // the blocker alert says it
+      const n = files ?? items(section(body, 'Changes')).length;
+      const tested = extractPr(doc)?.body.match(/\*\*How it was tested:\*\*\s*([\s\S]*)/)?.[1];
+      const testLine = tested ? clip(inline(tested), 160) : '';
+      return `Done: ${n ? plural(n, 'file') : 'no files'} changed${testLine ? `, tests: ${testLine}` : ''}`;
+    }
+    case 'reviewing': {
+      const blocking = Number(meta.blocking) || 0;
+      const summary = firstLine(body, 'Summary', 200);
+      return `${meta.verdict === 'pass' && !blocking ? ':white_check_mark: Review passed.' : `:warning: Review found ${blocking} blocking ${blocking === 1 ? 'issue' : 'issues'}.`}${summary ? ` ${summary}` : ''}`;
+    }
+    case 'testing': {
+      const added = Number(meta.tests_added) || 0;
+      const suite = firstLine(body, 'Suite', 160);
+      return `${meta.result === 'pass' ? ':white_check_mark: Tests pass' : ':x: Tests fail'}${added ? ` (+${added} new)` : ''}.${suite ? ` ${suite}` : ''}`;
+    }
+    default:
+      return null;
+  }
+}
+
 // ------------------------------------------------------------ live checks
 
 export type Verdict = 'pass' | 'fail' | 'partial';

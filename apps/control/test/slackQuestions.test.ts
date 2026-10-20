@@ -98,19 +98,20 @@ describe('briefing questions in Slack', () => {
     expect(t.actions(1).map((e) => e.text.text)).toEqual(['You decide', "Send what I've answered", 'Enough, start planning']);
   });
 
-  it('a thread reply answers the posted question; an answer on the board updates Slack', async () => {
+  it('the posted question is the one open for a typed answer; an answer on the board updates Slack', async () => {
     const t = setup();
     t.bus.emit(t.task.id, 'question_round', { gateId: t.gate.id });
     await t.settle();
-    expect(t.sq.onThreadReply(t.task.id, 'Shared, like today')).toBe(true);
+    expect(t.sq.openQuestion(t.task.id)?.id).toBe(t.qs[0]!.id);
+    // Q1 answered on the board: Slack marks it, and the next question is the one open.
+    t.sq['deps'].pipeline.answerQuestion(t.qs[0]!.id, { text: 'Shared, like today' }, 'board');
     await t.settle();
-    expect(t.calls).toEqual([`answer:${t.qs[0]!.id}:Shared, like today:slack`]);
-    // Q2 is answered on the board: Slack marks it, and nothing is waiting for a reply any more.
-    (t.calls.length = 0);
+    expect(t.updated.at(-1)!.text).toContain('*Stock:* Shared, like today (on the board)');
+    expect(t.sq.openQuestion(t.task.id)?.id).toBe(t.qs[1]!.id);
     t.sq['deps'].pipeline.answerQuestion(t.qs[1]!.id, { text: 'Yes' }, 'board');
     await t.settle();
     expect(t.updated.at(-1)!.text).toContain('*Pricing:* Yes (on the board)');
-    expect(t.sq.onThreadReply(t.task.id, 'stray reply')).toBe(false);
+    expect(t.sq.openQuestion(t.task.id)).toBeUndefined();
   });
 
   it('ignores taps from anyone but the owner, and explains a second answer', async () => {
@@ -137,8 +138,9 @@ describe('briefing questions in Slack', () => {
 });
 
 describe('briefing questions through the bridge', () => {
-  it('routes an owner reply in the task thread to the open question, and refuses an assistant', async () => {
+  it("shows Fury the open question, answers it only on the owner's behalf, and never in an assistant's turn", async () => {
     const { SlackBridge } = await import('../server/src/slack.js');
+    const { ConversationStore } = await import('../server/src/conversations.js');
     const t = setup();
     const ASSISTANT = 'U0INSTINCT1';
     const CH = 'C0SHARED1';
@@ -149,11 +151,22 @@ describe('briefing questions through the bridge', () => {
       tokensUsed: () => 0,
       briefingAction: (id: number, a: string) => void t.calls.push(`briefing:${id}:${a}`),
     };
+    // Fury, faked: it answers with the owner's words, as the real one would for a message that answers the question.
+    const turns: Array<{ prompt: string; tools: string[] }> = [];
+    let script: (call: (tool: string, args: Record<string, unknown>) => Promise<string>) => Promise<string> = async () => 'ok';
+    const runner = {
+      run: async (req: { prompt: string; tools: Array<{ name: string; run(a: Record<string, unknown>): Promise<string> }> }) => {
+        turns.push({ prompt: req.prompt, tools: req.tools.map((x) => x.name) });
+        const text = await script(async (name, args) => req.tools.find((x) => x.name === name)!.run(args));
+        return { text, sessionId: 's1' };
+      },
+    };
     const bridge = new SlackBridge({
       db: t.db,
       bus: t.bus,
       pipeline: pipeline as never,
       docs: {} as never,
+      desk: { runner, conversations: new ConversationStore(join(mkdtempSync(join(tmpdir(), 'slackq-conv-')), 'c.json')) },
       ownerId: OWNER,
       channelId: CH,
       assistantIds: [ASSISTANT],
@@ -164,18 +177,19 @@ describe('briefing questions through the bridge', () => {
     await bridge.start();
     t.bus.emit(t.task.id, 'question_round', { gateId: t.gate.id });
     await t.settle();
+
     await bridge.onMessage({ user: ASSISTANT, channel: CH, ts: '9.2', thread_ts: '9.1', text: 'Shared' });
-    await bridge.onMessage({ user: ASSISTANT, channel: CH, ts: '9.3', thread_ts: '9.1', text: 'enough' });
+    expect(turns[0]!.prompt).not.toContain('Open question');
+    expect(turns[0]!.tools).not.toContain('answer_question');
     expect(t.calls).toEqual([]);
+
+    script = (call) => call('answer_question', { question: t.qs[0]!.id, answer: 'Per variant, with its own stock' });
     await bridge.onMessage({ user: OWNER, channel: CH, ts: '9.4', thread_ts: '9.1', text: 'Per variant, with its own stock' });
+    expect(turns[1]!.prompt).toContain(`Open question from the architect (id ${t.qs[0]!.id}): Stock`);
     expect(t.calls).toEqual([`answer:${t.qs[0]!.id}:Per variant, with its own stock:slack`]);
-    // An answer that starts with a command word is still an answer.
-    t.calls.length = 0;
-    t.bus.emit(t.task.id, 'question_answered', { questionId: t.qs[0]!.id, gateId: t.gate.id });
-    await t.settle();
-    await bridge.onMessage({ user: OWNER, channel: CH, ts: '9.41', thread_ts: '9.1', text: 'Discard the per-item price, use the variant price' });
-    expect(t.calls).toEqual([`answer:${t.qs[1]!.id}:Discard the per-item price, use the variant price:slack`]);
-    await bridge.onMessage({ user: OWNER, channel: CH, ts: '9.5', thread_ts: '9.1', text: 'send' });
+
+    script = (call) => call('briefing_action', { task: t.task.id, action: 'send' });
+    await bridge.onMessage({ user: OWNER, channel: CH, ts: '9.5', thread_ts: '9.1', text: 'send what I have' });
     expect(t.calls.at(-1)).toBe(`briefing:${t.task.id}:send`);
     bridge.stop();
   });

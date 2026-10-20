@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '../server/src/db/schema.js';
-import { alertText, breakdownSummary, planSummary, progressBar, pushSummary, reviewPostSummary, statusBlocks, verificationText } from '../server/src/slackFormat.js';
+import { alertText, breakdownSummary, handoffText, planSummary, progressBar, pushSummary, reviewPostSummary, statusBlocks, verificationText } from '../server/src/slackFormat.js';
 
 const PLAN = `---
 files_in_scope:
@@ -173,5 +173,37 @@ describe('statusBlocks', () => {
   it('draws progress without going past the end', () => {
     expect(progressBar(3, 5)).toBe('▰▰▰▱▱');
     expect(progressBar(9, 5)).toBe('▰▰▰▰▰');
+  });
+});
+
+describe('handoffText', () => {
+  const doc = (meta: string, body: string) => `---\n${meta}\n---\n${body}`;
+
+  it("gives the plan's goal and size, and the review and test verdicts", () => {
+    expect(handoffText('planning', doc('files_in_scope: [a.ts, b.ts, c.ts]', '## Goal\nAdd **greet()**.\n\n## Acceptance criteria\n- one\n- two'), null)).toBe('Plan is ready: Add *greet()*.\n2 checks, touches 3 files');
+    expect(handoffText('reviewing', doc('verdict: pass\nblocking: 0', '## Summary\nLooks right.'), null)).toBe(':white_check_mark: Review passed. Looks right.');
+    expect(handoffText('reviewing', doc('verdict: fail\nblocking: 1', '## Summary\nOne bug.'), null)).toBe(':warning: Review found 1 blocking issue. One bug.');
+    expect(handoffText('testing', doc('result: pass\ntests_added: 2', '## Suite\nnpm test: 40 passed'), null)).toBe(':white_check_mark: Tests pass (+2 new). npm test: 40 passed');
+    expect(handoffText('testing', doc('result: fail\ntests_added: 0', '## Suite\n2 failed'), null)).toBe(':x: Tests fail. 2 failed');
+  });
+
+  it('counts the files the build touched, and says how it was tested', () => {
+    const changes = doc('status: done', '## Changes\n- Step 1: a.ts\n- Step 2: b.ts\n\n## PR\n**Title:** Add greet\n**Summary:**\n- adds it\n**How it was tested:** npm test: 40 passed');
+    expect(handoffText('coding', changes, 5)).toBe('Done: 5 files changed, tests: npm test: 40 passed');
+    // Without git's count, the changes list is counted.
+    expect(handoffText('coding', changes, null)).toBe('Done: 2 files changed, tests: npm test: 40 passed');
+    expect(handoffText('coding', doc('status: blocked', '## Question\nWhich one?'), null)).toBeNull();
+  });
+
+  it('is silent for steps with nothing to add, and for a missing document', () => {
+    expect(handoffText('intake', doc('title: x', '## Request\nx'), null)).toBeNull();
+    expect(handoffText('retro', doc('', '- **Went well:** x'), null)).toBeNull();
+    expect(handoffText('planning', null, null)).toBeNull();
+  });
+
+  it("reports the cause a debugger found, research answers, and an epic's split", () => {
+    expect(handoffText('debugging', doc('reproduced: true', '## Root cause\nThe cache key ignores the locale (cache.ts:12).'), null)).toBe('Found the cause: The cache key ignores the locale (cache.ts:12).');
+    expect(handoffText('researching', doc('', '## Answers\n- A: x\n- B: y'), null)).toBe('Research is in: 2 answers.');
+    expect(handoffText('splitting', doc('milestones: 3', '## Milestones\n### 1. a\nx'), null)).toBe('Split into 3 milestones.');
   });
 });

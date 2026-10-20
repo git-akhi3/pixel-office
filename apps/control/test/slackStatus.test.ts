@@ -5,13 +5,9 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openDb, schema, type Db } from '../server/src/db/index.js';
 import type { Gate, Task } from '../server/src/db/schema.js';
-import { EventBus } from '../server/src/events.js';
-import type { Pipeline } from '../server/src/pipeline.js';
-import { SlackBridge, type SlackApi } from '../server/src/slack.js';
 import { describeTask, listActive, stageOf, waitingOnYou, type StatusContext } from '../server/src/slackStatus.js';
 
 const NOW = 1_000_000_000_000;
-const OWNER = 'U0OWNER0001';
 
 function setup() {
   const db: Db = openDb(join(mkdtempSync(join(tmpdir(), 'slackstatus-')), 'office.db'));
@@ -65,8 +61,9 @@ describe('waitingOnYou', () => {
 
 describe('describeTask', () => {
   it('shows stage, time, spend against the estimate, and what is waiting', () => {
-    const { add, ctx } = setup();
+    const { add, ctx, gate } = setup();
     const t = add({ status: 'awaiting_merge_approval', title: 'Add greeting', tokenEstimate: 15_000, prUrl: null });
+    gate(t.id, 'merge');
     const text = describeTask(t, ctx());
     expect(text).toContain('*#' + t.id + '* Add greeting');
     expect(text).toContain('stage 9 of 12');
@@ -74,16 +71,23 @@ describe('describeTask', () => {
     expect(text).toContain('39.0k tokens used');
     expect(text).toContain('12.0k of the plan\'s ~15.0k estimate (80%)');
     expect(text).toContain('*Waiting on you:* merge the PR');
-    expect(text).toContain('No time estimate');
+    // At the merge gate only the wrap-up is left for the agents; the merge itself waits for the owner.
+    expect(text).toContain('ETA: about 1m of agent work left (wrap-up');
+    expect(text).toContain('Then it waits for you: merge.');
+    expect(text).not.toContain('No time estimate');
+    expect(text).toContain(`(gate`);
   });
 
   it('shows the working agent and step time, and the last alert when blocked', () => {
     const { add, db, ctx } = setup();
     const working = add({ status: 'coding' });
     const text = describeTask(working, ctx({ stepStartedAt: () => NOW - 90_000 }));
-    expect(text).toContain('coder working');
+    expect(text).toContain('Iron Man (coder) working');
     expect(text).toContain('1m 30s in this step');
     expect(text).toContain('Nothing waiting on you');
+    // A standard task in coding still has review and tests to go, then the merge waits for the owner.
+    expect(text).toContain('ETA: about 19m of agent work left (the build, review, tests, wrap-up');
+    expect(text).toContain('Then it waits for you: merge.');
 
     const blocked = add({ status: 'blocked', resumeStatus: 'coding', statusNote: 'Push failed' });
     db.insert(schema.events).values({ taskId: blocked.id, type: 'alert', payload: { kind: 'blocked', message: 'No <origin> remote' } }).run();
@@ -113,21 +117,5 @@ describe('listActive', () => {
     const { add, ctx } = setup();
     add({ status: 'done' });
     expect(listActive(ctx())).toBe('No active tasks.');
-  });
-});
-
-describe('Slack "status"', () => {
-  it('a top-level status lists the active tasks, for the owner', async () => {
-    const { db, add } = setup();
-    add({ status: 'coding', title: 'Building' });
-    const posted: Array<{ text: string; thread_ts?: string }> = [];
-    const api: SlackApi = { postMessage: async (a) => (posted.push(a), { ts: '1.1' }), updateMessage: async () => undefined, openDm: async () => 'D0DM' };
-    const pipeline = { tokensUsed: () => 0, pendingGates: () => [] } as unknown as Pipeline;
-    const bridge = new SlackBridge({ db, bus: new EventBus(db), pipeline, docs: {} as never, ownerId: OWNER, publicUrl: 'http://127.0.0.1:4100', api });
-    await bridge.start();
-    await bridge.onMessage({ user: OWNER, channel: 'D0DM', ts: '9.1', text: 'status' });
-    bridge.stop();
-    expect(posted.at(-1)!.text).toContain('*1 active task*');
-    expect(posted.at(-1)!.thread_ts).toBe('9.1');
   });
 });
