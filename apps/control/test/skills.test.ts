@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isWrapperSkill, loadAgents, systemPromptFor, withSkills } from '../server/src/agents.js';
 import { ensureDirs, loadConfig, type OfficeConfig } from '../server/src/config.js';
-import { openDb, type Db } from '../server/src/db/index.js';
+import { openDb, setSetting, type Db } from '../server/src/db/index.js';
 import type { Repo, Task } from '../server/src/db/schema.js';
 import { EventBus } from '../server/src/events.js';
 import type { Publisher } from '../server/src/github.js';
@@ -193,6 +193,8 @@ describe('mission skills', () => {
     const repoPath = join(home, 'app');
     execSync(`mkdir -p "${repoPath}/src" && cd "${repoPath}" && git init -q -b main && echo x > README.md && git add . && git -c user.name=t -c user.email=t@t commit -qm init`);
     db = openDb(config.dbPath);
+  // These tests approve each plan themselves; plans going ahead on their own is tested on its own.
+  setSetting(db, 'plansWaitForMe', true);
     bus = new EventBus(db);
     repo = await createRepo(db, { name: 'app', path: repoPath, gitAuthor: 'T <t@t.dev>' });
     runner = new Runner((id) => pipeline.getTask(id).status);

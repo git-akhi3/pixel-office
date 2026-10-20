@@ -34,6 +34,8 @@ export interface Settings {
   grillSkill: string;
   /** On size S tasks, run the reviewer on Sonnet when its definition says Opus (the architect keeps Opus). */
   sonnetForSmall: boolean;
+  /** Every plan waits for my OK. Off: plans go ahead unless a briefing shaped them or I sent one back. */
+  plansWaitForMe: boolean;
   /** Allow commands off the allow-list without asking, unless crucialCommand() says they need me. */
   autoAllowCommands: boolean;
 }
@@ -57,7 +59,7 @@ export function usagePause(s: Settings, now: number): { paused: boolean; until: 
   return { paused: false, until: null, window: null };
 }
 
-const DEFAULTS: Settings = { concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, rateLimit: null, usagePauseAt: 0.9, pixelSessionId: null, grillSkill: 'grilling', sonnetForSmall: true, autoAllowCommands: false };
+const DEFAULTS: Settings = { concurrency: 2, reviewAutoPickup: false, reviewMinLines: 0, rateLimit: null, usagePauseAt: 0.9, pixelSessionId: null, grillSkill: 'grilling', sonnetForSmall: true, plansWaitForMe: false, autoAllowCommands: false };
 
 export function getSettings(db: Db): Settings {
   const rows = db.select().from(schema.settings).all();

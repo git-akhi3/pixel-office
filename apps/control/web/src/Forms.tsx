@@ -358,6 +358,16 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
         </span>
       </label>
       <label className="switch">
+        <input type="checkbox" checked={s.plansWaitForMe} onChange={(e) => save({ plansWaitForMe: e.target.checked })} />
+        <span>
+          <strong>Plans wait for me</strong>
+          <span className="hint">
+            Off: the architect's plan goes ahead on its own (it's posted in the thread; ask for a new one if it's off), except after a
+            briefing or once you've sent a plan for that task back. On: every plan waits for your OK.
+          </span>
+        </span>
+      </label>
+      <label className="switch">
         <input type="checkbox" checked={s.sonnetForSmall} onChange={(e) => save({ sonnetForSmall: e.target.checked })} />
         <span>
           <strong>Sonnet for small tasks</strong>

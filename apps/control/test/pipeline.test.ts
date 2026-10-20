@@ -232,6 +232,8 @@ beforeEach(async () => {
     `mkdir -p "${repoPath}/src" && cd "${repoPath}" && git init -q -b main && echo "# app" > README.md && echo "export {};" > src/index.ts && git add . && git -c user.name=t -c user.email=t@t commit -qm init`,
   );
   db = openDb(config.dbPath);
+  // These tests approve each plan themselves; plans going ahead on their own is tested on its own.
+  setSetting(db, 'plansWaitForMe', true);
   bus = new EventBus(db);
   repo = await createRepo(db, { name: 'app', path: repoPath, testCmd: 'npm test', gitAuthor: 'Office Test <office@test.dev>' });
   runner = new FakeRunner((id) => pipeline.getTask(id).status);
@@ -807,6 +809,25 @@ describe('pipeline', () => {
     expect(steps().slice(2)).toEqual(['coding', 'reviewing', 'testing', 'coding', 'reviewing', 'testing']);
     expect(pipeline.getTask(task.id).testFailures).toBe(1);
     expect(statusOf(task)).toBe('awaiting_merge_approval');
+  });
+
+  it('lets a plan go ahead on its own unless a briefing shaped it or I sent one back', async () => {
+    setSetting(db, 'plansWaitForMe', false);
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await settle();
+    expect(steps()).toEqual(['intake', 'planning', 'coding', 'reviewing', 'testing']);
+    expect(statusOf(task)).toBe('awaiting_merge_approval');
+    const plan = db.select().from(schema.gates).where(eq(schema.gates.taskId, task.id)).all().find((g) => g.kind === 'plan')!;
+    expect(plan).toMatchObject({ status: 'approved', auto: true });
+
+    // Once I've sent a task's plan back, its next plan waits for me.
+    setSetting(db, 'plansWaitForMe', true);
+    const second = pipeline.createTask({ repoId: repo.id, input: 'Add a farewell helper' });
+    await settle();
+    setSetting(db, 'plansWaitForMe', false);
+    await pipeline.decideGate(planGate(second).id, 'reject', 'Put it in its own file');
+    await settle();
+    expect(statusOf(second)).toBe('awaiting_plan_approval');
   });
 
   it('never auto-approves the plan', async () => {

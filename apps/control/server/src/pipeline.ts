@@ -635,6 +635,16 @@ export class Pipeline {
     return used ? 'it read web pages while working' : null;
   }
 
+  /** Whether a plan waits for my OK: after a briefing, once I've sent one of this task's plans back, or always (Settings). */
+  private planNeedsMe(task: Task): boolean {
+    if (task.grill || getSettings(this.deps.db).plansWaitForMe) return true;
+    return !!this.deps.db
+      .select({ id: schema.gates.id })
+      .from(schema.gates)
+      .where(and(eq(schema.gates.taskId, task.id), eq(schema.gates.kind, 'plan'), eq(schema.gates.status, 'rejected')))
+      .get();
+  }
+
   private hadEvent(taskId: number, type: string): boolean {
     return !!this.deps.db.select({ id: schema.events.id }).from(schema.events).where(and(eq(schema.events.taskId, taskId), eq(schema.events.type, type))).get();
   }
@@ -765,7 +775,15 @@ export class Pipeline {
         return;
       case 'planning': {
         const m = readMeta<{ files_in_scope: string[]; token_estimate: number }>('planning', text);
-        this.update(task.id, { filesInScope: m.files_in_scope, tokenEstimate: m.token_estimate, status: 'awaiting_plan_approval' });
+        this.update(task.id, { filesInScope: m.files_in_scope, tokenEstimate: m.token_estimate });
+        // The plan goes ahead on its own (I see it in the thread and can ask for a new one), unless a
+        // briefing shaped it or I already sent a plan for this task back: then it waits for my OK.
+        if (!this.planNeedsMe(task)) {
+          this.openGate(task.id, 'plan', null, true);
+          this.update(task.id, { status: 'coding' });
+          return;
+        }
+        this.update(task.id, { status: 'awaiting_plan_approval' });
         this.openGate(task.id, 'plan');
         return;
       }

@@ -484,6 +484,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         usagePauseAt: z.number().min(0.5).max(1).optional(),
         grillSkill: z.string().regex(SKILL_NAME).optional(),
         sonnetForSmall: z.boolean().optional(),
+        plansWaitForMe: z.boolean().optional(),
         autoAllowCommands: z.boolean().optional(),
       })
       .parse(req.body);
@@ -493,6 +494,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     if (body.reviewMinLines !== undefined) setSetting(db, 'reviewMinLines', body.reviewMinLines);
     if (body.usagePauseAt !== undefined) setSetting(db, 'usagePauseAt', body.usagePauseAt);
     if (body.sonnetForSmall !== undefined) setSetting(db, 'sonnetForSmall', body.sonnetForSmall);
+    if (body.plansWaitForMe !== undefined) setSetting(db, 'plansWaitForMe', body.plansWaitForMe);
     if (body.autoAllowCommands !== undefined) setSetting(db, 'autoAllowCommands', body.autoAllowCommands);
     void pipeline.tick();
     return getSettings(db);

@@ -237,6 +237,7 @@ export interface Settings {
   usagePauseAt: number;
   grillSkill: string;
   sonnetForSmall: boolean;
+  plansWaitForMe: boolean;
   usage?: { paused: boolean; until: number | null; window: string | null };
 }
 

@@ -476,7 +476,11 @@ export class SlackBridge {
 
   private async onGate(task: Task, g: { gateId: number; kind: Gate['kind']; subject: string | null; status: string; auto: boolean }): Promise<void> {
     if (g.status !== 'pending') {
-      if (g.auto && g.kind !== 'command') await this.say(`:white_check_mark: ${g.kind === 'push' ? 'Push' : 'Gate'} auto-approved.`, task);
+      if (g.auto && g.kind === 'plan') {
+        // Plans go ahead on their own: show it, with the way to change course.
+        const summary = planSummary(this.deps.docs.latest(task.id, 'plan') ?? '');
+        await this.say(`:memo: *Plan ready, going ahead.* Say "new plan" with what to change if it's off.${summary ? `\n${clip(summary, MAX_SECTION)}` : ''}`, task);
+      } else if (g.auto && g.kind !== 'command') await this.say(`:white_check_mark: ${g.kind === 'push' ? 'Push' : 'Gate'} auto-approved.`, task);
       return;
     }
     if (g.kind === 'question') return; // posted question by question by SlackQuestions

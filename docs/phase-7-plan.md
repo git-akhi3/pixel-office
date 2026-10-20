@@ -142,13 +142,12 @@ Built 2026-10-20.
 
 ## Step 5: team-lane trims
 
-- **Plans are approved automatically** unless a briefing ran. Strange posts the plan ("going ahead; reply to change it"), and the auto-approved plan gate is kept on the task.
+Built 2026-10-20.
+
+- **Plans go ahead on their own** unless a briefing shaped them or I've sent one of that task's plans back. Strange's plan is posted in the thread ("Plan ready, going ahead") with the way to change course (ask for a new plan). The auto-approved plan gate is kept on the task. Settings → **Plans wait for me** brings back an approval for every plan.
 - **Fix loops resume the coder's session:** done in step 1.
-- **Review and tests run in parallel.**
-  - The tester works in a second worktree at the coder's commit, and its test commit is cherry-picked back.
-  - This needs the pipeline to run two steps at once on one task (today `running` is keyed by task).
-  - If review fails, the tester's work is dropped with the rest of the loop.
-- **Milestones:** no change needed. The next milestone already starts when the previous one is `pr_open`, and PRs now open as soon as checks pass, so the wait is only build time.
+- **Milestones:** no change needed. The next milestone already starts when the previous one's PR is open, and PRs now open as soon as checks pass.
+- **Review and tests in parallel: not done.** The office's data puts the tester at 0.2–1 minute per task, so running them side by side would save under a minute. It would also need two sessions on one task at once (separate worktrees, cherry-picked test commits, new failure paths). Worth revisiting only if tests get slow.
 
 ## Not doing
 
