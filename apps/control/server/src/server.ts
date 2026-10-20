@@ -20,6 +20,7 @@ import type { Graphs } from './graph.js';
 import type { Knowledge } from './knowledge.js';
 import type { Pipeline } from './pipeline.js';
 import type { PixelBridge } from './pixelBridge.js';
+import { PICKABLE_LANES } from './lanes.js';
 import { createRepo, deleteRepo, effectiveAllowlist, getRepo, ghAccounts, listRepos, updateRepo } from './repos.js';
 import { run } from './util/exec.js';
 import { diff } from './worktree.js';
@@ -122,6 +123,7 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
         attachments: z.array(z.string().regex(/^[0-9a-f]{24}$/)).max(10).optional(),
         links: z.array(z.string().max(2000)).max(10).optional(),
         refRepos: z.array(id).max(10).optional(),
+        lane: z.enum(PICKABLE_LANES).optional(),
       })
       .parse(req.body);
     return summary(pipeline.createTask(body));
@@ -475,7 +477,6 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   app.put('/api/settings', async (req) => {
     const body = z
       .object({
-        autoApprovePush: z.boolean().optional(),
         concurrency: z.number().int().min(1).max(6).optional(),
         reviewAutoPickup: z.boolean().optional(),
         reviewMinLines: z.number().int().min(0).max(100_000).optional(),
@@ -486,7 +487,6 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
       })
       .parse(req.body);
     if (body.grillSkill !== undefined) setSetting(db, 'grillSkill', body.grillSkill);
-    if (body.autoApprovePush !== undefined) setSetting(db, 'autoApprovePush', body.autoApprovePush);
     if (body.concurrency !== undefined) setSetting(db, 'concurrency', body.concurrency);
     if (body.reviewAutoPickup !== undefined) setSetting(db, 'reviewAutoPickup', body.reviewAutoPickup);
     if (body.reviewMinLines !== undefined) setSetting(db, 'reviewMinLines', body.reviewMinLines);

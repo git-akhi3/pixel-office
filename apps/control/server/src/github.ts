@@ -1,6 +1,7 @@
-// Everything that leaves the machine. Only the office calls these, after the push gate.
+// Everything that leaves the machine. Only the office calls these: pushes once the checks pass, merges after my approval.
 
 import type { Repo } from './db/schema.js';
+import type { MergeMethod } from './domain.js';
 import { git, run, runOk } from './util/exec.js';
 
 export interface PrInfo {
@@ -31,7 +32,15 @@ export interface PostedReview {
 }
 
 export interface Publisher {
-  pushAndOpenDraftPr(repo: Repo, worktree: string, branch: string, pr: { title: string; body: string; base: string }): Promise<string>;
+  /** Pushes the branch and opens its PR (ready for review, or a draft). A PR the branch already has keeps its URL and gets the new title and description. */
+  pushAndOpenPr(repo: Repo, worktree: string, branch: string, pr: { title: string; body: string; base: string; draft: boolean }): Promise<string>;
+  /**
+   * Merges an open PR, after my approval. With headSha, only while the PR's head is still that commit
+   * (anything pushed since makes GitHub refuse). Branch protection and required checks still apply.
+   */
+  mergePr(repo: Repo, prUrl: string, method: MergeMethod, headSha?: string | null): Promise<void>;
+  /** Points an open PR at another base branch (a milestone whose predecessor has merged). */
+  retargetPr(repo: Repo, prUrl: string, base: string): Promise<void>;
   prState(repo: Repo, prUrl: string): Promise<'OPEN' | 'MERGED' | 'CLOSED' | 'UNKNOWN'>;
   prInfo(repo: Repo, slug: string, number: number): Promise<PrInfo>;
   /** Always posted as a COMMENT review: approving or requesting changes stays a human click on GitHub. */
@@ -56,7 +65,7 @@ async function ghEnv(account: string | null): Promise<NodeJS.ProcessEnv> {
 }
 
 export class GhPublisher implements Publisher {
-  async pushAndOpenDraftPr(repo: Repo, worktree: string, branch: string, pr: { title: string; body: string; base: string }): Promise<string> {
+  async pushAndOpenPr(repo: Repo, worktree: string, branch: string, pr: { title: string; body: string; base: string; draft: boolean }): Promise<string> {
     assertPushAllowed(repo, branch);
     const env = await ghEnv(repo.ghAccount);
     // Use gh as the credential helper so HTTPS pushes go out as the repo's gh account.
@@ -66,15 +75,28 @@ export class GhPublisher implements Publisher {
       { env, timeoutMs: 180_000 },
     );
     const existing = await run('gh', ['pr', 'view', branch, '--json', 'url', '--jq', '.url'], { cwd: worktree, env });
-    if (existing.code === 0 && existing.stdout.trim()) return existing.stdout.trim();
+    if (existing.code === 0 && existing.stdout.trim()) {
+      const url = existing.stdout.trim();
+      await runOk('gh', ['pr', 'edit', url, '--title', pr.title, '--body-file', '-'], { cwd: worktree, env, input: pr.body, timeoutMs: 60_000 });
+      return url;
+    }
     const out = await runOk(
       'gh',
-      ['pr', 'create', '--draft', '--base', pr.base, '--head', branch, '--title', pr.title, '--body-file', '-'],
+      ['pr', 'create', ...(pr.draft ? ['--draft'] : []), '--base', pr.base, '--head', branch, '--title', pr.title, '--body-file', '-'],
       { cwd: worktree, env, input: pr.body, timeoutMs: 120_000 },
     );
     const url = out.trim().split('\n').pop() ?? '';
     if (!/^https:\/\//.test(url)) throw new Error(`gh pr create returned no URL: ${out.slice(0, 300)}`);
     return url;
+  }
+
+  async mergePr(repo: Repo, prUrl: string, method: MergeMethod, headSha?: string | null): Promise<void> {
+    const pin = headSha ? ['--match-head-commit', headSha] : [];
+    await runOk('gh', ['pr', 'merge', prUrl, `--${method}`, ...pin], { env: await ghEnv(repo.ghAccount), timeoutMs: 120_000 });
+  }
+
+  async retargetPr(repo: Repo, prUrl: string, base: string): Promise<void> {
+    await runOk('gh', ['pr', 'edit', prUrl, '--base', base], { env: await ghEnv(repo.ghAccount), timeoutMs: 60_000 });
   }
 
   async prState(repo: Repo, prUrl: string): Promise<'OPEN' | 'MERGED' | 'CLOSED' | 'UNKNOWN'> {

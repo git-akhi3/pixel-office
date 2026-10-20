@@ -47,6 +47,7 @@ Model and effort can be changed per agent. PR writing is a skill the coder runs,
   - only when reviewer and tester both pass
   - never to `main`, `master` or protected branches; only `office/<task-id>-<slug>` branches
   - PRs open as drafts
+  - *Since phase 7 ([phase-7-plan.md](phase-7-plan.md)):* the PR opens by itself once the checks pass, and the gate is on the merge instead. The branch rules above still hold.
 - **Posting a PR review:** always manual.
 - At any gate: approve, reject with a comment (the agent revises), or take over (open the worktree in my editor).
 

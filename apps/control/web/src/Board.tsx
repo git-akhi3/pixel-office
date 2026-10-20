@@ -78,7 +78,7 @@ export function Board({
                       </div>
                       <div className="card-title">{t.title}</div>
                       <StageTrack task={t} />
-                      <StatusBadge status={t.status} running={t.running} />
+                      <StatusBadge status={t.status} running={t.running} lane={t.lane} />
                       {t.pendingGates.some((g) => g.kind === 'question') && (
                         <div className="card-alert">
                           <Icon name="question" size={8} /> The architect has questions for you

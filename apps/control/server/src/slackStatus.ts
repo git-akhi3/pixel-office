@@ -5,10 +5,10 @@ import { desc, eq, and } from 'drizzle-orm';
 import type { Db } from './db/index.js';
 import { schema } from './db/index.js';
 import type { Gate, Task } from './db/schema.js';
-import { boardColumn, isAgentStep, stepRole, TERMINAL_STATUSES, type TaskStatus } from './domain.js';
+import { boardColumn, isAgentStep, isSolo, stepRole, TERMINAL_STATUSES, type TaskStatus } from './domain.js';
 
 /** The order a feature or bug task moves through. Waiting states sit where the work resumes. */
-const FEATURE_STAGES: TaskStatus[] = ['queued', 'intake', 'planning', 'awaiting_plan_approval', 'coding', 'reviewing', 'testing', 'awaiting_push_approval', 'pushing', 'pr_open', 'retro', 'done'];
+const FEATURE_STAGES: TaskStatus[] = ['queued', 'intake', 'planning', 'awaiting_plan_approval', 'coding', 'reviewing', 'testing', 'pushing', 'awaiting_merge_approval', 'merging', 'retro', 'done'];
 const REVIEW_STAGES: TaskStatus[] = ['queued', 'reviewing_pr', 'awaiting_review_post', 'posting_review', 'done'];
 
 /** Statuses whose tokens count against the architect's estimate (the same steps the budget alert watches). */
@@ -45,14 +45,11 @@ export function tokens(n: number): string {
 }
 
 /** "stage 5 of 12": rough position in the pipeline. Not a time estimate. */
-/** Steps a lane skips (see lanes.ts). */
-const SKIPPED: Partial<Record<string, TaskStatus[]>> = {
-  trivial: ['planning', 'awaiting_plan_approval', 'reviewing', 'testing', 'retro'],
-  small: ['planning', 'awaiting_plan_approval'],
-};
+/** Steps a solo task skips (see lanes.ts): it has no plan and no tester, and a review only when the diff is big. */
+const SOLO_SKIPS: TaskStatus[] = ['planning', 'awaiting_plan_approval', 'testing'];
 
 export function stageOf(task: Task): { n: number; of: number } | null {
-  const skipped = SKIPPED[task.lane ?? ''] ?? [];
+  const skipped = isSolo(task) ? SOLO_SKIPS : [];
   const stages = task.kind === 'review' ? REVIEW_STAGES : FEATURE_STAGES.filter((s) => !skipped.includes(s));
   // A paused, blocked or stopped task sits where it will resume. Debugging and research happen before planning.
   let at: TaskStatus = ['paused', 'blocked', 'stopped'].includes(task.status) ? (task.resumeStatus ?? task.status) : task.status;
@@ -71,7 +68,9 @@ export function waitingOnYou(task: Task, gates: Gate[]): string | null {
     case 'awaiting_breakdown_approval':
       return 'approve or reject the milestone split';
     case 'awaiting_push_approval':
-      return 'approve or reject the push (opens a draft PR)';
+      return 'approve or reject the push (opens the PR)';
+    case 'awaiting_merge_approval':
+      return 'merge the PR, or send it back with what to change';
     case 'awaiting_review_post':
       return 'edit and post the draft review';
     case 'blocked':

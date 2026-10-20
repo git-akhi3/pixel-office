@@ -27,6 +27,12 @@ export interface RunRequest {
    * answered in time); null lets the message through to validation.
    */
   interject?(text: string): Promise<string | 'park' | null>;
+  /**
+   * Continue an earlier session of this task instead of starting fresh: `prompt` is the new message
+   * (the feedback to address). When that session can't be resumed, the run starts fresh with the full
+   * prompt above.
+   */
+  resume?: { sessionId: string; prompt: string; usageSoFar?: RunUsage };
 }
 
 export interface RunUsage {
@@ -64,6 +70,12 @@ export interface AgentRunner {
 }
 
 export const emptyUsage = (): RunUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 });
+
+/** a minus b, field by field, never below zero. */
+export function minusUsage(a: RunUsage, b: RunUsage): RunUsage {
+  const d = (k: keyof RunUsage) => Math.max(0, a[k] - b[k]);
+  return { input: d('input'), output: d('output'), cacheRead: d('cacheRead'), cacheWrite: d('cacheWrite'), thinking: d('thinking') };
+}
 
 const RATE_LIMIT_TEXT = /rate.?limit|usage limit|limit reached/i;
 
@@ -127,6 +139,15 @@ export class SdkRunner implements AgentRunner {
   }
 
   async run(req: RunRequest): Promise<RunOutcome> {
+    if (!req.resume) return this.runOnce(req);
+    const resumed = await this.runOnce(req, req.resume);
+    // A session that never started (its transcript is gone) is retried fresh; any other outcome stands.
+    if (resumed.status !== 'failed' || resumed.sessionId) return resumed;
+    req.onEvent('resume_failed', { error: resumed.error ?? 'the session did not start' });
+    return this.runOnce(req);
+  }
+
+  private async runOnce(req: RunRequest, resume?: RunRequest['resume']): Promise<RunOutcome> {
     const started = Date.now();
     const input = new InputQueue();
     this.live.set(req.runId, input);
@@ -153,7 +174,7 @@ export class SdkRunner implements AgentRunner {
         : ({ decision: 'allow' } as const);
     };
 
-    input.push(req.prompt);
+    input.push(resume ? resume.prompt : req.prompt);
     const q = query({
       prompt: input.stream(),
       options: {
@@ -167,6 +188,7 @@ export class SdkRunner implements AgentRunner {
         systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptFor(req.agent) },
         env: agentEnv(this.token),
         ...(req.mcpServers ? { mcpServers: req.mcpServers } : {}),
+        ...(resume ? { resume: resume.sessionId } : {}),
         abortController: abort,
         hooks: {
           PreToolUse: [
@@ -236,7 +258,8 @@ export class SdkRunner implements AgentRunner {
             break;
           }
           case 'result': {
-            // modelUsage is cumulative for the session: read the latest result, don't sum.
+            // modelUsage is cumulative for the session: read the latest result, don't sum. A resumed session
+            // also counts its earlier runs, which are recorded already: take those off.
             usage = emptyUsage();
             for (const mu of Object.values(m.modelUsage ?? {})) {
               usage.input += mu.inputTokens ?? 0;
@@ -245,6 +268,7 @@ export class SdkRunner implements AgentRunner {
               usage.cacheWrite += mu.cacheCreationInputTokens ?? 0;
               usage.thinking += (mu as { thinkingTokens?: number }).thinkingTokens ?? 0;
             }
+            if (resume?.usageSoFar) usage = minusUsage(usage, resume.usageSoFar);
             if (m.subtype === 'success') text = m.result;
             const ok = m.subtype === 'success' && !m.is_error && !rateLimited && !req.signal.aborted;
             if (ok && req.interject) {

@@ -1,5 +1,5 @@
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import type { GateKind, GateStatus, Lane, Role, TaskKind, TaskSize, TaskStatus } from '../domain.js';
+import type { GateKind, GateStatus, Lane, MergeMethod, Role, TaskKind, TaskSize, TaskStatus } from '../domain.js';
 
 const now = () => Date.now();
 
@@ -25,6 +25,8 @@ export const repos = sqliteTable('repos', {
   /** Glob-ish patterns the tester may write, e.g. "**\/*.test.ts". */
   testGlobs: text('test_globs', { mode: 'json' }).$type<string[]>().notNull().default([]),
   ghAccount: text('gh_account'),
+  /** How the office merges this repo's PRs once I approve them. */
+  mergeMethod: text('merge_method').$type<MergeMethod>().notNull().default('squash'),
   gitAuthor: text('git_author'), // "Name <email>" used for office commits when the repo has none
   allowlist: text('allowlist', { mode: 'json' }).$type<string[]>().notNull().default([]),
   /** Extra skills per role for this repo only, e.g. { coder: ["fastify-conventions"] }. */
@@ -86,6 +88,7 @@ export const tasks = sqliteTable('tasks', {
   prNumber: integer('pr_number'),
   prRepo: text('pr_repo'), // owner/name
   prAuthor: text('pr_author'),
+  /** Review tasks: the head of the PR under review. Build tasks: the commit the office pushed to its PR (the one a merge takes). */
   prHeadSha: text('pr_head_sha'),
   prHeadRef: text('pr_head_ref'),
   prBaseRef: text('pr_base_ref'),

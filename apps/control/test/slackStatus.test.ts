@@ -43,9 +43,10 @@ describe('stageOf', () => {
 
   it('counts only the stages a lane runs', () => {
     const { add } = setup();
-    expect(stageOf(add({ status: 'coding', lane: 'trivial' }))).toEqual({ n: 3, of: 7 });
-    expect(stageOf(add({ status: 'awaiting_push_approval', lane: 'trivial' }))).toEqual({ n: 4, of: 7 });
-    expect(stageOf(add({ status: 'reviewing', lane: 'small' }))).toEqual({ n: 4, of: 10 });
+    expect(stageOf(add({ status: 'coding', lane: 'solo' }))).toEqual({ n: 3, of: 9 });
+    expect(stageOf(add({ status: 'awaiting_merge_approval', lane: 'solo' }))).toEqual({ n: 6, of: 9 });
+    expect(stageOf(add({ status: 'reviewing', lane: 'small' }))).toEqual({ n: 4, of: 9 });
+    expect(stageOf(add({ status: 'testing', lane: 'standard' }))).toEqual({ n: 7, of: 12 });
   });
 });
 
@@ -55,6 +56,7 @@ describe('waitingOnYou', () => {
     expect(waitingOnYou(add({ status: 'coding' }), [])).toBeNull();
     expect(waitingOnYou(add({ status: 'awaiting_plan_approval' }), [])).toContain('plan');
     expect(waitingOnYou(add({ status: 'awaiting_push_approval' }), [])).toContain('push');
+    expect(waitingOnYou(add({ status: 'awaiting_merge_approval' }), [])).toContain('merge the PR');
     expect(waitingOnYou(add({ status: 'blocked' }), [])).toContain('unblock');
     const t = add({ status: 'coding' });
     expect(waitingOnYou(t, [gate(t.id, 'command', 'rm -rf build')])).toContain('rm -rf build');
@@ -64,14 +66,14 @@ describe('waitingOnYou', () => {
 describe('describeTask', () => {
   it('shows stage, time, spend against the estimate, and what is waiting', () => {
     const { add, ctx } = setup();
-    const t = add({ status: 'awaiting_push_approval', title: 'Add greeting', tokenEstimate: 15_000, prUrl: null });
+    const t = add({ status: 'awaiting_merge_approval', title: 'Add greeting', tokenEstimate: 15_000, prUrl: null });
     const text = describeTask(t, ctx());
     expect(text).toContain('*#' + t.id + '* Add greeting');
-    expect(text).toContain('stage 8 of 12');
+    expect(text).toContain('stage 9 of 12');
     expect(text).toContain('10m 0s since it started');
     expect(text).toContain('39.0k tokens used');
     expect(text).toContain('12.0k of the plan\'s ~15.0k estimate (80%)');
-    expect(text).toContain('*Waiting on you:* approve or reject the push');
+    expect(text).toContain('*Waiting on you:* merge the PR');
     expect(text).toContain('No time estimate');
   });
 

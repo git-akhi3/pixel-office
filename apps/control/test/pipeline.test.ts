@@ -41,7 +41,7 @@ const docs = {
 type Script = (req: RunRequest) => Promise<Partial<RunOutcome> & { text?: string }> | (Partial<RunOutcome> & { text?: string });
 
 class FakeRunner implements AgentRunner {
-  calls: Array<{ step: string; prompt: string; model?: string; effort?: string; skills: string[]; readRoots?: string[] }> = [];
+  calls: Array<{ step: string; role: string; prompt: string; model?: string; effort?: string; skills: string[]; readRoots?: string[]; resume?: { sessionId: string; prompt: string } }> = [];
   active = 0;
   maxActive = 0;
   overrides: Partial<Record<string, Script[]>> = {};
@@ -58,13 +58,13 @@ class FakeRunner implements AgentRunner {
 
   async run(req: RunRequest): Promise<RunOutcome> {
     const step = this.stepOf(req.taskId);
-    this.calls.push({ step, prompt: req.prompt, skills: req.agent.skills, model: req.agent.model, effort: req.agent.effort, readRoots: req.guard.readRoots });
+    this.calls.push({ step, role: req.role, prompt: req.prompt, skills: req.agent.skills, model: req.agent.model, effort: req.agent.effort, readRoots: req.guard.readRoots, resume: req.resume });
     this.active++;
     this.maxActive = Math.max(this.maxActive, this.active);
     try {
       const script = this.overrides[step]?.shift();
       const result = script ? await script(req) : { text: this.defaultText(step, req) };
-      return { status: 'ok', text: '', usage: { ...emptyUsage(), input: 100, output: 50 }, durationMs: 1, ...result };
+      return { status: 'ok', text: '', sessionId: `session-${req.runId}`, usage: { ...emptyUsage(), input: 100, output: 50 }, durationMs: 1, ...result };
     } finally {
       this.active--;
     }
@@ -115,17 +115,37 @@ async function until(check: () => boolean, ms = 3000): Promise<void> {
 class FakePublisher implements Publisher {
   pushed: string[] = [];
   bases: string[] = [];
-  state: 'OPEN' | 'MERGED' = 'OPEN';
+  state: 'OPEN' | 'MERGED' | 'CLOSED' = 'OPEN';
   posted: PostedReview[] = [];
   me = 'octo';
   requests: ReviewRequest[] = [];
-  async pushAndOpenDraftPr(_repo: Repo, _wt: string, branch: string, pr: { base: string }): Promise<string> {
+  drafts: boolean[] = [];
+  merged: Array<{ url: string; method: string; headSha?: string }> = [];
+  retargeted: Array<{ url: string; base: string }> = [];
+  failMerge: string | null = null;
+  /** Set to hold pushes or merges until released (a slow network), or to make the push fail. */
+  hold: Promise<void> | null = null;
+  failPush: string | null = null;
+  async pushAndOpenPr(_repo: Repo, _wt: string, branch: string, pr: { base: string; draft: boolean }): Promise<string> {
+    if (this.hold) await this.hold;
+    if (this.failPush) throw new Error(this.failPush);
+    // Like gh: a branch that already has a PR keeps it.
+    const existing = this.pushed.indexOf(branch);
     this.pushed.push(branch);
     this.bases.push(pr.base);
-    return `https://github.com/acme/app/pull/${100 + this.pushed.length}`;
+    this.drafts.push(pr.draft);
+    return `https://github.com/acme/app/pull/${100 + (existing >= 0 ? existing + 1 : this.pushed.length)}`;
   }
-  async prState(): Promise<'OPEN' | 'MERGED'> {
-    return this.state;
+  async mergePr(_repo: Repo, url: string, method: string, headSha?: string | null): Promise<void> {
+    if (this.hold) await this.hold;
+    if (this.failMerge) throw new Error(this.failMerge);
+    this.merged.push({ url, method, ...(headSha ? { headSha } : {}) });
+  }
+  async retargetPr(_repo: Repo, url: string, base: string): Promise<void> {
+    this.retargeted.push({ url, base });
+  }
+  async prState(_repo: Repo, url: string): Promise<'OPEN' | 'MERGED' | 'CLOSED'> {
+    return this.merged.some((m) => m.url === url) ? 'MERGED' : this.state;
   }
   async prInfo(): Promise<PrInfo> {
     this.prInfoCalls++;
@@ -210,12 +230,13 @@ async function settle(): Promise<void> {
 const statusOf = (t: Task) => pipeline.getTask(t.id).status;
 const steps = () => runner.calls.map((c) => c.step);
 const planGate = (t: Task) => pipeline.pendingGates(t.id).find((g) => g.kind === 'plan')!;
-const pushGate = (t: Task) => pipeline.pendingGates(t.id).find((g) => g.kind === 'push')!;
+const mergeGate = (t: Task) => pipeline.pendingGates(t.id).find((g) => g.kind === 'merge')!;
+const eventsOf = (t: Task, type: string) => db.select().from(schema.events).where(eq(schema.events.taskId, t.id)).all().filter((e) => e.type === type);
 
 // ---------------------------------------------------------------- tests
 
 describe('pipeline', () => {
-  it('runs the happy path with two approvals and opens a draft PR', async () => {
+  it('runs the full team: I approve the plan, the PR opens by itself, and my OK merges it', async () => {
     const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
     await settle();
     expect(statusOf(task)).toBe('awaiting_plan_approval');
@@ -224,7 +245,7 @@ describe('pipeline', () => {
 
     await pipeline.decideGate(planGate(task).id, 'approve');
     await settle();
-    expect(statusOf(task)).toBe('awaiting_push_approval');
+    expect(statusOf(task)).toBe('awaiting_merge_approval');
     expect(steps()).toEqual(['intake', 'planning', 'coding', 'reviewing', 'testing']);
 
     const t = pipeline.getTask(task.id);
@@ -232,24 +253,72 @@ describe('pipeline', () => {
     const log = execSync(`git -C "${t.worktreePath}" log --format=%s ${t.baseSha}..HEAD`).toString();
     expect(log).toContain('Add greet helper');
     expect(log).toContain('test: Add greeting');
-
-    await pipeline.decideGate(pushGate(task).id, 'approve');
-    expect(statusOf(task)).toBe('pr_open');
     expect(publisher.pushed).toEqual([t.branch]);
+    expect(publisher.drafts).toEqual([false]);
+    expect(t.prUrl).toBe('https://github.com/acme/app/pull/101');
+    expect(eventsOf(task, 'pr_opened')).toHaveLength(1);
 
-    await pipeline.action(task.id, 'done');
+    // The merge takes exactly the commit the office pushed.
+    expect(t.prHeadSha).toBe(execSync(`git -C "${t.worktreePath}" rev-parse HEAD`).toString().trim());
+    await pipeline.decideGate(mergeGate(task).id, 'approve');
+    expect(publisher.merged).toEqual([{ url: t.prUrl, method: 'squash', headSha: t.prHeadSha }]);
+    expect(pipeline.getTask(task.id).worktreePath).toBeNull();
     await settle();
     expect(statusOf(task)).toBe('done');
     expect(steps().at(-1)).toBe('retro');
   });
 
-  it('reaches the push gate when the tester adds no tests for a change with no behaviour', async () => {
+  it('merges with the repo\'s merge method', async () => {
+    db.update(schema.repos).set({ mergeMethod: 'rebase' }).where(eq(schema.repos.id, repo.id)).run();
+    runner.queue('intake', () => ({ text: docs.task({ lane: 'solo' }) }));
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await settle();
+    await pipeline.decideGate(mergeGate(task).id, 'approve');
+    expect(publisher.merged[0]!.method).toBe('rebase');
+  });
+
+  it('keeps the PR waiting for me, with the reason, when GitHub refuses the merge', async () => {
+    runner.queue('intake', () => ({ text: docs.task({ lane: 'solo' }) }));
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await settle();
+    publisher.failMerge = 'Required status check "ci" is failing';
+    await pipeline.decideGate(mergeGate(task).id, 'approve');
+    const t = pipeline.getTask(task.id);
+    expect(t.status).toBe('awaiting_merge_approval');
+    expect(t.statusNote).toContain('Required status check');
+    expect(mergeGate(task)).toBeTruthy();
+    publisher.failMerge = null;
+    await pipeline.decideGate(mergeGate(task).id, 'approve');
+    expect(publisher.merged).toHaveLength(1);
+  });
+
+  it('sends the PR back for changes with my comment; the fixes update the same PR', async () => {
+    runner.queue('intake', () => ({ text: docs.task({ lane: 'solo' }) }));
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await settle();
+    const url = pipeline.getTask(task.id).prUrl;
+    await pipeline.decideGate(mergeGate(task).id, 'reject', 'Call it greet, not hello');
+    await settle();
+    const fix = runner.calls.at(-1)!;
+    expect(fix.step).toBe('coding');
+    // The same session continues, with my comment as the new message.
+    expect(fix.resume?.sessionId).toMatch(/^session-/);
+    expect(fix.resume?.prompt).toContain('Call it greet, not hello');
+    expect(fix.resume?.prompt).toContain('status: done');
+    expect(statusOf(task)).toBe('awaiting_merge_approval');
+    expect(pipeline.getTask(task.id).prUrl).toBe(url);
+    expect(eventsOf(task, 'pr_opened')).toHaveLength(1);
+    expect(eventsOf(task, 'pr_updated')).toHaveLength(1);
+    expect(mergeGate(task)).toBeTruthy();
+  });
+
+  it('opens the PR when the tester adds no tests for a change with no behaviour', async () => {
     runner.queue('testing', () => ({ text: '---\nresult: pass\ntests_added: 0\n---\n## Tests added\n- none: README wording only\n\n## Suite\nnpm test: 3 passed' }));
     const task = pipeline.createTask({ repoId: repo.id, input: 'Fix a typo in the README' });
     await settle();
     await pipeline.decideGate(planGate(task).id, 'approve');
     await settle();
-    expect(statusOf(task)).toBe('awaiting_push_approval');
+    expect(statusOf(task)).toBe('awaiting_merge_approval');
     const t = pipeline.getTask(task.id);
     const log = execSync(`git -C "${t.worktreePath}" log --format=%s ${t.baseSha}..HEAD`).toString();
     expect(log).not.toContain('test:');
@@ -257,88 +326,101 @@ describe('pipeline', () => {
 
   describe('lanes', () => {
     const intakeAs = (o: Parameters<typeof docs.task>[0]) => runner.queue('intake', () => ({ text: docs.task(o) }));
-    const writeReadme = (): Script => (req) => {
-      writeFileSync(join(req.cwd, 'README.md'), `# Greeting ${Math.random()}\n`);
-      return { text: docs.changes };
-    };
     const laneOf = (t: Task) => pipeline.getTask(t.id).lane;
-    const alerts = (t: Task) =>
-      db.select().from(schema.events).where(eq(schema.events.taskId, t.id)).all().filter((e) => e.type === 'alert').map((e) => String(e.payload.message));
+    const rolesOf = (t: Task) => db.select().from(schema.runs).where(eq(schema.runs.taskId, t.id)).all().map((r) => [r.step, r.role]);
 
-    it('sends a trivial docs change from the coder straight to my push approval, and skips the retrospective', async () => {
-      intakeAs({ lane: 'trivial' });
-      runner.queue('coding', writeReadme());
-      const task = pipeline.createTask({ repoId: repo.id, input: 'Fix the README wording' });
-      await settle();
-      expect(statusOf(task)).toBe('awaiting_push_approval');
-      expect(steps()).toEqual(['intake', 'coding']);
-      expect(laneOf(task)).toBe('trivial');
-      expect(runner.calls[1]!.prompt).toContain('There is no separate plan');
-      expect(pipeline.pendingGates(task.id).map((g) => g.kind)).toEqual(['push']);
-
-      await pipeline.decideGate(pushGate(task).id, 'approve');
-      await pipeline.action(task.id, 'done');
-      await settle();
-      expect(statusOf(task)).toBe('done');
-      expect(steps()).not.toContain('retro');
-    });
-
-    it('hands the coding step of a frontend task to the UI coder', async () => {
-      intakeAs({ lane: 'trivial', frontend: true });
-      runner.queue('coding', writeReadme());
-      const task = pipeline.createTask({ repoId: repo.id, input: 'Restyle the settings page' });
-      await settle();
-      expect(statusOf(task)).toBe('awaiting_push_approval');
-      expect(pipeline.getTask(task.id).frontend).toBe(true);
-      const runs = db.select().from(schema.runs).where(eq(schema.runs.taskId, task.id)).all();
-      expect(runs.map((r) => [r.step, r.role])).toEqual([['intake', 'manager'], ['coding', 'ui-coder']]);
-    });
-
-    it('never auto-approves the push of a trivial change, which had no review', async () => {
-      setSetting(db, 'autoApprovePush', true);
-      intakeAs({ lane: 'trivial' });
-      runner.queue('coding', writeReadme());
-      const task = pipeline.createTask({ repoId: repo.id, input: 'Fix the README wording' });
-      await settle();
-      expect(statusOf(task)).toBe('awaiting_push_approval');
-      expect(publisher.pushed).toEqual([]);
-    });
-
-    it('moves a "trivial" task that changed code up to the small lane: review and tests run', async () => {
-      intakeAs({ lane: 'trivial' });
-      const task = pipeline.createTask({ repoId: repo.id, input: 'Fix the README wording' });
-      await settle(); // the default coder changes src/greet.ts
-      expect(steps()).toEqual(['intake', 'coding', 'reviewing', 'testing']);
-      expect(laneOf(task)).toBe('small');
-      expect(alerts(task).some((m) => m.includes('Moved from the trivial lane to small') && m.includes('src/greet.ts'))).toBe(true);
-      expect(statusOf(task)).toBe('awaiting_push_approval');
-    });
-
-    it('runs a small task without the architect: coder, review against task.md, tests', async () => {
-      intakeAs({ lane: 'small' });
+    it('has the all-rounder build a solo task alone, then opens the PR for me', async () => {
+      intakeAs({ lane: 'solo', size: 'M' });
       const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
       await settle();
-      expect(steps()).toEqual(['intake', 'coding', 'reviewing', 'testing']);
-      expect(statusOf(task)).toBe('awaiting_push_approval');
-      const review = runner.calls.find((c) => c.step === 'reviewing')!.prompt;
-      expect(review).toContain('### task.md');
-      expect(review).toContain('there is no separate plan');
+      expect(steps()).toEqual(['intake', 'coding']);
+      expect(rolesOf(task)).toEqual([['intake', 'manager'], ['coding', 'all-rounder']]);
+      expect(laneOf(task)).toBe('solo');
+      const prompt = runner.calls[1]!.prompt;
+      expect(prompt).toContain('You have this task to yourself');
+      expect(prompt).toContain('### task.md');
+      expect(runner.calls[1]!.model).toBe('claude-opus-5-5');
+      expect(statusOf(task)).toBe('awaiting_merge_approval');
+      expect(pipeline.pendingGates(task.id).map((g) => g.kind)).toEqual(['merge']);
+      expect(publisher.pushed).toHaveLength(1);
+
+      await pipeline.decideGate(mergeGate(task).id, 'approve');
+      await settle();
+      expect(statusOf(task)).toBe('done');
+      expect(steps().at(-1)).toBe('retro');
     });
 
-    it('moves a small task with a big diff to standard', async () => {
-      intakeAs({ lane: 'small' });
+    it('skips the debugger and researcher on a solo task: the all-rounder investigates itself', async () => {
+      intakeAs({ lane: 'solo', debugger: true });
+      pipeline.createTask({ repoId: repo.id, input: 'The greeting is wrong' });
+      await settle();
+      expect(steps()).toEqual(['intake', 'coding']);
+    });
+
+    it('gives a big solo diff one review, and no separate tester', async () => {
+      intakeAs({ lane: 'solo' });
       runner.queue('coding', (req) => {
         writeFileSync(join(req.cwd, 'src', 'big.ts'), Array.from({ length: 250 }, (_, i) => `export const v${i} = ${i};`).join('\n') + '\n');
         return { text: docs.changes };
       });
       const task = pipeline.createTask({ repoId: repo.id, input: 'Add constants' });
       await settle();
-      expect(laneOf(task)).toBe('standard');
-      expect(alerts(task).some((m) => m.includes('to standard') && m.includes('250 lines'))).toBe(true);
+      expect(steps()).toEqual(['intake', 'coding', 'reviewing']);
+      expect(laneOf(task)).toBe('solo');
+      expect(eventsOf(task, 'review_added')[0]!.payload.reason).toContain('250 lines');
+      expect(runner.calls[2]!.prompt).toContain('there is no separate plan');
+      expect(statusOf(task)).toBe('awaiting_merge_approval');
     });
 
-    it('keeps anything bigger than S, or without a lane, on the full pipeline', async () => {
-      intakeAs({ lane: 'trivial', size: 'M' });
+    it('sends review findings back into the all-rounder\'s own session', async () => {
+      intakeAs({ lane: 'solo' });
+      const big: Script = (req) => {
+        writeFileSync(join(req.cwd, 'src', 'big.ts'), Array.from({ length: 250 }, (_, i) => `export const v${i} = ${i} + ${Math.random()};`).join('\n') + '\n');
+        return { text: docs.changes };
+      };
+      runner.queue('coding', big, big);
+      runner.queue('reviewing', () => ({ text: docs.reviewFail }));
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Add constants' });
+      await settle();
+      expect(steps()).toEqual(['intake', 'coding', 'reviewing', 'coding', 'reviewing']);
+      const [first, fix] = runner.calls.filter((c) => c.step === 'coding');
+      expect(first!.resume).toBeUndefined();
+      const firstRun = db.select().from(schema.runs).where(eq(schema.runs.step, 'coding')).get()!;
+      expect(fix!.resume).toEqual({
+        sessionId: firstRun.sessionId,
+        prompt: expect.stringContaining('[blocking] src/greet.ts:1'),
+        // What that session already spent is recorded; the resumed run counts only its own tokens.
+        usageSoFar: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, thinking: 0 },
+      });
+      expect(statusOf(task)).toBe('awaiting_merge_approval');
+    });
+
+    it('hands a solo task to the full team when the all-rounder raises a blocker', async () => {
+      intakeAs({ lane: 'solo' });
+      runner.queue('coding', () => ({ text: docs.blocked }));
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+      await settle();
+      expect(statusOf(task)).toBe('awaiting_plan_approval');
+      expect(laneOf(task)).toBe('standard');
+      expect(runner.calls.at(-1)!.prompt).toContain('started this task alone');
+      await pipeline.decideGate(planGate(task).id, 'approve');
+      await settle();
+      // The coder starts fresh from the plan: the all-rounder's session isn't continued.
+      const coder = runner.calls.filter((c) => c.step === 'coding').at(-1)!;
+      expect(coder.role).toBe('coder');
+      expect(coder.resume).toBeUndefined();
+    });
+
+    it('runs the lanes from before solo (trivial, small) as solo', async () => {
+      intakeAs({ lane: 'small' });
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+      await settle();
+      expect(laneOf(task)).toBe('solo');
+      expect(rolesOf(task).at(-1)).toEqual(['coding', 'all-rounder']);
+    });
+
+    it('keeps size L, or a task without a lane, on the full team', async () => {
+      intakeAs({ lane: 'solo', size: 'L' });
       const a = pipeline.createTask({ repoId: repo.id, input: 'a' });
       const b = pipeline.createTask({ repoId: repo.id, input: 'b' });
       await settle();
@@ -346,13 +428,29 @@ describe('pipeline', () => {
       expect([laneOf(a), laneOf(b)]).toEqual(['standard', 'standard']);
     });
 
-    it('goes back to the architect, on the standard lane, when the coder of a small task is blocked', async () => {
-      intakeAs({ lane: 'small' });
-      runner.queue('coding', () => ({ text: docs.blocked }));
-      const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    it('follows my lane pick from the mission panel', async () => {
+      intakeAs({ lane: 'solo' });
+      const team = pipeline.createTask({ repoId: repo.id, input: 'a', lane: 'standard' });
       await settle();
-      expect(statusOf(task)).toBe('awaiting_plan_approval');
-      expect(laneOf(task)).toBe('standard');
+      expect(laneOf(team)).toBe('standard');
+      expect(statusOf(team)).toBe('awaiting_plan_approval');
+
+      intakeAs({ lane: 'standard', size: 'L', epic: true });
+      const solo = pipeline.createTask({ repoId: repo.id, input: 'b', lane: 'solo' });
+      await settle();
+      expect(laneOf(solo)).toBe('solo');
+      expect(steps()).not.toContain('splitting');
+      expect(statusOf(solo)).toBe('awaiting_merge_approval');
+    });
+
+    it('hands the coding step of a frontend task on the full team to the UI coder', async () => {
+      intakeAs({ lane: 'standard', frontend: true });
+      const task = pipeline.createTask({ repoId: repo.id, input: 'Restyle the settings page' });
+      await settle();
+      await pipeline.decideGate(planGate(task).id, 'approve');
+      await settle();
+      expect(pipeline.getTask(task.id).frontend).toBe(true);
+      expect(rolesOf(task).find(([step]) => step === 'coding')).toEqual(['coding', 'ui-coder']);
     });
   });
 
@@ -360,29 +458,33 @@ describe('pipeline', () => {
     const OPUS = 'claude-opus-5-5'; // the built-in architect and reviewer
     const modelOf = (step: string) => runner.calls.find((c) => c.step === step)!;
 
-    it('plans and reviews an S task on Sonnet at medium effort, and keeps the coder as defined', async () => {
+    it('reviews an S task on Sonnet at medium effort, but always plans on Opus', async () => {
       const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' }); // intake says size S
       await settle();
       await pipeline.decideGate(planGate(task).id, 'approve');
       await settle();
-      expect(modelOf('planning')).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
+      expect(modelOf('planning')).toMatchObject({ model: OPUS, effort: 'high' });
       expect(modelOf('reviewing')).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'medium' });
       expect(modelOf('coding').model).toBe('claude-sonnet-5-5');
       const planRun = db.select().from(schema.runs).where(eq(schema.runs.step, 'planning')).get()!;
-      expect(planRun.model).toBe('claude-sonnet-5-5');
+      expect(planRun.model).toBe(OPUS);
     });
 
-    it('keeps Opus for bigger tasks, and for S tasks when the setting is off', async () => {
+    it('keeps Opus for reviews of bigger tasks, and of S tasks when the setting is off', async () => {
       runner.queue('intake', () => ({ text: docs.task({ size: 'M' }) }));
-      pipeline.createTask({ repoId: repo.id, input: 'a' });
+      const a = pipeline.createTask({ repoId: repo.id, input: 'a' });
       await settle();
-      expect(modelOf('planning').model).toBe(OPUS);
+      await pipeline.decideGate(planGate(a).id, 'approve');
+      await settle();
+      expect(modelOf('reviewing').model).toBe(OPUS);
 
       setSetting(db, 'sonnetForSmall', false);
       runner.calls = [];
-      pipeline.createTask({ repoId: repo.id, input: 'b' });
+      const b = pipeline.createTask({ repoId: repo.id, input: 'b' });
       await settle();
-      expect(modelOf('planning').model).toBe(OPUS);
+      await pipeline.decideGate(planGate(b).id, 'approve');
+      await settle();
+      expect(modelOf('reviewing').model).toBe(OPUS);
     });
   });
 
@@ -415,13 +517,11 @@ describe('pipeline', () => {
 
       await settle();
       expect(statusOf(a!)).toBe('awaiting_plan_approval');
-      expect(statusOf(b!)).toBe('queued'); // waits for a's draft PR
+      expect(statusOf(b!)).toBe('queued'); // waits for a's PR
 
       await pipeline.decideGate(planGate(a!).id, 'approve');
       await settle();
-      await pipeline.decideGate(pushGate(a!).id, 'approve');
-      expect(statusOf(a!)).toBe('pr_open');
-      await settle();
+      expect(statusOf(a!)).toBe('awaiting_merge_approval');
       const started = pipeline.getTask(b!.id);
       expect(started.status).toBe('awaiting_plan_approval');
       expect(started.baseBranch).toBe(pipeline.getTask(a!.id).branch);
@@ -429,8 +529,18 @@ describe('pipeline', () => {
 
       await pipeline.decideGate(planGate(b!).id, 'approve');
       await settle();
-      await pipeline.decideGate(pushGate(b!).id, 'approve');
-      expect(publisher.bases.at(-1)).toBe(pipeline.getTask(a!.id).branch); // a stacked draft PR
+      expect(publisher.bases.at(-1)).toBe(pipeline.getTask(a!.id).branch); // a stacked PR
+
+      // b can't merge into a's branch before a merges; once a has, b's PR moves to main first.
+      await pipeline.decideGate(mergeGate(b!).id, 'approve');
+      expect(statusOf(b!)).toBe('awaiting_merge_approval');
+      expect(pipeline.getTask(b!.id).statusNote).toContain(`merge #${a!.id} first`);
+      expect(publisher.merged).toEqual([]);
+      await pipeline.decideGate(mergeGate(a!).id, 'approve');
+      await pipeline.decideGate(mergeGate(b!).id, 'approve');
+      expect(publisher.retargeted).toEqual([{ url: pipeline.getTask(b!.id).prUrl, base: 'main' }]);
+      expect(publisher.merged).toHaveLength(2);
+      expect(pipeline.getTask(b!.id).baseBranch).toBeNull();
     });
 
     it('sends the milestones back to the architect with my comment', async () => {
@@ -513,7 +623,7 @@ describe('pipeline', () => {
     await settle();
     await pipeline.decideGate(planGate(b).id, 'approve');
     await settle();
-    expect(pushGate(b)).toBeTruthy();
+    expect(mergeGate(b)).toBeTruthy();
     await pipeline.action(b.id, 'done');
     expect(pipeline.pendingGates(b.id)).toHaveLength(0);
     await settle();
@@ -553,12 +663,11 @@ describe('pipeline', () => {
 
   it('proposes the knowledge note from the retrospective and gives approved notes to every agent', async () => {
     runner.queue('retro', () => ({ text: '---\n---\n- **Went well:** a\n- **Went wrong:** b\n- **Knowledge-file edit:** Always run codegen first.' }));
-    setSetting(db, 'autoApprovePush', true);
     const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
     await settle();
     await pipeline.decideGate(planGate(task).id, 'approve');
     await settle();
-    await pipeline.action(task.id, 'done');
+    await pipeline.decideGate(mergeGate(task).id, 'approve');
     await settle();
     const k = new Knowledge(db, config.knowledgeDir);
     const [p] = k.proposals('pending', repo.id);
@@ -672,21 +781,10 @@ describe('pipeline', () => {
     await settle();
     expect(steps().slice(2)).toEqual(['coding', 'reviewing', 'testing', 'coding', 'reviewing', 'testing']);
     expect(pipeline.getTask(task.id).testFailures).toBe(1);
-    expect(statusOf(task)).toBe('awaiting_push_approval');
-  });
-
-  it('auto-approves the push when the toggle is on (review and tests passed)', async () => {
-    setSetting(db, 'autoApprovePush', true);
-    const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
-    await settle();
-    await pipeline.decideGate(planGate(task).id, 'approve');
-    await settle();
-    expect(statusOf(task)).toBe('pr_open');
-    expect(publisher.pushed).toHaveLength(1);
+    expect(statusOf(task)).toBe('awaiting_merge_approval');
   });
 
   it('never auto-approves the plan', async () => {
-    setSetting(db, 'autoApprovePush', true);
     const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
     await settle();
     expect(statusOf(task)).toBe('awaiting_plan_approval');
@@ -834,18 +932,224 @@ describe('pipeline', () => {
     expect(files).not.toContain('node_modules');
   });
 
-  it('moves a merged PR to retro and removes the worktree', async () => {
-    setSetting(db, 'autoApprovePush', true);
+  it('notices a PR I merged on GitHub myself: no gate left, retro, worktree removed', async () => {
     const task = pipeline.createTask({ repoId: repo.id, input: 'x' });
     await settle();
     await pipeline.decideGate(planGate(task).id, 'approve');
     await settle();
+    expect(mergeGate(task)).toBeTruthy();
     publisher.state = 'MERGED';
     await pipeline.sweep();
     await settle();
     const t = pipeline.getTask(task.id);
     expect(t.status).toBe('done');
     expect(t.worktreePath).toBeNull();
+    expect(pipeline.pendingGates(task.id)).toEqual([]);
+    expect(publisher.merged).toEqual([]);
+    expect(eventsOf(task, 'pr_merged')[0]!.payload.by).toBe('github');
+  });
+});
+
+// ---------------------------------------------------------------- open PRs and merging
+
+describe('open PRs and merging', () => {
+  const solo = () => runner.queue('intake', () => ({ text: docs.task({ lane: 'solo' }) }));
+  const atMergeGate = async () => {
+    solo();
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await settle();
+    expect(statusOf(task)).toBe('awaiting_merge_approval');
+    return task;
+  };
+  const release = () => {
+    let open!: () => void;
+    publisher.hold = new Promise<void>((r) => (open = r));
+    return () => {
+      publisher.hold = null;
+      open();
+    };
+  };
+
+  it('keeps a task discarded during its push discarded: no merge gate comes back', async () => {
+    solo();
+    const go = release();
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await until(() => statusOf(task) === 'pushing');
+    await pipeline.action(task.id, 'discard');
+    go();
+    await settle();
+    expect(statusOf(task)).toBe('discarded');
+    expect(pipeline.pendingGates(task.id)).toEqual([]);
+  });
+
+  it('keeps a task stopped during its merge stopped, and resuming asks me again instead of merging', async () => {
+    const task = await atMergeGate();
+    const go = release();
+    const merging = pipeline.decideGate(mergeGate(task).id, 'approve');
+    await until(() => statusOf(task) === 'merging');
+    await pipeline.action(task.id, 'stop');
+    publisher.failMerge = 'connection reset';
+    go();
+    await merging;
+    expect(statusOf(task)).toBe('stopped');
+    expect(pipeline.pendingGates(task.id)).toEqual([]);
+    publisher.failMerge = null;
+
+    await pipeline.action(task.id, 'resume');
+    expect(statusOf(task)).toBe('awaiting_merge_approval');
+    expect(mergeGate(task)).toBeTruthy();
+    expect(publisher.merged).toEqual([]);
+  });
+
+  it('parks a merge cut off by a restart; resuming checks GitHub before asking me again', async () => {
+    const task = await atMergeGate();
+    db.update(schema.tasks).set({ status: 'merging' }).where(eq(schema.tasks.id, task.id)).run();
+    pipeline.recover();
+    expect(pipeline.getTask(task.id)).toMatchObject({ status: 'paused', resumeStatus: 'merging' });
+    publisher.state = 'MERGED'; // the merge went through before the restart
+    await pipeline.action(task.id, 'resume');
+    await settle();
+    expect(statusOf(task)).toBe('done');
+    expect(publisher.merged).toEqual([]);
+  });
+
+  it('retries a failed push on resume, then opens the PR', async () => {
+    publisher.failPush = 'Could not resolve host: github.com';
+    solo();
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await settle();
+    expect(pipeline.getTask(task.id)).toMatchObject({ status: 'blocked', resumeStatus: 'pushing' });
+    publisher.failPush = null;
+    await pipeline.action(task.id, 'resume');
+    expect(statusOf(task)).toBe('awaiting_merge_approval');
+    expect(mergeGate(task)).toBeTruthy();
+  });
+
+  it('opens the PR and a merge gate when I approve a push gate left from before', async () => {
+    const task = await atMergeGate();
+    // As an older office left it: committed work waiting at a push gate, no PR yet.
+    db.update(schema.gates).set({ status: 'cancelled' }).where(eq(schema.gates.taskId, task.id)).run();
+    db.update(schema.tasks).set({ status: 'awaiting_push_approval', prUrl: null, prHeadSha: null }).where(eq(schema.tasks.id, task.id)).run();
+    const push = db.insert(schema.gates).values({ taskId: task.id, kind: 'push' }).returning().get();
+    await pipeline.decideGate(push.id, 'approve');
+    expect(statusOf(task)).toBe('awaiting_merge_approval');
+    expect(mergeGate(task)).toBeTruthy();
+  });
+
+  it('drops the merge gate when the PR is closed on GitHub; reopening and resuming brings it back', async () => {
+    const task = await atMergeGate();
+    publisher.state = 'CLOSED';
+    await pipeline.sweep();
+    expect(pipeline.getTask(task.id)).toMatchObject({ status: 'blocked', resumeStatus: 'pushing' });
+    expect(pipeline.pendingGates(task.id)).toEqual([]);
+    publisher.state = 'OPEN';
+    await pipeline.action(task.id, 'resume');
+    expect(mergeGate(task)).toBeTruthy();
+  });
+
+  it('keeps my "changes needed" comment when the fix run fails, and gives it to the retry', async () => {
+    const task = await atMergeGate();
+    runner.queue('coding', () => ({ status: 'failed', error: 'prompt is too long' }));
+    await pipeline.decideGate(mergeGate(task).id, 'reject', 'Call it greet, not hello');
+    await settle();
+    expect(pipeline.getTask(task.id)).toMatchObject({ status: 'blocked', feedback: expect.stringContaining('Call it greet') });
+    await pipeline.action(task.id, 'resume');
+    await settle();
+    const retry = runner.calls.filter((c) => c.step === 'coding').at(-1)!;
+    expect(retry.resume?.prompt ?? retry.prompt).toContain('Call it greet, not hello');
+    expect(pipeline.getTask(task.id).feedback).toBeNull();
+  });
+
+  it('starts the coder fresh after a new plan, and keeps a note I sent while the architect planned', async () => {
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await settle();
+    await pipeline.decideGate(planGate(task).id, 'approve');
+    await settle();
+    runner.queue('planning', () => {
+      pipeline.steer(task.id, 'name it greeter'); // not live: kept for the next step
+      return { text: docs.plan };
+    });
+    pipeline.replanNow(task.id, 'use a lookup table');
+    await settle();
+    expect(pipeline.getTask(task.id).feedback).toBe('The owner says: name it greeter');
+    await pipeline.decideGate(planGate(task).id, 'approve');
+    await settle();
+    const coder = runner.calls.filter((c) => c.step === 'coding').at(-1)!;
+    expect(coder.resume).toBeUndefined();
+    expect(coder.prompt).toContain('name it greeter');
+    expect(coder.prompt).not.toContain('use a lookup table');
+  });
+
+  it('gives a solo change one review when the all-rounder read web pages', async () => {
+    solo();
+    runner.queue('coding', (req) => {
+      req.onEvent('tool', { tool: 'WebFetch', input: 'https://example.com/docs' });
+      writeFileSync(join(req.cwd, 'src', 'greet.ts'), 'export const greet = () => "hi";\n');
+      return { text: docs.changes };
+    });
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Use the greeting from the docs' });
+    await settle();
+    expect(steps()).toEqual(['intake', 'coding', 'reviewing']);
+    expect(eventsOf(task, 'review_added')[0]!.payload.reason).toBe('it read web pages while working');
+  });
+
+  describe('stacked milestones', () => {
+    const stack = async () => {
+      runner.queue('intake', () => ({ text: docs.task({ size: 'L', epic: true }) }));
+      runner.queue('splitting', () => ({
+        text: '---\nmilestones: 2\n---\n## Overview\nx\n\n## Milestones\n### 1. One\nDo one.\n\n### 2. Two\nDo two.\n\n## Not in these milestones\n- nothing',
+      }));
+      const epic = pipeline.createTask({ repoId: repo.id, input: 'Build a chat app' });
+      await settle();
+      await pipeline.decideGate(pipeline.pendingGates(epic.id).find((g) => g.kind === 'breakdown')!.id, 'approve');
+      const [a, b] = db.select().from(schema.tasks).where(eq(schema.tasks.parentId, epic.id)).all();
+      await settle();
+      await pipeline.decideGate(planGate(a!).id, 'approve');
+      await settle();
+      await pipeline.decideGate(planGate(b!).id, 'approve');
+      await settle();
+      expect(pipeline.getTask(b!.id).baseBranch).toBe(pipeline.getTask(a!.id).branch);
+      return { a: a!, b: b! };
+    };
+
+    it("refuses to merge a milestone whose predecessor was discarded: it still carries that work", async () => {
+      const { a, b } = await stack();
+      await pipeline.action(a.id, 'discard');
+      await pipeline.decideGate(mergeGate(b).id, 'approve');
+      expect(statusOf(b)).toBe('awaiting_merge_approval');
+      expect(pipeline.getTask(b.id).statusNote).toContain(`milestone #${a.id}, which was discarded`);
+      expect(publisher.merged).toEqual([]);
+    });
+
+    it("refuses when the predecessor was marked done without its PR merging", async () => {
+      const { a, b } = await stack();
+      await pipeline.action(a.id, 'done');
+      await pipeline.decideGate(mergeGate(b).id, 'approve');
+      expect(pipeline.getTask(b.id).statusNote).toContain('finished without its PR merging');
+      expect(publisher.retargeted).toEqual([]);
+      expect(publisher.merged).toEqual([]);
+    });
+
+    it('opens a later milestone\'s PR against the default branch once its predecessor has merged', async () => {
+      runner.queue('intake', () => ({ text: docs.task({ size: 'L', epic: true }) }));
+      runner.queue('splitting', () => ({
+        text: '---\nmilestones: 2\n---\n## Overview\nx\n\n## Milestones\n### 1. One\nDo one.\n\n### 2. Two\nDo two.\n\n## Not in these milestones\n- nothing',
+      }));
+      const epic = pipeline.createTask({ repoId: repo.id, input: 'Build a chat app' });
+      await settle();
+      await pipeline.decideGate(pipeline.pendingGates(epic.id).find((g) => g.kind === 'breakdown')!.id, 'approve');
+      const [a, b] = db.select().from(schema.tasks).where(eq(schema.tasks.parentId, epic.id)).all();
+      await settle();
+      await pipeline.decideGate(planGate(a!).id, 'approve');
+      await settle();
+      await settle(); // b plans on a's branch
+      await pipeline.decideGate(mergeGate(a!).id, 'approve'); // a merges (its branch may be deleted)
+      await pipeline.decideGate(planGate(b!).id, 'approve');
+      await settle();
+      expect(publisher.bases.at(-1)).toBe('main');
+      expect(pipeline.getTask(b!.id).baseBranch).toBeNull();
+      expect(statusOf(b!)).toBe('awaiting_merge_approval');
+    });
   });
 });
 
@@ -917,7 +1221,6 @@ describe('pr reviews', () => {
     await settle();
     await pipeline.decideGate(planGate(fix).id, 'approve');
     await settle();
-    await pipeline.decideGate(pushGate(fix).id, 'approve');
     expect(publisher.bases).toEqual(['feature']);
     const wt = pipeline.getTask(fix.id).worktreePath!;
     expect(execSync(`git -C "${wt}" log --format=%s -1 ${pipeline.getTask(fix.id).baseSha}`).toString()).toContain('feature');

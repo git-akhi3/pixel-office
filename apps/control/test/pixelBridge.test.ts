@@ -154,6 +154,15 @@ describe('pixel bridge', () => {
     expect(toolUses().at(-1).message.content[0].input.subagent_type).toBe('architect');
   });
 
+  it('has Captain America play the all-rounder, or the coder in layouts without him', async () => {
+    pixelRunning({ residents: ['manager', 'coder', 'captain'] });
+    await bridge.enqueue('step_start', { role: 'all-rounder' }, 3, 11);
+    expect(toolUses().at(-1).message.content[0].input.subagent_type).toBe('captain');
+    pixelRunning({ residents: ['manager', 'coder'] });
+    await bridge.enqueue('step_start', { role: 'all-rounder' }, 4, 12);
+    expect(toolUses().at(-1).message.content[0].input.subagent_type).toBe('coder');
+  });
+
   it('rotates a large transcript to a new session between steps', async () => {
     bridge = new PixelBridge({ pixelHome, projectsRoot, workspaceFile, sessionId: SESSION, fetchImpl: fakeFetch, maxTranscriptBytes: 200, onRotate: (id) => rotated.push(id), taskTitle: () => 'x' });
     pixelRunning();

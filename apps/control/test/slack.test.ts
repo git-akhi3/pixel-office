@@ -267,14 +267,30 @@ describe('SlackBridge', () => {
     expect(task.id).toBe(1);
   });
 
-  it('says in the thread when a task takes a shorter route', async () => {
+  it('says in the thread when the all-rounder takes a task solo', async () => {
     const task = t.db.insert(schema.tasks).values({ repoId: t.repo.id, title: 'x', input: 'x', slackChannel: DM, slackThreadTs: '50.1' }).returning().get();
-    t.bus.emit(task.id, 'lane_decided', { lane: 'trivial', said: 'trivial', reason: 'docs' });
+    t.bus.emit(task.id, 'lane_decided', { lane: 'solo', said: 'solo', reason: 'small fix' });
     t.bus.emit(task.id, 'lane_decided', { lane: 'standard', said: null, reason: 'none' });
     await t.settle();
     const routes = t.posted.filter((p) => p.text.includes('Route:'));
     expect(routes).toHaveLength(1);
-    expect(routes[0]!.text).toContain('*trivial*');
+    expect(routes[0]!.text).toContain('*solo*');
+    expect(routes[0]!.text).toContain('all-rounder');
+  });
+
+  it('asks me to merge an open PR with a Merge button, and says when the fixes update it', async () => {
+    const task = t.db.insert(schema.tasks).values({ repoId: t.repo.id, title: 'Add greeting', input: 'x', status: 'awaiting_merge_approval', prUrl: 'https://github.com/acme/widgets/pull/9', slackChannel: DM, slackThreadTs: '50.1' }).returning().get();
+    const gate = t.db.insert(schema.gates).values({ taskId: task.id, kind: 'merge' }).returning().get();
+    t.bus.emit(task.id, 'gate', { gateId: gate.id, kind: 'merge', subject: null, status: 'pending', auto: false });
+    t.bus.emit(task.id, 'pr_updated', { url: 'https://github.com/acme/widgets/pull/9' });
+    await t.settle();
+    const ask = t.posted.find((p) => p.text.includes('merge it?'))!;
+    const json = JSON.stringify(ask.blocks);
+    expect(json).toContain('Open the PR');
+    expect(json).toContain(`office_gate:${gate.id}:approve`);
+    expect(json).toContain('"text":"Merge"');
+    expect(json).toContain('Changes needed');
+    expect(t.posted.some((p) => p.text.includes('PR updated with the changes'))).toBe(true);
   });
 
   it('posts milestones and alerts in the task thread', async () => {

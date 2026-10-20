@@ -5,7 +5,7 @@ export type TaskStatus = string;
 export interface Gate {
   id: number;
   taskId: number;
-  kind: 'plan' | 'push' | 'command' | 'review_post' | 'question' | 'breakdown';
+  kind: 'plan' | 'push' | 'merge' | 'command' | 'review_post' | 'question' | 'breakdown';
   status: 'pending' | 'approved' | 'rejected' | 'cancelled';
   subject: string | null;
   decision: string | null;
@@ -25,9 +25,9 @@ export interface ReviewComment {
   deleted: boolean;
 }
 
-export type Role = 'manager' | 'architect' | 'coder' | 'reviewer' | 'tester' | 'debugger' | 'researcher';
+export type Role = 'manager' | 'architect' | 'coder' | 'all-rounder' | 'reviewer' | 'tester' | 'debugger' | 'researcher';
 /** Roles a mission can pick skills for. */
-export const PICKABLE_ROLES: Role[] = ['architect', 'coder', 'reviewer', 'tester', 'debugger', 'researcher'];
+export const PICKABLE_ROLES: Role[] = ['all-rounder', 'architect', 'coder', 'reviewer', 'tester', 'debugger', 'researcher'];
 export type SkillPicks = Partial<Record<Role, { skills: string[]; by: 'owner' | 'manager'; why?: string }>>;
 
 export interface Task {
@@ -43,8 +43,8 @@ export interface Task {
   reviewSummary: string | null;
   reviewPostedUrl: string | null;
   size: 'S' | 'M' | 'L' | null;
-  /** How much of the team the task gets; null on old tasks (standard). */
-  lane: 'trivial' | 'small' | 'standard' | null;
+  /** How much of the team the task gets (solo: the all-rounder alone); null on old tasks (standard). trivial and small are from before solo. */
+  lane: 'solo' | 'standard' | 'trivial' | 'small' | null;
   parentId: number | null;
   dependsOn: number | null;
   /** Other repos the agents may read, never write. */
@@ -146,6 +146,8 @@ export interface Repo {
   lintCmd: string | null;
   testGlobs: string[];
   ghAccount: string | null;
+  /** How the office merges this repo's PRs once you approve them. */
+  mergeMethod: 'squash' | 'merge' | 'rebase';
   gitAuthor: string | null;
   allowlist: string[];
   effectiveAllowlist: string[];
@@ -214,7 +216,6 @@ export interface GraphInfo {
 }
 
 export interface Settings {
-  autoApprovePush: boolean;
   autoAllowCommands: boolean;
   concurrency: number;
   reviewAutoPickup: boolean;
@@ -250,6 +251,8 @@ export const api = {
     attachments?: string[];
     links?: string[];
     refRepos?: number[];
+    /** Solo or the full team; left out, the manager decides. */
+    lane?: 'solo' | 'standard';
   }) => request<Task>('POST', '/api/tasks', body),
   /** Uploads one file for a mission; the returned id goes into createTask's attachments. */
   upload: async (file: File): Promise<Upload> => {

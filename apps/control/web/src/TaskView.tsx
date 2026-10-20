@@ -8,7 +8,7 @@ import { DiffView, Doc, duration, formatTokens, LANE_HINT, StageTrack, StatusBad
 
 type Tab = 'docs' | 'diff' | 'activity' | 'runs';
 
-const TERMINAL = ['done', 'discarded', 'failed', 'pushing', 'pr_open', 'retro'];
+const TERMINAL = ['done', 'discarded', 'failed', 'pushing', 'pr_open', 'merging', 'retro'];
 
 function Steer({ taskId, running, onError, onReplanned }: { taskId: number; running: boolean; onError: (e: unknown) => void; onReplanned: () => void }) {
   const [text, setText] = useState('');
@@ -133,7 +133,7 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
 
   const canStop = !['done', 'discarded', 'failed', 'stopped'].includes(task.status);
   const canResume = ['stopped', 'paused', 'blocked'].includes(task.status);
-  const canDone = ['pr_open', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status);
+  const canDone = ['pr_open', 'awaiting_merge_approval', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status);
 
   return (
     <div className="task-view">
@@ -151,11 +151,11 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
         <h1>{task.title}</h1>
         <StageTrack task={task} labels />
         <div className="task-facts">
-          <StatusBadge status={task.status} running={task.running} />
+          <StatusBadge status={task.status} running={task.running} lane={task.lane} />
           {task.branch && <code>{task.branch}</code>}
           {task.prUrl && (
             <a href={task.prUrl} target="_blank" rel="noreferrer">
-              Draft PR <Icon name="link" size={8} />
+              {task.status === 'pr_open' ? 'Draft PR' : 'PR'} <Icon name="link" size={8} />
             </a>
           )}
           <span className="fact">
@@ -204,7 +204,7 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
       {pending
         .filter((g) => g.kind !== 'question')
         .map((g) => (
-          <GateBar key={g.id} gate={g} onDone={load} onError={onError} />
+          <GateBar key={g.id} gate={g} prUrl={task.prUrl} onDone={load} onError={onError} />
         ))}
 
       <div className="actions">
@@ -321,7 +321,7 @@ function Alerts({ alerts }: { alerts: OfficeEvent[] }) {
   );
 }
 
-function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; onError: (e: unknown) => void }) {
+function GateBar({ gate, prUrl, onDone, onError }: { gate: Gate; prUrl?: string | null; onDone: () => void; onError: (e: unknown) => void }) {
   const [comment, setComment] = useState('');
   const [rejecting, setRejecting] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -367,15 +367,27 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
         ? 'Split this into these milestones?'
         : gate.kind === 'review_post'
           ? 'Post this review to GitHub?'
-          : 'Push the branch and open a draft PR?';
+          : gate.kind === 'merge'
+            ? 'The PR is open. Merge it?'
+            : 'Push the branch and open the PR?';
   const approveLabel =
-    gate.kind === 'plan' ? 'Approve plan' : gate.kind === 'breakdown' ? 'Create milestone tasks' : gate.kind === 'review_post' ? 'Post review' : 'Push & open draft PR';
+    gate.kind === 'plan'
+      ? 'Approve plan'
+      : gate.kind === 'breakdown'
+        ? 'Create milestone tasks'
+        : gate.kind === 'review_post'
+          ? 'Post review'
+          : gate.kind === 'merge'
+            ? 'Merge'
+            : 'Push & open PR';
   const rejectHint =
     gate.kind === 'plan' || gate.kind === 'breakdown'
       ? 'What should the architect change?'
       : gate.kind === 'review_post'
         ? 'What should the reviewer redo?'
-        : 'What should the coder fix before pushing?';
+        : gate.kind === 'merge'
+          ? 'What should change before it is merged? The fixes go onto the same PR.'
+          : 'What should the coder fix before pushing?';
   return (
     <div className="gate">
       <div className="gate-title">
@@ -383,9 +395,19 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
       </div>
       {gate.kind === 'plan' && <p className="gate-hint">Read the plan below. Approving starts the coder.</p>}
       {gate.kind === 'breakdown' && (
-        <p className="gate-hint">Read breakdown.md below. Each milestone becomes its own task, run in order: each one starts when the one before opens its draft PR, and builds on its branch.</p>
+        <p className="gate-hint">Read breakdown.md below. Each milestone becomes its own task, run in order: each one starts when the one before opens its PR, and builds on its branch.</p>
       )}
       {gate.kind === 'review_post' && <p className="gate-hint">Edit or delete comments below first. It posts under the repo's GitHub account.</p>}
+      {gate.kind === 'merge' && (
+        <p className="gate-hint">
+          {prUrl ? (
+            <a href={prUrl} target="_blank" rel="noreferrer">
+              Open the PR on GitHub
+            </a>
+          ) : null}{' '}
+          Merging uses the repo's merge method; GitHub's branch rules and required checks still apply.
+        </p>
+      )}
       {rejecting && (
         <textarea
           autoFocus
@@ -409,7 +431,7 @@ function GateBar({ gate, onDone, onError }: { gate: Gate; onDone: () => void; on
           </>
         ) : (
           <button disabled={busy} onClick={() => setRejecting(true)}>
-            Reject with comment
+            {gate.kind === 'merge' ? 'Changes needed' : 'Reject with comment'}
           </button>
         )}
       </div>

@@ -145,7 +145,11 @@ export class PixelBridge {
     }
   }
 
-  /** Resident character for a role: same name, or the architect at the designer's desk in older layouts. */
+  /**
+   * Resident character for a role: same name, or a stand-in in layouts without one: the architect at
+   * the designer's desk, the UI coder at the coder's, and the all-rounder as the Helicarrier's
+   * Captain America (or at the coder's desk).
+   */
   residentFor(role: string): string {
     let residents: string[] = [];
     try {
@@ -157,6 +161,7 @@ export class PixelBridge {
     if (residents.includes(role)) return role;
     if (role === 'architect' && residents.includes('designer')) return 'designer';
     if (role === 'ui-coder' && residents.includes('coder')) return 'coder';
+    if (role === 'all-rounder') return residents.includes('captain') ? 'captain' : residents.includes('coder') ? 'coder' : role;
     return role;
   }
 

@@ -60,7 +60,7 @@ export function ReviewPanel({
         {blocking > 0 && task.status !== 'reviewing_pr' && (
           <button
             onClick={fixIt}
-            title="For your own PRs: a coder task fixes the blocking findings, as a draft PR into this PR's branch"
+            title="For your own PRs: a new task fixes the blocking findings, as a PR into this PR's branch"
           >
             Fix it ({blocking} blocking)
           </button>

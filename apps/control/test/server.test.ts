@@ -47,7 +47,9 @@ beforeEach(async () => {
     agents: loadAgents(join(appDir, 'agents'), join(appDir, 'skills')),
     runner: idleRunner,
     publisher: {
-      pushAndOpenDraftPr: async () => '',
+      pushAndOpenPr: async () => '',
+      mergePr: async () => {},
+      retargetPr: async () => {},
       prState: async () => 'OPEN',
       prInfo: async () => { throw new Error('no'); },
       postReview: async () => '',
@@ -98,6 +100,15 @@ describe('server', () => {
 
     const detail = await app.inject({ method: 'GET', url: `/api/tasks/${task.json().id}`, headers });
     expect(detail.json().repo.name).toBe('app');
+    expect(repo.json().mergeMethod).toBe('squash');
+
+    // My lane pick: solo or the full team, nothing else.
+    const solo = await app.inject({ method: 'POST', url: '/api/tasks', headers, payload: { repoId, input: 'Quick fix', lane: 'solo' } });
+    expect(solo.json().lane).toBe('solo');
+    const legacy = await app.inject({ method: 'POST', url: '/api/tasks', headers, payload: { repoId, input: 'x', lane: 'trivial' } });
+    expect(legacy.statusCode).toBe(400);
+    const badMerge = await app.inject({ method: 'PUT', url: `/api/repos/${repoId}`, headers, payload: { name: 'app', path: repoPath, mergeMethod: 'fast-forward' } });
+    expect(badMerge.statusCode).toBe(400);
   });
 
   it('saves a live check as verify.md and records it on the task', async () => {
@@ -128,8 +139,8 @@ describe('server', () => {
   it('validates settings', async () => {
     const r = await app.inject({ method: 'PUT', url: '/api/settings', headers, payload: { concurrency: 99 } });
     expect(r.statusCode).toBe(400);
-    const ok = await app.inject({ method: 'PUT', url: '/api/settings', headers, payload: { autoApprovePush: true, concurrency: 3 } });
-    expect(ok.json()).toMatchObject({ autoApprovePush: true, concurrency: 3 });
+    const ok = await app.inject({ method: 'PUT', url: '/api/settings', headers, payload: { autoAllowCommands: true, concurrency: 3 } });
+    expect(ok.json()).toMatchObject({ autoAllowCommands: true, concurrency: 3 });
   });
 
   it('rejects an empty review comment edit with a 400, not a 500', async () => {

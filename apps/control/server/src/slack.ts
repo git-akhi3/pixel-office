@@ -15,7 +15,7 @@ import type { TaskDocs } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
 import { listRepos } from './repos.js';
 import { SlackQuestions } from './slackQuestions.js';
-import { alertText, breakdownSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks, verificationText, type CheckStage, type Verdict } from './slackFormat.js';
+import { alertText, breakdownSummary, mergeSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks, verificationText, type CheckStage, type Verdict } from './slackFormat.js';
 import { describeTask, duration, esc, listActive, stageOf, type StatusContext } from './slackStatus.js';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type Uploads } from './attachments.js';
 import type { SlackConfig } from './config.js';
@@ -77,12 +77,13 @@ const OWNER_ONLY = new Set(['approve', 'reject', 'discard', 'done', 'replan', 's
 type Sender = 'owner' | 'assistant';
 
 /** What a decided gate was about, for the line that replaces its buttons. */
-const DECIDED_WHAT: Record<string, string> = { plan: 'the plan', breakdown: 'the milestones', push: 'the push', review_post: 'the review', command: 'the command' };
+const DECIDED_WHAT: Record<string, string> = { plan: 'the plan', breakdown: 'the milestones', push: 'the push', merge: 'the merge', review_post: 'the review', command: 'the command' };
 
 const GATE_HEADING = {
   plan: 'Plan ready for approval',
   breakdown: 'Milestones ready for approval (each becomes its own task)',
-  push: 'Ready to push and open a draft PR',
+  push: 'Ready to push and open the PR',
+  merge: 'PR is open: merge it?',
   review_post: 'Draft review ready to post',
 } as const;
 
@@ -407,9 +408,13 @@ export class SlackBridge {
         return void (text ? await this.say(text, task) : undefined);
       }
       case 'pr_opened':
-        return void (await this.say(`:rocket: Draft PR opened: ${String(event.payload.url)}`, task));
+        return void (await this.say(`:rocket: PR opened: ${String(event.payload.url)}`, task));
+      case 'pr_updated':
+        return void (await this.say(`:arrows_counterclockwise: PR updated with the changes: ${String(event.payload.url)}`, task));
       case 'pr_merged':
-        return void (await this.say(`:tada: PR merged: ${String(event.payload.url)}`, task));
+        return void (await this.say(`:tada: PR merged${event.payload.by === 'github' ? ' on GitHub' : ''}: ${String(event.payload.url)}`, task));
+      case 'review_added':
+        return void (await this.say(`:mag: The change is big (${esc(String(event.payload.reason ?? ''))}), so the reviewer checks it before the PR opens.`, task));
       case 'verified':
         return void (await this.say(
           verificationText(event.payload.verdict as Verdict, String(event.payload.report ?? ''), (event.payload.stage as CheckStage | undefined) ?? 'build', event.payload.sha as string | undefined),
@@ -421,13 +426,11 @@ export class SlackBridge {
         return void (await this.say(':world_map: This is too big for one task: the architect is splitting it into milestones for you to approve.', task));
       case 'epic_split': {
         const ids = (event.payload.children as number[]) ?? [];
-        return void (await this.say(`:white_check_mark: Split into ${ids.length} milestone tasks: ${ids.map((id) => `#${id}`).join(', ')}. Each gets its own thread and runs after the one before it opens its draft PR.`, task));
+        return void (await this.say(`:white_check_mark: Split into ${ids.length} milestone tasks: ${ids.map((id) => `#${id}`).join(', ')}. Each gets its own thread and runs after the one before it opens its PR.`, task));
       }
       case 'lane_decided': {
-        const lane = String(event.payload.lane);
-        if (lane === 'standard') return;
-        const route = lane === 'trivial' ? 'coder, then your push approval (no plan, review or tests)' : 'coder, review and tests (no plan to approve)';
-        return void (await this.say(`:twisted_rightwards_arrows: Route: *${lane}*: ${route}. It moves up a lane if the change turns out bigger.`, task));
+        if (String(event.payload.lane) === 'standard') return;
+        return void (await this.say(':zap: Route: *solo*. The all-rounder builds it alone (reads, changes, tests and reviews its own diff), then the PR opens for you. A big diff gets one extra review.', task));
       }
       case 'worktree':
         return;
@@ -465,7 +468,10 @@ export class SlackBridge {
     const body = isCommand ? `\`\`\`${clip(g.subject ?? '', 1500).replace(/```/g, "'''")}\`\`\`` : this.gateSummary(task, g.kind);
     const buttons = isCommand
       ? [this.button(g.gateId, 'allow_once', 'Allow once', 'primary'), this.button(g.gateId, 'allow_always', 'Always for this repo'), this.button(g.gateId, 'deny', 'Deny', 'danger')]
-      : [this.button(g.gateId, 'approve', g.kind === 'review_post' ? 'Post review' : 'Approve', 'primary'), this.button(g.gateId, 'reject', 'Reject…', 'danger')];
+      : [
+          this.button(g.gateId, 'approve', g.kind === 'review_post' ? 'Post review' : g.kind === 'merge' ? 'Merge' : 'Approve', 'primary'),
+          this.button(g.gateId, 'reject', g.kind === 'merge' ? 'Changes needed…' : 'Reject…', 'danger'),
+        ];
     // A short summary with the buttons right under it; the full document is one tap away on the board.
     const blocks = [
       { type: 'section', text: { type: 'mrkdwn', text: `${heading}\n*#${task.id}* ${esc(clip(task.title, 90))}` } },
@@ -489,6 +495,8 @@ export class SlackBridge {
         return reviewPostSummary(docs.latest(task.id, 'pr-review') ?? '');
       case 'push':
         return pushSummary({ changes: docs.latest(task.id, 'changes'), review: docs.latest(task.id, 'review'), testReport: docs.latest(task.id, 'test-report') });
+      case 'merge':
+        return mergeSummary(task.prUrl, { changes: docs.latest(task.id, 'changes'), review: docs.latest(task.id, 'review'), testReport: docs.latest(task.id, 'test-report') });
       default:
         return '';
     }

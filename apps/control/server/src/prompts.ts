@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Repo, Task } from './db/schema.js';
-import type { Role } from './domain.js';
+import { isSolo, type Role } from './domain.js';
 import { briefingRules } from './briefing.js';
 import { CONTRACTS, type ContractStep, type DocName, type TaskDocs } from './handoffs.js';
 
@@ -34,7 +34,7 @@ export interface PromptContext {
 }
 
 /** Roles a mission can pick skills for (the manager's own intake has already started). */
-export const PICKABLE_ROLES: Role[] = ['architect', 'coder', 'ui-coder', 'reviewer', 'tester', 'debugger', 'researcher'];
+export const PICKABLE_ROLES: Role[] = ['all-rounder', 'architect', 'coder', 'ui-coder', 'reviewer', 'tester', 'debugger', 'researcher'];
 
 const JOBS: Record<ContractStep, string> = {
   intake:
@@ -42,7 +42,7 @@ const JOBS: Record<ContractStep, string> = {
   debugging: 'Find the root cause of this bug. Reproduce it first. Do not fix it.',
   researching: 'Answer the external questions this task depends on (libraries, APIs, docs), with sources.',
   splitting:
-    "This request is far too big for one task. Don't plan the implementation: split it into milestones, each one a task the team can plan, build, review and open as a draft PR on its own, on top of the previous one. Read the repo first so the first milestone fits what is already there. The owner approves the split, then each milestone runs in order.",
+    "This request is far too big for one task. Don't plan the implementation: split it into milestones, each one a task the team can plan, build, review and open as a PR on its own, on top of the previous one. Read the repo first so the first milestone fits what is already there. The owner approves the split, then each milestone runs in order.",
   planning:
     'Write the implementation plan. Read the relevant code first. The coder will follow it exactly and may only touch "files_in_scope".',
   coding:
@@ -70,8 +70,8 @@ const INPUTS: Record<ContractStep, DocName[]> = {
   reviewing_pr: [],
 };
 
-/** Trivial and small tasks have no architect: the coder works from the manager's task.md instead of a plan. */
-const unplanned = (task: Task) => task.lane === 'trivial' || task.lane === 'small';
+/** Solo tasks have no architect: the all-rounder works from the manager's task.md instead of a plan. */
+const unplanned = (task: Task) => isSolo(task);
 
 function inputsFor(step: ContractStep, task: Task): DocName[] {
   if (!unplanned(task)) return INPUTS[step];
@@ -79,16 +79,17 @@ function inputsFor(step: ContractStep, task: Task): DocName[] {
 }
 
 const UNPLANNED_JOBS: Partial<Record<ContractStep, (task: Task) => string>> = {
-  coding: (task) =>
+  coding: () =>
     [
-      `There is no separate plan: the manager routed this as a ${task.lane} change. Make the change that the request and the draft acceptance criteria in task.md describe, as small as it can be, touching only what it needs.`,
-      task.lane === 'trivial'
-        ? 'This lane goes straight to the owner after you, with no review or tests, so keep to docs, comments and wording. If the change really needs code, make it and run the tests: the office will then send it through review.'
-        : 'Run the lint, typecheck and test commands before you finish.',
-      'If it turns out bigger than that, or needs a decision, report status: blocked and the architect will plan it. In the Changes section, list what you changed instead of plan steps.',
-    ].join(' '),
+      'You have this task to yourself, like a single Claude Code session: there is no plan, no separate reviewer and no tester. Do the whole job from the request and the draft acceptance criteria in task.md:',
+      '1. Read the code that matters, and investigate first when it is a bug: reproduce it, find the root cause.',
+      '2. Make the change, as small as it can be while fully solving it, in the repo\'s existing patterns.',
+      '3. Add or update tests for behaviour that changes (none for docs or wording), then run the build, lint and test commands and fix what you broke.',
+      '4. Review your own diff (git diff) against the request as a strict reviewer would: bugs, edge cases, security, leftovers. Fix what you find.',
+      'If it needs a decision only the owner can make, or turns out to be days of work, report status: blocked and the full team will plan it. In the Changes section, list what you changed instead of plan steps.',
+    ].join('\n'),
   reviewing: () =>
-    'Review the changes (the diff below, and the code around it) against the request and the draft acceptance criteria in task.md: there is no separate plan for this small task. Run the tests if useful. You did not write this code.',
+    'Review the changes (the diff below, and the code around it) against the request and the draft acceptance criteria in task.md: there is no separate plan for this task. Run the tests if useful. You did not write this code.',
   testing: () =>
     "Write tests for behaviour this change adds or alters, mapped to the draft acceptance criteria in task.md; a change with no behaviour (docs, comments, wording, formatting) gets no new tests. Then run the full test suite. Only create or change test files.",
 };
@@ -101,11 +102,10 @@ function jobFor(step: ContractStep, task: Task): string {
 const ROUTE_RULES = [
   '## Route',
   'Pick the lane, which decides how much of the team this task gets:',
-  '- trivial: docs, README, comments, typos, wording, text-only config. Nothing about what the code does changes. Goes coder → owner, with no plan, review or tests.',
-  '- small: a small, clear code change (size S): one area, an obvious approach, no design choices, nothing risky (auth, payments, data migrations, security). Goes coder → review → tests, with no architect.',
-  '- standard: everything else, and whenever you are unsure. The architect plans it and the owner approves the plan.',
-  "The office checks the coder's diff and moves a task up a lane when it turns out bigger, and anything that needs a debugger, research, a design review or a briefing is standard anyway.",
-  "Don't pick skills for roles your lane skips (trivial: architect, reviewer, tester; small: architect).",
+  '- solo (the default): the all-rounder does the whole job in one session: reads the code, investigates, makes the change, tests it and reviews its own diff. Use it for fixes, bugs to track down, small and medium features, docs, and anything one focused engineer can finish in a day.',
+  '- standard: the full team. The architect writes a plan, then the coder, reviewer and tester each do their part. Use it for size L work, new screens, flows or architecture that need a written design first, and risky areas where a plan should be checked before any code (auth, payments, data migrations, security).',
+  'Anything that gets a briefing or a design review goes to the full team anyway. The office gives a solo change one extra review when its diff turns out big.',
+  "Don't pick skills for roles your lane skips (solo: everyone but the all-rounder; standard: the all-rounder).",
   '',
   'Epic: set epic: true (with size L and lane standard) only when the request is several features or more than a few days of work, such as a whole app or a large subsystem. The architect then splits it into milestone tasks for the owner to approve, instead of planning it as one.',
 ].join('\n');
@@ -188,6 +188,18 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
     `## Output format\nYour final message is saved as ${CONTRACTS[step].doc}.md and is all the next agent sees. Reply with only this document, starting with the --- front matter line:\n\n${CONTRACTS[step].format}`,
   );
   return parts.join('\n\n');
+}
+
+/**
+ * The message that continues a coding session with new feedback (review findings, failing tests, my
+ * comment on the PR), instead of a fresh session that would have to read everything again.
+ */
+export function resumePrompt(step: ContractStep, feedback: string): string {
+  return [
+    `## Feedback to address\n${feedback}`,
+    'Fix exactly what this asks for, nothing else, then run the build, lint and test commands again.',
+    `## Output format\nWhen you are done, reply with only the ${CONTRACTS[step].doc}.md document again, in the same format as before, starting with the --- front matter line:\n\n${CONTRACTS[step].format}`,
+  ].join('\n\n');
 }
 
 /** The manager's view of the skill catalog at intake: what exists, what each role already has, what I locked. */

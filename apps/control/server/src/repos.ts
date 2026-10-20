@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Db } from './db/index.js';
 import { schema } from './db/index.js';
 import type { Repo } from './db/schema.js';
-import { ROLES } from './domain.js';
+import { MERGE_METHODS, ROLES } from './domain.js';
 import { splitCommand } from './guard.js';
 import { run } from './util/exec.js';
 
@@ -54,6 +54,7 @@ export const repoInput = z.object({
   lintCmd: z.string().trim().nullish(),
   testGlobs: z.array(z.string().trim().min(1)).default(['**/*.test.*', '**/*.spec.*', '**/test/**', '**/tests/**', '**/__tests__/**']),
   ghAccount: z.string().trim().nullish(),
+  mergeMethod: z.enum(MERGE_METHODS).default('squash'),
   gitAuthor: z
     .string()
     .trim()

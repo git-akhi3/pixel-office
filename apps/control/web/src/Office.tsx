@@ -211,7 +211,7 @@ export function Office({
                 <span className="task-id">#{t.id}</span> {t.title}
               </div>
               <StageTrack task={t} />
-              <StatusBadge status={t.status} running={t.running} />
+              <StatusBadge status={t.status} running={t.running} lane={t.lane} />
               {t.pendingGates.some((g) => g.kind === 'question') && (
                 <div className="card-alert">
                   <Icon name="question" size={8} /> {copy.asks}

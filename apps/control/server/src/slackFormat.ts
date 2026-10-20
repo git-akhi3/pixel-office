@@ -68,6 +68,11 @@ export function breakdownSummary(doc: string): string {
   return out.join('\n\n');
 }
 
+/** The open PR waiting for my OK to merge: its link, then what pushSummary shows. */
+export function mergeSummary(prUrl: string | null, docs: { changes?: string | null; review?: string | null; testReport?: string | null }): string {
+  return [prUrl ? `<${prUrl}|Open the PR>` : null, pushSummary(docs)].filter(Boolean).join('\n\n');
+}
+
 /** What the push will open: the PR title and summary, and how review and tests went. */
 export function pushSummary(docs: { changes?: string | null; review?: string | null; testReport?: string | null }): string {
   const out: string[] = [];
@@ -161,8 +166,10 @@ const STEP_LABEL: Partial<Record<TaskStatus, string>> = {
   reviewing: ':eyes: Reviewing the code',
   testing: ':test_tube: Testing',
   awaiting_push_approval: ':raised_hand: Needs your OK to push',
-  pushing: ':rocket: Opening the draft PR',
+  pushing: ':rocket: Opening the PR',
   pr_open: ':rocket: Draft PR open',
+  awaiting_merge_approval: ':raised_hand: PR open: needs your OK to merge',
+  merging: ':twisted_rightwards_arrows: Merging',
   retro: ':thought_balloon: Wrapping up',
   reviewing_pr: ':eyes: Reviewing the PR',
   awaiting_review_post: ':raised_hand: Needs your OK to post the review',

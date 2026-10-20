@@ -1,0 +1,1 @@
+ALTER TABLE `repos` ADD `merge_method` text DEFAULT 'squash' NOT NULL;

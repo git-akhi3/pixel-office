@@ -1,19 +1,23 @@
 // The task state machine. Code decides what happens next; agents only do the work of each step.
 //
-//   queued → intake → [debugging] → [researching] → planning → awaiting_plan_approval
-//     → coding → reviewing → testing → awaiting_push_approval → pushing → pr_open → retro → done
+// Solo (lanes.ts, the default): intake → coding (the all-rounder) → [reviewing, when the diff is big]
+//   → pushing → awaiting_merge_approval → merging → retro → done
 //
-// Lanes (lanes.ts): trivial tasks go intake → coding → awaiting_push_approval; small ones skip the
-// architect (intake → coding → reviewing → testing → …). The coder's diff can only raise the lane.
+// Full team: queued → intake → [debugging] → [researching] → planning → awaiting_plan_approval
+//   → coding → reviewing → testing → pushing → awaiting_merge_approval → merging → retro → done
+//
+// The PR opens as soon as the checks pass; my approval merges it. Sending it back with a comment
+// returns it to coding, and the next push updates the same PR.
 //
 // Epics: intake flags a request far too big for one task → splitting (the architect writes
 // breakdown.md) → awaiting_breakdown_approval → one task per milestone, each waiting for the
-// previous one's draft PR and building on its branch. The epic itself is then done.
+// previous one's PR and building on its branch. The epic itself is then done.
 //
-// Failures: review or test failures go back to the coder twice, then back to the architect.
-// A coder blocker goes back to the architect. A task is re-planned at most twice, then it is blocked for me.
+// Failures: review or test failures go back to coding twice, then to the architect. A blocker from
+// the coder or the all-rounder goes to the architect (a solo task joins the full team). A task is
+// re-planned at most twice, then it is blocked for me.
 
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
 import { existsSync } from 'node:fs';
 import { isWrapperSkill, listSkills, withRepoSkills, withSkills, type AgentDef } from './agents.js';
 import type { Graphs } from './graph.js';
@@ -23,17 +27,18 @@ import { getSettings, schema, usagePause, type Db } from './db/index.js';
 import type { Gate, GrillMode, Question, Repo, SkillPicks, Task } from './db/schema.js';
 import { attachmentsDir, cleanLinks, Uploads } from './attachments.js';
 import { answersMessage, BRIEFING_WAIT_MS, briefDoc, MAX_BAD_ROUNDS, parseRound, type BriefingOutput, type Delivery, type RoundQuestion } from './briefing.js';
-import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, maxLane, stepRole, type GateDecision, type Lane, type Role, type TaskKind, type TaskStatus } from './domain.js';
+import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, isSolo, stepRole, type GateDecision, type Role, type TaskKind, type TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
 import type { PrInfo, Publisher } from './github.js';
 import { crucialCommand, matchesAnyGlob, realPath } from './guard.js';
 import { CONTRACTS, extractPr, normalizeOutput, parseMilestones, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
-import { laneAtIntake, laneOfDiff } from './lanes.js';
-import { buildPrompt, PICKABLE_ROLES } from './prompts.js';
+import { laneAtIntake, PICKABLE_LANES, reviewReason, type LanePick } from './lanes.js';
+import { buildPrompt, PICKABLE_ROLES, resumePrompt } from './prompts.js';
 import { addToAllowlist, effectiveAllowlist, getRepo, listRepos } from './repos.js';
-import type { AgentRunner, PermissionAnswer, RunOutcome } from './runner.js';
+import { emptyUsage, type AgentRunner, type PermissionAnswer, type RunOutcome, type RunUsage } from './runner.js';
 import { commentableLines, formatComment, originSlug, parsePrUrl, parseReviewDoc, prSlug, reviewBody, splitComments } from './reviews.js';
 import { changedFiles, commitAll, createReviewWorktree, createWorktree, diff, diffStat, removeWorktree } from './worktree.js';
+import { git } from './util/exec.js';
 
 /** One spelling per PR, so manual and auto-picked reviews of the same PR match. */
 const canonicalPrUrl = (slug: string, number: number) => `https://github.com/${slug.toLowerCase()}/pull/${number}`;
@@ -52,6 +57,8 @@ const MAX_MANAGER_PICKS = 4;
 export const MAX_REPLANS = 2;
 export const WORKTREE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const RATE_LIMIT_FALLBACK_MS = 30 * 60 * 1000;
+/** Statuses where the task's PR is open and not merged yet. */
+const OPEN_PR: TaskStatus[] = ['pr_open', 'awaiting_merge_approval', 'merging'];
 
 export interface PipelineDeps {
   db: Db;
@@ -91,6 +98,8 @@ export interface NewTask {
   statusNote?: string;
   /** Other registered repos the agents may read, never write. */
   refRepos?: number[];
+  /** My lane pick: solo or the full team. Missing means the manager decides at intake. */
+  lane?: LanePick;
 }
 
 export type TaskAction = 'stop' | 'resume' | 'discard' | 'done';
@@ -114,6 +123,8 @@ export class Pipeline {
   private queuedDelivery = new Map<number, { gateId: number; delivery: Delivery }>();
   /** Tasks I sent back for a new plan while a step ran: that step's interruption isn't a stop. */
   private replanned = new Set<number>();
+  /** The feedback each running step was given, cleared from the task only once that step succeeds. */
+  private consumed = new Map<number, string>();
   /** Malformed question rounds per task, sent back for a fix up to MAX_BAD_ROUNDS times. */
   private badRounds = new Map<number, number>();
   private timers: NodeJS.Timeout[] = [];
@@ -248,7 +259,7 @@ export class Pipeline {
       .select()
       .from(schema.tasks)
       .all()
-      .filter((t) => (isAgentStep(t.status) && t.status !== 'queued') || t.status === 'pushing' || t.status === 'posting_review');
+      .filter((t) => (isAgentStep(t.status) && t.status !== 'queued') || ['pushing', 'merging', 'posting_review'].includes(t.status));
     for (const t of active) {
       if ((t.status === 'planning' || t.status === 'splitting') && this.openRoundGate(t.id)) {
         // The architect was waiting for my answers: keep the questions, wait for me without a session.
@@ -293,6 +304,8 @@ export class Pipeline {
         dependsOn: input.dependsOn ?? null,
         statusNote: input.statusNote ?? null,
         refRepos,
+        // Until intake, the lane holds my pick (if any); intake replaces it with the lane the task runs in.
+        lane: input.lane ?? null,
       })
       .returning()
       .get();
@@ -401,7 +414,7 @@ export class Pipeline {
   }
 
   /**
-   * A queued milestone starts once the milestone it builds on has its draft PR (or is finished).
+   * A queued milestone starts once the milestone it builds on has its PR open (or is finished).
    * If that one was discarded or failed, this one is blocked: resuming starts it without it.
    */
   private dependencyReady(task: Task): boolean {
@@ -412,14 +425,14 @@ export class Pipeline {
       this.block(task, `Milestone #${task.dependsOn} it builds on was ${dep?.status ?? 'deleted'}. Resume to start this one from the default branch without it.`, 'queued');
       return false;
     }
-    return ['pr_open', 'retro', 'done'].includes(dep.status);
+    return [...OPEN_PR, 'retro', 'done'].includes(dep.status);
   }
 
   /** Stacks a milestone on the previous one's branch while that PR is open; after it merges, on the default branch. */
   private startFromDependency(task: Task): Task {
     if (task.status !== 'queued' || !task.dependsOn) return task;
     const dep = this.getTask(task.dependsOn);
-    const baseBranch = dep.status === 'pr_open' && dep.branch ? dep.branch : null;
+    const baseBranch = OPEN_PR.includes(dep.status) && dep.branch ? dep.branch : null;
     return this.update(task.id, { baseBranch, statusNote: null });
   }
 
@@ -436,6 +449,7 @@ export class Pipeline {
       .finally(() => {
         this.running.delete(task.id);
         this.currentRun.delete(task.id);
+        this.consumed.delete(task.id);
         this.inFlight.delete(p);
         void this.tick();
       });
@@ -484,8 +498,10 @@ export class Pipeline {
     const worktree = step === 'retro' ? realPath(docs.dir(task.id)) : task.worktreePath!;
     if (abort.signal.aborted) return; // stopped or discarded while the worktree was being made
 
+    // The feedback stays on the task until this step succeeds: a step that fails, is stopped or is cut
+    // off by a restart gets it again when it runs again. Notes I send meanwhile are added after it.
     const feedback = task.feedback ?? undefined;
-    if (feedback) task = this.update(task.id, { feedback: null });
+    if (feedback) this.consumed.set(task.id, feedback);
     const mcpServers = graphs.mcpFor(repo, role);
     const prompt = buildPrompt(step, {
       knowledge: knowledge.read(repo.id),
@@ -503,6 +519,8 @@ export class Pipeline {
       attachmentsDir: realPath(attachmentsDir(docs.dir(task.id))),
       refs,
     });
+    // A fix loop continues the coding session that wrote the change: it already knows the code.
+    const resume = step === 'coding' && feedback ? this.codingSession(task.id, role) : null;
 
     const run = db
       .insert(schema.runs)
@@ -532,6 +550,7 @@ export class Pipeline {
       onEvent: (type, payload) => bus.emit(task.id, type, payload, run.id),
       askPermission: (subject, unmatched) => this.requestPermission(task.id, subject, unmatched),
       validate: (text) => validateDoc(step, text),
+      ...(resume ? { resume: { ...resume, prompt: resumePrompt(step, feedback!) } } : {}),
       ...(grilling ? { interject: (text: string) => this.onArchitectMessage(task.id, run.id, text, abort.signal) } : {}),
     });
     this.recordRun(run.id, outcome);
@@ -573,12 +592,69 @@ export class Pipeline {
         this.block(task, `${role} failed: ${outcome.error ?? 'unknown error'}`, step);
         return;
       case 'ok': {
+        task = this.update(task.id, { feedback: this.newFeedback(task) });
+        this.consumed.delete(task.id);
         const text = normalizeOutput(outcome.text);
         docs.save(task.id, CONTRACTS[step].doc, text);
         await this.afterStep(task, step, text);
         this.checkTokenBudget(this.getTask(task.id));
       }
     }
+  }
+
+  /** Why the last coding run needs a review because it used the web tools, or null when it didn't. */
+  private readTheWeb(taskId: number): string | null {
+    const runId = this.deps.db
+      .select({ id: schema.runs.id })
+      .from(schema.runs)
+      .where(and(eq(schema.runs.taskId, taskId), eq(schema.runs.step, 'coding')))
+      .orderBy(desc(schema.runs.id))
+      .get()?.id;
+    if (runId === undefined) return null;
+    const used = this.deps.db
+      .select()
+      .from(schema.events)
+      .where(and(eq(schema.events.runId, runId), eq(schema.events.type, 'tool')))
+      .all()
+      .some((e) => e.payload.tool === 'WebFetch' || e.payload.tool === 'WebSearch');
+    return used ? 'it read web pages while working' : null;
+  }
+
+  /** The task's feedback minus what the running step started with: notes I sent while it ran. */
+  private newFeedback(task: Task): string | null {
+    const taken = this.consumed.get(task.id);
+    if (!task.feedback || !taken) return task.feedback ?? null;
+    return task.feedback.startsWith(taken) ? task.feedback.slice(taken.length).trim() || null : task.feedback;
+  }
+
+  /**
+   * The session of the role's last finished coding run, unless the architect has planned since, with
+   * the tokens its runs already recorded (a resumed session reports its whole history).
+   */
+  private codingSession(taskId: number, role: Role): { sessionId: string; usageSoFar: RunUsage } | null {
+    const { db } = this.deps;
+    const last = db
+      .select()
+      .from(schema.runs)
+      .where(and(eq(schema.runs.taskId, taskId), eq(schema.runs.step, 'coding'), eq(schema.runs.status, 'ok')))
+      .orderBy(desc(schema.runs.id))
+      .get();
+    if (!last?.sessionId || last.role !== role) return null;
+    const plannedSince = db
+      .select({ id: schema.runs.id })
+      .from(schema.runs)
+      .where(and(eq(schema.runs.taskId, taskId), eq(schema.runs.step, 'planning'), gt(schema.runs.id, last.id)))
+      .get();
+    if (plannedSince) return null;
+    const usageSoFar = emptyUsage();
+    for (const r of db.select().from(schema.runs).where(and(eq(schema.runs.taskId, taskId), eq(schema.runs.sessionId, last.sessionId))).all()) {
+      usageSoFar.input += r.inputTokens;
+      usageSoFar.output += r.outputTokens;
+      usageSoFar.cacheRead += r.cacheReadTokens;
+      usageSoFar.cacheWrite += r.cacheWriteTokens;
+      usageSoFar.thinking += r.thinkingTokens;
+    }
+    return { sessionId: last.sessionId, usageSoFar };
   }
 
   private recordRun(runId: number, o: RunOutcome): void {
@@ -608,7 +684,7 @@ export class Pipeline {
           title: string;
           kind: TaskKind;
           size: 'S' | 'M' | 'L';
-          lane?: Lane;
+          lane?: 'solo' | 'standard' | 'trivial' | 'small';
           epic?: boolean;
           needs_debugger: boolean;
           frontend?: boolean;
@@ -630,17 +706,19 @@ export class Pipeline {
           skillPicks: this.managerPicks(task, m.skills, m.skills_why),
           ...this.grillDecision(task, m.grill, m.grill_reason),
         });
+        // Until intake, the lane holds my pick from the mission panel.
+        const pick = (PICKABLE_LANES as readonly string[]).includes(task.lane ?? '') ? (task.lane as LanePick) : null;
         const { lane, reason } = laneAtIntake({
           said: m.lane,
+          pick,
           size: updated.size,
-          needsDebugger: updated.needsDebugger,
-          needsResearcher: updated.needsResearcher,
           designFlag: updated.designFlag,
           grill: updated.grill,
         });
-        // A request far too big for one task is split into milestones, not planned or debugged as one.
-        if (m.epic && m.size === 'L' && !task.parentId) {
-          this.deps.bus.emit(task.id, 'epic_decided', {});
+        // A request far too big for one task is split into milestones, not planned or debugged as one
+        // (unless I asked for it to be done solo, in one go).
+        if (m.epic && m.size === 'L' && !task.parentId && pick !== 'solo') {
+          this.deps.bus.emit(task.id, 'epic_decided', { pick });
           // On Auto an epic is always briefed: a split made without me is the expensive kind of guess.
           const brief = task.grillMode === 'auto' && !updated.grill ? { grill: true, grillReason: 'Epics get a briefing before they are split.' } : {};
           if (brief.grill) this.deps.bus.emit(task.id, 'briefing_decided', { grill: true, reason: brief.grillReason, mode: task.grillMode });
@@ -648,7 +726,8 @@ export class Pipeline {
           return;
         }
         this.deps.bus.emit(task.id, 'lane_decided', { lane, said: m.lane ?? null, reason });
-        const next: TaskStatus = updated.needsDebugger ? 'debugging' : updated.needsResearcher ? 'researching' : lane === 'standard' ? 'planning' : 'coding';
+        // The all-rounder investigates and looks things up itself; the full team has specialists for that.
+        const next: TaskStatus = lane !== 'standard' ? 'coding' : updated.needsDebugger ? 'debugging' : updated.needsResearcher ? 'researching' : 'planning';
         this.update(task.id, { lane, status: next });
         return;
       }
@@ -672,8 +751,13 @@ export class Pipeline {
         const m = readMeta<{ status: 'done' | 'blocked' }>('coding', text);
         if (m.status === 'blocked') {
           docs.save(task.id, 'blocked', text);
-          this.alert(task, 'blocked', 'The coder raised a blocker: the plan goes back to the architect.');
-          this.replan(task, `The coder could not follow the plan and raised this blocker:\n\n${text}`);
+          if (isSolo(task)) {
+            this.alert(task, 'blocked', 'The all-rounder raised a blocker: the full team takes it from here, starting with a plan.');
+            this.replan(task, `The all-rounder started this task alone and raised this blocker:\n\n${text}`);
+          } else {
+            this.alert(task, 'blocked', 'The coder raised a blocker: the plan goes back to the architect.');
+            this.replan(task, `The coder could not follow the plan and raised this blocker:\n\n${text}`);
+          }
           return;
         }
         const pr = extractPr(text);
@@ -681,12 +765,19 @@ export class Pipeline {
         const repo = getRepo(this.deps.db, task.repoId);
         await commitAll(task.worktreePath!, pr?.title ?? task.title, repo.gitAuthor);
         await this.checkScope(task);
-        // A trivial change that stayed trivial goes straight to me; anything else is reviewed and tested.
-        if ((await this.checkLane(task)) === 'trivial') {
-          await this.openPushGate(this.getTask(task.id), false);
+        if (!isSolo(task)) {
+          this.update(task.id, { status: 'reviewing' });
           return;
         }
-        this.update(task.id, { status: 'reviewing' });
+        // The all-rounder tested and reviewed its own work. A big diff gets one independent review on top,
+        // and so does work done after reading web pages (a page could have steered it).
+        const why = (task.baseSha ? reviewReason(await diffStat(task.worktreePath!, task.baseSha)) : null) ?? this.readTheWeb(task.id);
+        if (why) {
+          this.deps.bus.emit(task.id, 'review_added', { reason: why });
+          this.update(task.id, { status: 'reviewing' });
+          return;
+        }
+        await this.openPr(this.getTask(task.id));
         return;
       }
       case 'reviewing': {
@@ -695,7 +786,9 @@ export class Pipeline {
           this.failure(task, `The review found ${m.blocking} blocking issue(s). Fix exactly those:\n\n${text}`);
           return;
         }
-        this.update(task.id, { status: 'testing' });
+        // The all-rounder already ran the tests; only the full team has a separate tester.
+        if (isSolo(task)) await this.openPr(task);
+        else this.update(task.id, { status: 'testing' });
         return;
       }
       case 'testing': {
@@ -709,7 +802,7 @@ export class Pipeline {
           this.failure(task, `The tests fail. Make them pass without weakening them:\n\n${text}`);
           return;
         }
-        await this.openPushGate(task);
+        await this.openPr(task);
         return;
       }
       case 'retro': {
@@ -796,32 +889,19 @@ export class Pipeline {
   }
 
   /**
-   * A size S task doesn't need the biggest model to plan or review it: on S tasks an Opus architect or
-   * reviewer runs on Sonnet at medium effort (Settings → sonnetForSmall). Applied on top of whatever
-   * agent definition is loaded, so my edits on the Team page keep their skills and tools.
+   * A size S task doesn't need the biggest model to review it: on S tasks an Opus reviewer runs on
+   * Sonnet at medium effort (Settings → sonnetForSmall). The architect always keeps its own model:
+   * plans are where quality matters most. Applied on top of whatever agent definition is loaded, so my
+   * edits on the Team page keep their skills and tools.
    */
   private forSize(task: Task, role: Role, agent: AgentDef): AgentDef {
-    if (task.kind === 'review' || task.size !== 'S' || (role !== 'architect' && role !== 'reviewer')) return agent;
+    if (task.kind === 'review' || task.size !== 'S' || role !== 'reviewer') return agent;
     if (!/opus/i.test(agent.model) || !getSettings(this.deps.db).sonnetForSmall) return agent;
     const effort = agent.effort === 'low' ? 'low' : 'medium';
     return { ...agent, model: SMALL_TASK_MODEL, effort };
   }
 
-  /** Raises a trivial or small task's lane when the coder's diff is bigger than the lane allows. */
-  private async checkLane(task: Task): Promise<Lane> {
-    const current = task.lane ?? 'standard';
-    if (current === 'standard' || !task.baseSha) return current;
-    const measured = laneOfDiff(await diffStat(task.worktreePath!, task.baseSha));
-    const lane = maxLane(current, measured.lane);
-    if (lane !== current) {
-      this.update(task.id, { lane });
-      this.deps.bus.emit(task.id, 'lane_changed', { from: current, to: lane, reason: measured.reason });
-      this.alert(task, 'lane', `Moved from the ${current} lane to ${lane}: ${measured.reason}.`);
-    }
-    return lane;
-  }
-
-  /** A task the architect now plans runs the full pipeline from here on. */
+  /** A task the architect now plans runs the full pipeline from here on (a solo task joins the full team). */
   private toStandard(task: Task, why: string): Partial<Task> {
     if (!task.lane || task.lane === 'standard') return {};
     this.deps.bus.emit(task.id, 'lane_changed', { from: task.lane, to: 'standard', reason: why });
@@ -860,17 +940,91 @@ export class Pipeline {
     return gate;
   }
 
-  /** reviewed: review and tests passed. A trivial change skipped both, so it always waits for me. */
-  private async openPushGate(task: Task, reviewed = true): Promise<void> {
-    const auto = reviewed && getSettings(this.deps.db).autoApprovePush;
-    if (auto) {
-      // Only reached when review and tests both passed; the publisher still enforces branch rules.
-      this.openGate(task.id, 'push', null, true);
-      await this.push(task);
+  /**
+   * The checks passed: push, open the PR (or update the one it has) and wait for my OK to merge. The
+   * pushed commit is recorded: the merge takes exactly that commit, nothing pushed after it.
+   */
+  private async openPr(task: Task): Promise<void> {
+    task = this.update(task.id, { status: 'pushing', statusNote: null });
+    const repo = getRepo(this.deps.db, task.repoId);
+    let url: string;
+    let sha: string;
+    try {
+      const base = await this.stackedBase(task, repo);
+      if (base !== (task.baseBranch ?? repo.defaultBranch)) {
+        // The milestone this one was stacked on has merged: this PR goes to the default branch.
+        if (task.prUrl) await this.deps.publisher.retargetPr(repo, task.prUrl, base);
+        task = this.update(task.id, { baseBranch: null });
+      }
+      sha = (await git(task.worktreePath!, ['rev-parse', 'HEAD'])).trim();
+      const prDoc = this.deps.docs.latest(task.id, 'pr');
+      const title = prDoc?.match(/^# (.+)$/m)?.[1] ?? task.title;
+      const body = `${prDoc?.replace(/^# .+\n+/, '') ?? ''}\n\n---\nOpened by Pixel Office (task #${task.id}).`.trim();
+      url = await this.deps.publisher.pushAndOpenPr(repo, task.worktreePath!, task.branch!, { title, body, base, draft: false });
+    } catch (e) {
+      // Stopped or discarded during the push: that decision stands.
+      if (this.getTask(task.id).status === 'pushing') this.block(task, `Push failed: ${e instanceof Error ? e.message : String(e)}`, 'pushing');
       return;
     }
-    this.update(task.id, { status: 'awaiting_push_approval' });
-    this.openGate(task.id, 'push');
+    if (this.getTask(task.id).status !== 'pushing') return;
+    const first = !task.prUrl;
+    const changed = sha !== task.prHeadSha;
+    this.update(task.id, { status: 'awaiting_merge_approval', prUrl: url, prHeadSha: sha });
+    if (first) this.deps.bus.emit(task.id, 'pr_opened', { url });
+    else if (changed) this.deps.bus.emit(task.id, 'pr_updated', { url });
+    else this.alert(task, 'no_changes', 'The builder made no new commits, so the PR is unchanged.');
+    this.openGate(task.id, 'merge');
+  }
+
+  /**
+   * The branch a milestone's PR goes into. While the milestone it builds on has an open PR, its branch
+   * (the PRs stack); once that one has merged, the default branch. A predecessor that was discarded,
+   * failed or closed without merging leaves its commits on this branch, so that throws: merging would
+   * land unreviewed code.
+   */
+  private async stackedBase(task: Task, repo: Repo): Promise<string> {
+    const base = task.baseBranch ?? repo.defaultBranch;
+    const dep = task.dependsOn ? this.deps.db.select().from(schema.tasks).where(eq(schema.tasks.id, task.dependsOn)).get() : undefined;
+    if (!dep?.branch || task.baseBranch !== dep.branch) return base;
+    const gone = `this branch builds on milestone #${dep.id}, which`;
+    if (dep.status === 'discarded' || dep.status === 'failed') {
+      throw new Error(`${gone} was ${dep.status}, so it still carries that work. Discard this task too, or rebase the branch onto ${repo.defaultBranch} yourself.`);
+    }
+    if (dep.status !== 'retro' && dep.status !== 'done') return base;
+    const state = dep.prUrl ? await this.deps.publisher.prState(repo, dep.prUrl) : 'UNKNOWN';
+    if (state === 'MERGED') return repo.defaultBranch;
+    throw new Error(`${gone} was finished without its PR merging, so this branch still carries that work. Merge #${dep.id}'s PR, or rebase this branch onto ${repo.defaultBranch} yourself.`);
+  }
+
+  /**
+   * My OK on the PR: merge exactly the commit the office pushed, then the retrospective. A milestone
+   * stacked on the previous one's branch only merges after that one has, pointed at the default branch.
+   * If GitHub refuses (checks, conflicts, branch rules, a newer commit), the PR waits for me again.
+   */
+  private async merge(task: Task): Promise<void> {
+    task = this.update(task.id, { status: 'merging', statusNote: null });
+    const repo = getRepo(this.deps.db, task.repoId);
+    try {
+      const base = await this.stackedBase(task, repo);
+      if (task.baseBranch && base === task.baseBranch && task.dependsOn) throw new Error(`this PR builds on milestone #${task.dependsOn}'s branch: merge #${task.dependsOn} first.`);
+      if (base !== (task.baseBranch ?? repo.defaultBranch)) {
+        await this.deps.publisher.retargetPr(repo, task.prUrl!, base);
+        task = this.update(task.id, { baseBranch: null });
+      }
+      await this.deps.publisher.mergePr(repo, task.prUrl!, repo.mergeMethod, task.prHeadSha);
+    } catch (e) {
+      // Stopped or discarded meanwhile: that decision stands.
+      if (this.getTask(task.id).status !== 'merging') return;
+      const note = `Merging failed: ${e instanceof Error ? e.message : String(e)}`;
+      this.update(task.id, { status: 'awaiting_merge_approval', statusNote: note });
+      this.alert(task, 'merge_failed', note);
+      this.openGate(task.id, 'merge');
+      return;
+    }
+    if (this.getTask(task.id).status !== 'merging') return;
+    this.deps.bus.emit(task.id, 'pr_merged', { url: task.prUrl, by: 'office' });
+    this.update(task.id, { ...this.finished(task), statusNote: null });
+    await this.dropWorktree(this.getTask(task.id));
   }
 
   private requestPermission(taskId: number, subject: string, unmatched: string[]): Promise<PermissionAnswer> {
@@ -921,7 +1075,9 @@ export class Pipeline {
 
     if (!['approve', 'reject'].includes(decision)) throw new Error('Use approve or reject.');
     if (decision === 'reject' && !comment?.trim()) throw new Error('Say what to change when rejecting.');
-    const expected = ({ plan: 'awaiting_plan_approval', push: 'awaiting_push_approval', breakdown: 'awaiting_breakdown_approval' } as Partial<Record<Gate['kind'], TaskStatus>>)[gate.kind] ?? 'awaiting_review_post';
+    const expected = (
+      { plan: 'awaiting_plan_approval', push: 'awaiting_push_approval', merge: 'awaiting_merge_approval', breakdown: 'awaiting_breakdown_approval' } as Partial<Record<Gate['kind'], TaskStatus>>
+    )[gate.kind] ?? 'awaiting_review_post';
     if (task.status !== expected) throw new Error(`The task is ${task.status}, not ${expected}.`);
     close(decision === 'approve' ? 'approved' : 'rejected');
     this.deps.bus.emit(task.id, 'gate_decided', { gateId, kind: gate.kind, decision, comment });
@@ -934,8 +1090,12 @@ export class Pipeline {
       else this.update(task.id, { status: 'reviewing_pr', feedback: `The owner wants the draft review redone:\n\n${comment}\n\n### Previous draft\n${this.deps.docs.latest(task.id, 'pr-review') ?? ''}` });
     } else if (gate.kind === 'plan') {
       task = this.update(task.id, decision === 'approve' ? { status: 'coding' } : { status: 'planning', feedback: `The owner rejected the plan:\n\n${comment}\n\n### Rejected plan\n${this.deps.docs.latest(task.id, 'plan') ?? ''}` });
+    } else if (gate.kind === 'merge') {
+      if (decision === 'approve') await this.merge(task);
+      else this.update(task.id, { status: 'coding', feedback: `The owner reviewed the PR and wants changes before it is merged:\n\n${comment}` });
     } else if (decision === 'approve') {
-      await this.push(task);
+      // A push gate from before PRs opened by themselves: the PR opens now and waits for my OK to merge.
+      await this.openPr(task);
     } else {
       this.update(task.id, { status: 'coding', feedback: `The owner did not approve the push:\n\n${comment}` });
     }
@@ -954,6 +1114,13 @@ export class Pipeline {
         .filter(([, p]) => p?.by === 'owner')
         .map(([role, p]) => [role, p!.skills]),
     );
+    // My lane pick for the epic (Full team) holds for every milestone; on Auto each one is sized on its own.
+    const epicEvent = this.deps.db
+      .select()
+      .from(schema.events)
+      .where(and(eq(schema.events.taskId, epic.id), eq(schema.events.type, 'epic_decided')))
+      .get();
+    const lane = epicEvent?.payload.pick === 'standard' ? ('standard' as const) : undefined;
     // The epic's briefing answers go to every milestone, so their architects don't ask them again.
     const decisions = this.deps.docs.latest(epic.id, 'brief')?.replace(/^---[\s\S]*?---\s*/, '').replace(/^## Decisions from the briefing\s*/, '').trim();
     const ids: number[] = [];
@@ -977,7 +1144,8 @@ export class Pipeline {
         refRepos: epic.refRepos,
         parentId: epic.id,
         dependsOn: prev,
-        statusNote: prev ? `Waits for milestone ${n - 1} (#${prev}) to open its draft PR.` : undefined,
+        statusNote: prev ? `Waits for milestone ${n - 1} (#${prev}) to open its PR.` : undefined,
+        lane,
         baseBranch: epic.baseBranch ?? undefined,
       });
       ids.push(child.id);
@@ -989,21 +1157,6 @@ export class Pipeline {
   /** Where a finished task goes: a retrospective, except for reviews and trivial changes (nothing to learn). */
   private finished(task: Task): Partial<Task> {
     return task.kind === 'review' || task.lane === 'trivial' ? { status: 'done', doneAt: this.now() } : { status: 'retro' };
-  }
-
-  private async push(task: Task): Promise<void> {
-    task = this.update(task.id, { status: 'pushing', statusNote: null });
-    try {
-      const repo = getRepo(this.deps.db, task.repoId);
-      const prDoc = this.deps.docs.latest(task.id, 'pr');
-      const title = prDoc?.match(/^# (.+)$/m)?.[1] ?? task.title;
-      const body = `${prDoc?.replace(/^# .+\n+/, '') ?? ''}\n\n---\nOpened by Pixel Office (task #${task.id}).`.trim();
-      const url = await this.deps.publisher.pushAndOpenDraftPr(repo, task.worktreePath!, task.branch!, { title, body, base: task.baseBranch ?? repo.defaultBranch });
-      this.update(task.id, { status: 'pr_open', prUrl: url });
-      this.deps.bus.emit(task.id, 'pr_opened', { url });
-    } catch (e) {
-      this.block(task, `Push failed: ${e instanceof Error ? e.message : String(e)}`, 'pushing');
-    }
   }
 
   // ------------------------------------------------------------ briefing
@@ -1156,8 +1309,10 @@ export class Pipeline {
     const { db, docs, bus } = this.deps;
     const qs = db.select().from(schema.questions).where(eq(schema.questions.gateId, gateId)).orderBy(asc(schema.questions.idx)).all();
     const task = this.getTask(taskId);
-    // Messages I sent while the round was open were held back, so the architect gets them with the answers.
-    const notes = task.feedback ? [task.feedback] : [];
+    // Messages I sent while the round was open were held back, so the architect gets them with the answers
+    // (not the feedback this planning run started with: it has that already).
+    const held = this.newFeedback(task);
+    const notes = held ? [held] : [];
     if (this.queuedDelivery.get(taskId)?.gateId === gateId) this.queuedDelivery.delete(taskId);
     db.update(schema.gates).set({ status: 'approved', decision: delivery, decidedAt: this.now() }).where(eq(schema.gates.id, gateId)).run();
     docs.save(taskId, 'brief', briefDoc(this.questions(taskId)));
@@ -1250,7 +1405,7 @@ export class Pipeline {
   /** I ask for a new plan: stop whatever runs and send the task back to the architect. Doesn't count toward the re-plan limit. */
   replanNow(taskId: number, reason: string): Task {
     const task = this.getTask(taskId);
-    if ([...TERMINAL_STATUSES, 'pushing', 'pr_open', 'retro'].includes(task.status)) throw new Error(`The task is ${task.status}; it can't be re-planned.`);
+    if ([...TERMINAL_STATUSES, 'pushing', 'pr_open', 'merging', 'retro'].includes(task.status)) throw new Error(`The task is ${task.status}; it can't be re-planned.`);
     if (task.status === 'splitting' || task.status === 'awaiting_breakdown_approval') throw new Error('This is an epic: reject its milestones with a comment instead.');
     this.cancelGates(taskId);
     const previous = this.deps.docs.latest(taskId, 'plan');
@@ -1299,7 +1454,18 @@ export class Pipeline {
           return this.getTask(taskId);
         }
         if (target === 'pushing') {
-          await this.push(task);
+          await this.openPr(task);
+          return this.getTask(taskId);
+        }
+        if (target === 'merging') {
+          // An interrupted merge isn't retried blind (resume is open to the Slack assistant too): the
+          // PR waits for my OK again, unless GitHub shows the merge went through.
+          const state = await this.deps.publisher.prState(getRepo(this.deps.db, task.repoId), task.prUrl!).catch(() => 'UNKNOWN' as const);
+          if (state === 'MERGED') await this.mergedOnGitHub(task);
+          else {
+            this.update(taskId, { status: 'awaiting_merge_approval', resumeStatus: null, statusNote: 'The merge was interrupted. Check the PR, then merge again.' });
+            this.openGate(taskId, 'merge');
+          }
           return this.getTask(taskId);
         }
         const resumed = this.update(taskId, {
@@ -1325,7 +1491,7 @@ export class Pipeline {
         return discarded;
       }
       case 'done': {
-        if (!['pr_open', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status)) {
+        if (!['pr_open', 'awaiting_merge_approval', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status)) {
           throw new Error(`The task is ${task.status}; it cannot be marked done.`);
         }
         this.cancelGates(taskId);
@@ -1451,7 +1617,7 @@ export class Pipeline {
     }
   }
 
-  /** On my own PR: turn the review's blocking findings into a coder task whose draft PR targets my PR's branch. */
+  /** On my own PR: turn the review's blocking findings into a task whose PR targets my PR's branch. */
   async fixIt(reviewTaskId: number): Promise<Task> {
     const review = this.getTask(reviewTaskId);
     if (review.kind !== 'review' || !review.prHeadRef) throw new Error('Only review tasks can be fixed.');
@@ -1468,7 +1634,7 @@ export class Pipeline {
       title: `Fix review findings on #${review.prNumber}`,
       baseBranch: review.prHeadRef,
       input: [
-        `Fix these blocking review findings on PR ${review.prUrl} (branch ${review.prHeadRef}). The work lands as a draft PR into that branch.`,
+        `Fix these blocking review findings on PR ${review.prUrl} (branch ${review.prHeadRef}). The work lands as a PR into that branch.`,
         ...findings.map((c) => `- ${c.path}:${c.line} — ${c.body}`),
       ].join('\n'),
     });
@@ -1531,17 +1697,20 @@ export class Pipeline {
 
   // ------------------------------------------------------------ housekeeping
 
-  /** Detects merged PRs and removes old worktrees. */
+  /** Detects PRs I merged (or closed) on GitHub myself, and removes old worktrees. */
   async sweep(): Promise<void> {
     const { db, publisher } = this.deps;
     await this.pickUpReviews().catch(() => 0);
-    for (const t of db.select().from(schema.tasks).where(eq(schema.tasks.status, 'pr_open')).all()) {
+    for (const t of db.select().from(schema.tasks).where(inArray(schema.tasks.status, ['pr_open', 'awaiting_merge_approval'])).all()) {
       if (!t.prUrl) continue;
       const state = await publisher.prState(getRepo(db, t.repoId), t.prUrl).catch(() => 'UNKNOWN' as const);
-      if (state === 'MERGED') {
-        this.deps.bus.emit(t.id, 'pr_merged', { url: t.prUrl });
-        this.update(t.id, this.finished(t));
-        await this.dropWorktree(t);
+      // Merging may have started while GitHub answered.
+      if (this.getTask(t.id).status !== t.status) continue;
+      if (state === 'MERGED') await this.mergedOnGitHub(t);
+      else if (state === 'CLOSED' && t.status === 'awaiting_merge_approval') {
+        // Merging a closed PR can only fail: drop the gate. Reopening the PR and resuming brings it back.
+        this.cancelGates(t.id);
+        this.block(t, 'The PR was closed on GitHub without merging. Reopen it and resume, or discard the task.', 'pushing');
       } else if (state === 'CLOSED') {
         this.update(t.id, { statusNote: 'The PR was closed without merging.' });
       }
@@ -1551,6 +1720,14 @@ export class Pipeline {
       if (t.worktreePath && t.doneAt && t.doneAt < cutoff) await this.dropWorktree(t);
     }
     void this.tick();
+  }
+
+  /** I merged the PR on GitHub myself (or an interrupted merge went through): no gate left, then the retrospective. */
+  private async mergedOnGitHub(t: Task): Promise<void> {
+    this.cancelGates(t.id);
+    this.deps.bus.emit(t.id, 'pr_merged', { url: t.prUrl, by: 'github' });
+    this.update(t.id, { ...this.finished(t), statusNote: null, resumeStatus: null });
+    await this.dropWorktree(this.getTask(t.id));
   }
 
   private async dropWorktree(t: Task): Promise<void> {

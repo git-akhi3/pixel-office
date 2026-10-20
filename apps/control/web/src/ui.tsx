@@ -17,8 +17,10 @@ export const STATUS_LABELS: Record<string, string> = {
   reviewing: 'Reviewer checking',
   testing: 'Tester testing',
   awaiting_push_approval: 'Ready to push',
-  pushing: 'Pushing',
+  pushing: 'Opening the PR',
   pr_open: 'Draft PR open',
+  awaiting_merge_approval: 'PR ready to merge',
+  merging: 'Merging',
   retro: 'Writing retrospective',
   reviewing_pr: 'Reviewer reading the PR',
   awaiting_review_post: 'Draft review ready',
@@ -36,7 +38,7 @@ export const COLUMNS = ['Queued', 'Planning', 'Awaiting you', 'Building', 'Revie
 export type Tone = 'attention' | 'active' | 'done' | 'muted' | 'danger';
 
 export function statusTone(status: string): Tone {
-  if (['awaiting_answer', 'awaiting_plan_approval', 'awaiting_breakdown_approval', 'awaiting_push_approval', 'awaiting_review_post'].includes(status)) return 'attention';
+  if (['awaiting_answer', 'awaiting_plan_approval', 'awaiting_breakdown_approval', 'awaiting_push_approval', 'awaiting_merge_approval', 'awaiting_review_post'].includes(status)) return 'attention';
   if (['blocked', 'failed'].includes(status)) return 'danger';
   if (['paused', 'stopped', 'discarded', 'queued'].includes(status)) return 'muted';
   if (['done', 'pr_open'].includes(status)) return 'done';
@@ -57,17 +59,22 @@ const STATUS_ROLES: Record<string, string> = {
   reviewing_pr: 'reviewer',
 };
 
-export function roleOf(status: string): string | null {
+/** Lanes the all-rounder builds alone (trivial and small are from before solo). */
+export const isSoloLane = (lane: string | null | undefined) => lane === 'solo' || lane === 'small' || lane === 'trivial';
+
+/** Who works a status; on a solo task the coding step is the all-rounder's. */
+export function roleOf(status: string, lane?: string | null): string | null {
+  if (status === 'coding' && isSoloLane(lane)) return 'all-rounder';
   return STATUS_ROLES[status] ?? null;
 }
 
-export function StatusBadge({ status, running }: { status: string; running?: boolean }) {
-  const role = roleOf(status);
+export function StatusBadge({ status, running, lane }: { status: string; running?: boolean; lane?: string | null }) {
+  const role = roleOf(status, lane);
   return (
     <span className={`badge badge-${statusTone(status)}`}>
       {running && <span className="pulse" aria-hidden />}
       {role && <Icon name={roleIconName(role)} size={16} />}
-      {STATUS_LABELS[status] ?? status}
+      {role === 'all-rounder' ? 'All-rounder working' : (STATUS_LABELS[status] ?? status)}
     </span>
   );
 }
@@ -92,6 +99,8 @@ const BUILD_POSITION: Record<string, number> = {
   testing: 4,
   awaiting_push_approval: 5,
   pushing: 5,
+  awaiting_merge_approval: 5,
+  merging: 5,
   pr_open: 6,
   retro: 6,
   done: 6,
@@ -112,13 +121,14 @@ export interface Stage {
 
 /** What each lane means, for tooltips. */
 export const LANE_HINT: Record<string, string> = {
-  trivial: 'docs or wording only, so no plan, review or tests; you approve the push',
-  small: 'a small code change, so no architect; review and tests still run',
+  solo: 'the all-rounder builds, tests and reviews it alone; a big diff gets one extra review',
+  trivial: 'docs or wording only (from before solo)',
+  small: 'a small code change with no architect (from before solo)',
   standard: 'the full team',
 };
 
-/** Stages a lane skips: trivial tasks go straight from build to ship, small ones have no plan. */
-const SKIPPED: Record<string, string[]> = { trivial: ['Plan', 'Review', 'Test'], small: ['Plan'] };
+/** Stages a solo task skips: no plan and no separate tester (a review only when the diff is big). */
+const SOLO_SKIPS = ['Plan', 'Test'];
 
 export function stageOf(task: Pick<Task, 'status' | 'resumeStatus' | 'kind' | 'lane'>): Stage {
   const review = task.kind === 'review';
@@ -126,7 +136,7 @@ export function stageOf(task: Pick<Task, 'status' | 'resumeStatus' | 'kind' | 'l
   // A parked task (paused, stopped, blocked) keeps its place: where it resumes from.
   const at = position[task.status] ?? (task.resumeStatus ? position[task.resumeStatus] : undefined) ?? -1;
   if (review) return { stages: REVIEW_STAGES, index: at, tone: statusTone(task.status) };
-  const skipped = SKIPPED[task.lane ?? ''] ?? [];
+  const skipped = isSoloLane(task.lane) ? SOLO_SKIPS : [];
   const stages = BUILD_STAGES.filter((s) => !skipped.includes(s));
   // The same position on the shorter track: count the kept stages before it.
   const index = at < 0 ? at : BUILD_STAGES.slice(0, at).filter((s) => !skipped.includes(s)).length;

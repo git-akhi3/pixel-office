@@ -28,8 +28,8 @@ export const CONTRACTS = {
       title: z.string().min(1).max(80),
       kind: z.enum(['feature', 'bug']),
       size: z.enum(['S', 'M', 'L']),
-      /** The route through the team. Missing or unknown means standard; the office checks it against the rest. */
-      lane: z.enum(['trivial', 'small', 'standard']).optional().catch(undefined),
+      /** The route through the team. Missing or unknown means standard; the office checks it against the rest. Older prompts may still say trivial or small, which mean solo. */
+      lane: z.enum(['solo', 'standard', 'trivial', 'small']).optional().catch(undefined),
       /** Far too big for one task: the architect splits it into milestone tasks instead of planning it. */
       epic: bool.optional().catch(undefined),
       needs_debugger: bool,
@@ -49,12 +49,12 @@ export const CONTRACTS = {
 title: <short task title, under 60 characters>
 kind: feature | bug
 size: S | M | L          # S: under an hour of focused work, M: half a day, L: more
-lane: trivial | small | standard   # see "Route" below
+lane: solo | standard    # see "Route" below
 epic: true | false       # true only for size L requests that are several features or days of work (see "Route")
 needs_debugger: true | false    # true only for bugs whose cause is unclear
 needs_researcher: true | false  # true only if external docs/APIs must be checked first
-design_review: true | false     # true for UI or architecture changes: the plan gets a design section
-frontend: true | false          # true when the change is mostly UI (screens, components, styling, layout, markup): the UI coder builds it
+design_review: true | false     # true only when a new screen, flow or architecture needs a written design first (full team); UI tweaks are false
+frontend: true | false          # true when the change is mostly UI (screens, components, styling, layout, markup): on the full team, the UI coder builds it
 skills:                  # optional: catalog skills for roles the owner hasn't picked; leave out when none fit
   coder: [skill-name]
 skills_why:              # one line per role you picked for
@@ -115,7 +115,7 @@ milestones: <how many, 2-${MAX_MILESTONES}>
 ## Milestones
 ### 1. <title, under 60 characters>
 <what this milestone delivers, written as a request to the team: scope, then acceptance criteria as bullets.
-Each milestone is planned, built, reviewed and opened as its own draft PR, on top of the previous one.
+Each milestone is planned, built, reviewed and opened as its own PR, on top of the previous one.
 Keep each one to a few days of work at most, and make the first one the foundation (setup, skeleton).>
 
 ### 2. <title>

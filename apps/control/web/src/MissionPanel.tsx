@@ -4,14 +4,21 @@ import { Icon, RoleIcon } from './icons';
 import { MissionSkills, useCatalog } from './Skills';
 
 /** What happens to a mission after launch, so the gates are no surprise. */
-const FLOW: Array<{ role: string; label: string; you?: boolean }> = [
+type FlowStep = { role: string; label: string; you?: boolean };
+/** Solo, the default: the all-rounder does the whole job, then the PR waits for you. */
+const SOLO_FLOW: FlowStep[] = [
+  { role: 'manager', label: 'Sizes it' },
+  { role: 'all-rounder', label: 'Builds, tests, self-reviews' },
+  { role: 'you', label: 'You merge', you: true },
+];
+const TEAM_FLOW: FlowStep[] = [
   { role: 'manager', label: 'Sizes it' },
   { role: 'architect', label: 'Plans' },
   { role: 'you', label: 'You approve', you: true },
   { role: 'coder', label: 'Builds' },
   { role: 'reviewer', label: 'Reviews' },
   { role: 'tester', label: 'Tests' },
-  { role: 'you', label: 'You ship', you: true },
+  { role: 'you', label: 'You merge', you: true },
 ];
 
 /**
@@ -40,6 +47,7 @@ export function MissionPanel({
   const [busy, setBusy] = useState(false);
   const [skills, setSkills] = useState<Partial<Record<Role, string[]>>>({});
   const [grillMode, setGrillMode] = useState<Task['grillMode']>('auto');
+  const [lane, setLane] = useState<'auto' | 'solo' | 'standard'>('auto');
   const [files, setFiles] = useState<Upload[]>([]);
   const [uploading, setUploading] = useState(0);
   const [links, setLinks] = useState('');
@@ -100,6 +108,7 @@ export function MissionPanel({
               kind,
               skills,
               grillMode,
+              ...(lane === 'auto' ? {} : { lane }),
               attachments: files.map((f) => f.id),
               refRepos: refRepos.filter((r) => r !== repoId),
               links: links
@@ -110,6 +119,7 @@ export function MissionPanel({
       setInput('');
       setSkills({});
       setGrillMode('auto');
+      setLane('auto');
       setFiles([]);
       setLinks('');
       setRefRepos([]);
@@ -294,6 +304,29 @@ export function MissionPanel({
                       </div>
                     )}
                     <div className="field">
+                      <span className="field-label">Who builds it</span>
+                      <div className="chips" role="radiogroup" aria-label="Who builds it">
+                        {(
+                          [
+                            ['auto', 'Auto', 'The manager decides: solo for most tasks, the full team for big or design-heavy ones'],
+                            ['solo', 'Solo', 'The all-rounder builds, tests and reviews it alone, like one Claude Code session'],
+                            ['standard', 'Full team', 'The architect plans it for your approval, then the coder, reviewer and tester'],
+                          ] as const
+                        ).map(([value, text, title]) => (
+                          <button key={value} type="button" role="radio" aria-checked={lane === value} className={lane === value ? 'chip active' : 'chip'} title={title} onClick={() => setLane(value)}>
+                            {value === 'auto' ? <Icon name="manager" /> : value === 'solo' ? <Icon name="shield" /> : <Icon name="architect" />} {text}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="hint">
+                        {lane === 'auto'
+                          ? 'Solo unless the task is size L, needs a design first or touches risky areas (auth, payments, migrations).'
+                          : lane === 'solo'
+                            ? 'Fastest. A big diff still gets one review before the PR opens. A briefing sends it to the full team.'
+                            : 'Slower, with a plan you approve before any code is written.'}
+                      </span>
+                    </div>
+                    <div className="field">
                       <span className="field-label">Grill me first</span>
                       <div className="chips" role="radiogroup" aria-label="Grill me first">
                         {(
@@ -318,7 +351,7 @@ export function MissionPanel({
                     </div>
                     <MissionSkills value={skills} onChange={setSkills} catalog={catalog} />
                     <div className="flow" aria-label="What happens next">
-                      {FLOW.map((s, i) => (
+                      {(lane === 'standard' ? TEAM_FLOW : SOLO_FLOW).map((s, i) => (
                         <span key={i} className={`flow-step${s.you ? ' flow-you' : ''}`}>
                           {s.you ? <Icon name="check" /> : <RoleIcon role={s.role} />}
                           <span>{s.label}</span>

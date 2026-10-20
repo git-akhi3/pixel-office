@@ -13,6 +13,7 @@ const EMPTY: Partial<Repo> = {
   testCmd: '',
   lintCmd: '',
   ghAccount: '',
+  mergeMethod: 'squash',
   gitAuthor: '',
   allowlist: [],
 };
@@ -200,6 +201,14 @@ export function Repos({
           </label>
         </div>
         <label>
+          Merge method (when you approve a PR, the office merges it this way)
+          <select value={editing.mergeMethod ?? 'squash'} onChange={(e) => set('mergeMethod', e.target.value as Repo['mergeMethod'])}>
+            <option value="squash">Squash and merge</option>
+            <option value="merge">Merge commit</option>
+            <option value="rebase">Rebase and merge</option>
+          </select>
+        </label>
+        <label>
           Protected branches (one per line; main, master and the default branch are always protected)
           <textarea
             rows={2}
@@ -336,20 +345,6 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
         <Icon name="gear" size={24} /> Settings
       </h1>
       <label className="switch">
-        <input
-          type="checkbox"
-          checked={s.autoApprovePush}
-          onChange={(e) => save({ autoApprovePush: e.target.checked })}
-        />
-        <span>
-          <strong>Auto-approve push and draft PR</strong>
-          <span className="hint">
-            Only when review and tests both pass. Never pushes protected branches; PRs always open as drafts.
-            Plans always wait for you.
-          </span>
-        </span>
-      </label>
-      <label className="switch">
         <input type="checkbox" checked={s.autoAllowCommands} onChange={(e) => save({ autoAllowCommands: e.target.checked })} />
         <span>
           <strong>Auto-allow commands</strong>
@@ -365,8 +360,8 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
         <span>
           <strong>Sonnet for small tasks</strong>
           <span className="hint">
-            On size S tasks, the architect and reviewer run on Sonnet (medium effort) instead of Opus. Bigger tasks keep their
-            own model.
+            On size S tasks, the reviewer runs on Sonnet (medium effort) instead of Opus. Bigger tasks keep its own model,
+            and the architect always plans on its own model.
           </span>
         </span>
       </label>

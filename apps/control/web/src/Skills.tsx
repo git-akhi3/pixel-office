@@ -125,7 +125,7 @@ export function TaskSkills({ task, onChanged, onError }: { task: Task; onChanged
     api.agents().then(setAgents).catch(onError);
   }, [onError]);
   const finished = ['done', 'discarded', 'failed'].includes(task.status);
-  const working = task.running ? roleOf(task.status) : null;
+  const working = task.running ? roleOf(task.status, task.lane) : null;
   const picked = PICKABLE_ROLES.filter((r) => task.skillPicks[r]?.skills.length);
 
   const save = async (role: Role, skills: string[]) => {

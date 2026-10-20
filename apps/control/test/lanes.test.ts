@@ -1,57 +1,77 @@
 import { describe, expect, it } from 'vitest';
 import { maxLane } from '../server/src/domain.js';
 import { parseMilestones, validateDoc } from '../server/src/handoffs.js';
-import { isDocFile, laneAtIntake, laneOfDiff, SMALL_MAX_FILES } from '../server/src/lanes.js';
+import { isDocFile, laneAtIntake, reviewReason, SMALL_MAX_FILES, SMALL_MAX_LINES } from '../server/src/lanes.js';
 
-const facts = { size: 'S' as const, needsDebugger: false, needsResearcher: false, designFlag: false, grill: false };
+const facts = { size: 'S' as const, designFlag: false, grill: false };
 
 describe('isDocFile', () => {
   it('knows prose files from code', () => {
     for (const f of ['README.md', 'docs/guide.mdx', 'notes.txt', 'LICENSE', 'CHANGELOG', 'pkg/README.rst']) expect(isDocFile(f)).toBe(true);
     for (const f of ['src/app.ts', 'package.json', 'config.yml', 'Makefile', 'readme.ts']) expect(isDocFile(f)).toBe(false);
   });
+
+  it('counts markdown that steers agents as code', () => {
+    for (const f of ['CLAUDE.md', 'app/AGENTS.md', 'skills/deploy/SKILL.md', 'apps/control/agents/coder.md', '.claude/commands/ship.md', '.github/copilot-instructions.md']) {
+      expect(isDocFile(f)).toBe(false);
+    }
+  });
 });
 
 describe('laneAtIntake', () => {
-  it("takes the manager's lane for a plain S task", () => {
-    expect(laneAtIntake({ ...facts, said: 'trivial' }).lane).toBe('trivial');
-    expect(laneAtIntake({ ...facts, said: 'small' }).lane).toBe('small');
+  it("takes the manager's solo for S and M tasks", () => {
+    expect(laneAtIntake({ ...facts, said: 'solo' })).toEqual({ lane: 'solo', reason: 'The manager routed it as solo.' });
+    expect(laneAtIntake({ ...facts, said: 'solo', size: 'M' }).lane).toBe('solo');
   });
 
-  it('is standard when the manager said nothing', () => {
+  it('reads the lanes from before solo as solo', () => {
+    expect(laneAtIntake({ ...facts, said: 'trivial' }).lane).toBe('solo');
+    expect(laneAtIntake({ ...facts, said: 'small' }).lane).toBe('solo');
+  });
+
+  it('is standard when the manager said so, or said nothing', () => {
+    expect(laneAtIntake({ ...facts, said: 'standard' }).lane).toBe('standard');
     expect(laneAtIntake(facts)).toEqual({ lane: 'standard', reason: 'The manager gave no lane.' });
   });
 
-  it('overrules the manager when the architect is needed', () => {
-    expect(laneAtIntake({ ...facts, said: 'trivial', size: 'M' })).toMatchObject({ lane: 'standard', reason: expect.stringContaining('size M') });
-    expect(laneAtIntake({ ...facts, said: 'small', grill: true }).reason).toContain('briefing');
-    expect(laneAtIntake({ ...facts, said: 'small', needsDebugger: true }).lane).toBe('standard');
-    expect(laneAtIntake({ ...facts, said: 'small', needsResearcher: true }).lane).toBe('standard');
-    expect(laneAtIntake({ ...facts, said: 'small', designFlag: true }).lane).toBe('standard');
+  it('sends a task to the full team when it needs the architect', () => {
+    expect(laneAtIntake({ ...facts, said: 'solo', size: 'L' })).toMatchObject({ lane: 'standard', reason: expect.stringContaining('size L') });
+    expect(laneAtIntake({ ...facts, said: 'solo', grill: true }).reason).toContain('briefing');
+    expect(laneAtIntake({ ...facts, said: 'solo', designFlag: true }).lane).toBe('standard');
+  });
+
+  it('follows my pick over the manager', () => {
+    expect(laneAtIntake({ ...facts, said: 'solo', pick: 'standard' })).toEqual({ lane: 'standard', reason: 'You asked for the full team.' });
+    expect(laneAtIntake({ ...facts, said: 'standard', pick: 'solo' })).toEqual({ lane: 'solo', reason: 'You picked solo.' });
+    expect(laneAtIntake({ ...facts, said: 'standard', pick: 'solo', size: 'L' }).lane).toBe('solo');
+  });
+
+  it('still sends my solo pick to the full team for a briefing (the architect asks the questions)', () => {
+    expect(laneAtIntake({ ...facts, pick: 'solo', grill: true })).toEqual({ lane: 'standard', reason: 'You picked solo, but it gets a briefing.' });
+    expect(laneAtIntake({ ...facts, pick: 'solo', designFlag: true }).lane).toBe('solo');
   });
 });
 
-describe('laneOfDiff', () => {
-  it('keeps a short docs-only change trivial', () => {
-    expect(laneOfDiff([{ file: 'README.md', lines: 3 }]).lane).toBe('trivial');
-    expect(laneOfDiff([]).lane).toBe('trivial');
+describe('reviewReason', () => {
+  it('leaves a small change to the all-rounder alone', () => {
+    expect(reviewReason([{ file: 'src/a.ts', lines: SMALL_MAX_LINES }])).toBeNull();
+    expect(reviewReason([])).toBeNull();
   });
 
-  it('calls any code change, or long docs, small', () => {
-    expect(laneOfDiff([{ file: 'README.md', lines: 1 }, { file: 'src/a.ts', lines: 1 }])).toEqual({ lane: 'small', reason: 'it changed code: src/a.ts' });
-    expect(laneOfDiff([{ file: 'docs/guide.md', lines: 120 }]).lane).toBe('small');
+  it('asks for a review of a big change', () => {
+    expect(reviewReason([{ file: 'src/a.ts', lines: SMALL_MAX_LINES + 1 }])).toBe(`it changed ${SMALL_MAX_LINES + 1} lines`);
+    expect(reviewReason(Array.from({ length: SMALL_MAX_FILES + 1 }, (_, i) => ({ file: `src/${i}.ts`, lines: 1 })))).toBe(`it changed ${SMALL_MAX_FILES + 1} files`);
   });
 
-  it('calls a big change standard', () => {
-    expect(laneOfDiff([{ file: 'src/a.ts', lines: 201 }]).lane).toBe('standard');
-    expect(laneOfDiff(Array.from({ length: SMALL_MAX_FILES + 1 }, (_, i) => ({ file: `src/${i}.ts`, lines: 1 }))).lane).toBe('standard');
+  it("doesn't count prose files", () => {
+    expect(reviewReason([{ file: 'docs/guide.md', lines: 900 }, { file: 'src/a.ts', lines: 3 }])).toBeNull();
   });
 });
 
 describe('maxLane', () => {
   it('only goes up', () => {
-    expect(maxLane('trivial', 'small')).toBe('small');
-    expect(maxLane('standard', 'trivial')).toBe('standard');
+    expect(maxLane('solo', 'standard')).toBe('standard');
+    expect(maxLane('standard', 'solo')).toBe('standard');
   });
 });
 
