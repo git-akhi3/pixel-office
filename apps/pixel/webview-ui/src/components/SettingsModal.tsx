@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 
 import { isSoundEnabled, setSoundEnabled } from '../notificationSound.js';
+import { getNightSetting, type NightSetting,setNightSetting } from '../office/engine/nightMode.js';
 import { isBrowserRuntime } from '../runtime.js';
 import { transport } from '../transport/index.js';
 import { Button } from './ui/Button.js';
@@ -59,6 +60,7 @@ export function SettingsModal({
   onImportLayout,
 }: SettingsModalProps) {
   const [soundLocal, setSoundLocal] = useState(isSoundEnabled);
+  const [night, setNight] = useState<NightSetting>(getNightSetting);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [assetDirDraft, setAssetDirDraft] = useState('');
 
@@ -206,6 +208,26 @@ export function SettingsModal({
       {showAreasAvailable && (
         <Checkbox label="Show Areas" checked={showAreas} onChange={onToggleShowAreas} />
       )}
+      <div className="flex items-center justify-between py-4 px-10 gap-8">
+        <span className="text-xs" title="Auto: lights go down while a mission is in flight">
+          Night Mode
+        </span>
+        <div className="flex gap-4">
+          {(['auto', 'on', 'off'] as NightSetting[]).map((v) => (
+            <Button
+              key={v}
+              variant={night === v ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => {
+                setNightSetting(v);
+                setNight(v);
+              }}
+            >
+              {v}
+            </Button>
+          ))}
+        </div>
+      </div>
       <Checkbox label="Debug View" checked={isDebugMode} onChange={onToggleDebugMode} />
     </Modal>
   );

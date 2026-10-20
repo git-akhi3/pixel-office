@@ -78,6 +78,7 @@ import { CharacterState, TILE_SIZE, TileType } from '../types.js';
 import { getWallInstances, hasWallSprites, wallColorToHex } from '../wallTiles.js';
 import { getCharacterSprite } from './characters.js';
 import { renderMatrixEffect } from './matrixEffect.js';
+import { renderNightMode } from './nightMode.js';
 import { getPetSpriteData } from './petEntity.js';
 import { renderPortalEffect } from './portalEffect.js';
 
@@ -976,6 +977,21 @@ export function renderFrame(
     selectedId,
     hoveredId,
     pets ?? [],
+  );
+
+  // Night mode: lights down and glows over the scene, under the bubbles and labels
+  renderNightMode(
+    ctx,
+    canvasWidth,
+    canvasHeight,
+    allFurniture,
+    characters,
+    selection?.seats,
+    tileMap,
+    offsetX,
+    offsetY,
+    zoom,
+    typeof performance !== 'undefined' ? performance.now() : Date.now(),
   );
 
   // Speech bubbles (always on top of characters)

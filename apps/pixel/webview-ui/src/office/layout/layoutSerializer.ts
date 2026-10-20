@@ -99,7 +99,7 @@ export function layoutToFurnitureInstances(furniture: PlacedFurniture[]): Furnit
       }
     }
 
-    instances.push({ sprite, x, y, zY, ...(mirrored ? { mirrored: true } : {}) });
+    instances.push({ sprite, type: item.type, x, y, zY, ...(mirrored ? { mirrored: true } : {}) });
   }
   return instances;
 }
