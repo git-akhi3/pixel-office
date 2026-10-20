@@ -22,13 +22,18 @@ PIXEL=com.pixeloffice.pixel
 
 xml() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<<"$1"; }
 
-# The launchd agent for one service: the office (through office-service.sh) or the pixel office.
+# launchd starts node itself, never a shell script: macOS lets a launchd job into ~/Documents only when
+# the program it starts has been allowed there (node has; /bin/bash hasn't).
+node_bin="$(command -v node)"
+pixel_home="${OFFICE_HOME:-$HOME/.office}/pixel"
+
+# The launchd agent for one service: the office (through office-service.mjs) or the pixel office.
 plist() {
-  local label program log
+  local label program arg2 arg3 workdir log
   if [[ "$1" == office ]]; then
-    label=$OFFICE program="$root/tools/office-service.sh" log="$log_dir/server.log"
+    label=$OFFICE program="$root/tools/office-service.mjs" arg2='' arg3='' workdir="$root" log="$log_dir/server.log"
   else
-    label=$PIXEL program="$root/start.sh" log="$log_dir/pixel.log"
+    label=$PIXEL program="$root/apps/pixel/dist/cli.js" arg2='--port' arg3='3100' workdir="$pixel_home" log="$log_dir/pixel.log"
   fi
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -36,8 +41,8 @@ plist() {
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$label</string>
-  <key>ProgramArguments</key><array><string>$(xml "$program")</string></array>
-  <key>WorkingDirectory</key><string>$(xml "$root")</string>
+  <key>ProgramArguments</key><array><string>$(xml "$node_bin")</string><string>$(xml "$program")</string>$(if [[ -n "$arg2" ]]; then printf '<string>%s</string><string>%s</string>' "$arg2" "$arg3"; fi)</array>
+  <key>WorkingDirectory</key><string>$(xml "$workdir")</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>$(xml "$PATH")</string>
@@ -81,6 +86,8 @@ case "${1:-}" in
     load $OFFICE
     echo "Installed $OFFICE: the office starts at login and restarts if it stops. Log: $log_dir/server.log"
     if [[ "${2:-}" == --with-pixel ]]; then
+      # What start.sh does: the pixel office watches this workspace, and the control app reads where it is.
+      mkdir -p "$pixel_home" && (cd "$pixel_home" && pwd -P >"${OFFICE_HOME:-$HOME/.office}/pixel-workspace")
       plist pixel >"$agents/$PIXEL.plist"
       plutil -lint -s "$agents/$PIXEL.plist"
       load $PIXEL

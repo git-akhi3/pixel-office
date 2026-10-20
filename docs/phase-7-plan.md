@@ -65,7 +65,7 @@ Built 2026-10-20.
 
 - **Login item:** `tools/mac-agent.sh install|uninstall|status` writes `~/Library/LaunchAgents/com.pixeloffice.office.plist`.
   - Settings: RunAtLoad, KeepAlive, a ThrottleInterval of 30 s so a crash loop doesn't spin, and the PATH of the shell `install` ran from.
-  - It runs `tools/office-service.sh`, which waits while another copy serves the port (one started by hand) and then takes over. It builds the board, then `exec`s the office itself, so launchd's SIGTERM reaches the office's shutdown handler and running steps are parked, not killed. `caffeinate -s -w <office pid>` keeps the Mac from sleeping on power only. No system setting changes.
+  - It runs `tools/office-service.mjs`, which waits while another copy serves the port (one started by hand) and then takes over. It builds the board, then `exec`s the office itself, so launchd's SIGTERM reaches the office's shutdown handler and running steps are parked, not killed. `caffeinate -s -w <office pid>` keeps the Mac from sleeping on power only. No system setting changes.
   - Logs go to `~/.office/server.log`.
 - **Slack recovers after a dropped connection** (`server/src/slackLink.ts`). @slack/socket-mode 3.1.0's own reconnect treats a network error as unrecoverable and leaves an unhandled rejection. That fits the dead Slack link seen after Wi-Fi drops.
   - The office turns that reconnect off and owns it: one attempt at a time (never two sockets), waiting 1 s, then doubling up to 2 min, forever.

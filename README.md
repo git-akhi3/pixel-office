@@ -32,6 +32,7 @@ Runtime data (database, task documents, worktrees, knowledge files, graphs) live
 - If you start the office by hand (`npm run office`) first, the login item waits until yours stops, then takes over. While the login item's copy runs, `npm run office` just says it's already running: `tools/mac-agent.sh uninstall` stops it.
 - Run `install` from your usual terminal: it records that shell's PATH (and `OFFICE_HOME` / `OFFICE_PORT` if you set them), so the office finds node, git, gh and each repo's tools (flutter, uv, …). Run it again after changing your PATH or moving this checkout.
 - Log: `~/.office/server.log` (`~/.office/pixel.log` for the pixel office).
+- launchd starts `node` itself (`tools/office-service.mjs`), not a shell script: macOS only lets a login item into `~/Documents` when the program it starts has been allowed there. If the log says "Operation not permitted", allow node (`~/.local/opt/node/bin/node`) under System Settings → Privacy & Security → Files and Folders (or Full Disk Access).
 - Slack reconnects by itself after Wi-Fi drops and sleep, and when the office starts before the network is up (`server/src/slackLink.ts`).
 - In Slack you talk to Fury in plain language: there are no commands (`server/src/fury.ts`). Heroes post under their own names, which needs the `chat:write.customize` scope in `tools/slack-app-manifest.yml` (reinstall the app). More in [docs/status.md](docs/status.md).
 
