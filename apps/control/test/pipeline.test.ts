@@ -52,7 +52,7 @@ class FakeRunner implements AgentRunner {
     skills: string[];
     readRoots?: string[];
     resume?: { sessionId: string; prompt: string };
-    lookOnly?: boolean;
+    lookOnly?: { hosts: string[]; project?: string };
     env?: Record<string, string>;
     cwd?: string;
   }> = [];
@@ -1261,7 +1261,7 @@ describe('staging after the merge', () => {
     const task = await merged();
     expect(shellCalls).toEqual([{ command: 'npm run deploy:staging', cwd: expect.stringMatching(/1-deploy\/src$/), project: 'pos-staging-0' }]);
     const check = runner.calls.find((c) => c.step === 'checking')!;
-    expect(check).toMatchObject({ role: 'verifier', lookOnly: true, env: { CLOUDSDK_CORE_PROJECT: 'pos-staging-0' } });
+    expect(check).toMatchObject({ role: 'verifier', lookOnly: { hosts: ['staging.example.com'], project: 'pos-staging-0' }, env: { CLOUDSDK_CORE_PROJECT: 'pos-staging-0' } });
     expect(check.cwd).toMatch(/1-deploy$/);
     expect(check.prompt).toContain('https://staging.example.com/health');
     expect(check.prompt).toContain('### deploy.md');
@@ -1302,12 +1302,39 @@ describe('staging after the merge', () => {
     staging({ confirm: true });
     const task = await merged();
     await pipeline.decideGate(gateOf(task, 'deploy').id, 'approve');
+    await settle();
     // (say the deploy was cut off by a restart)
     db.update(schema.tasks).set({ status: 'paused', resumeStatus: 'deploying' }).where(eq(schema.tasks.id, task.id)).run();
     const deploys = shellCalls.length;
     await pipeline.action(task.id, 'resume');
     expect(statusOf(task)).toBe('awaiting_deploy_approval');
     expect(shellCalls.length).toBe(deploys);
+  });
+
+  it('kills a running deploy when I stop the task, and resuming waits until it has stopped', async () => {
+    staging();
+    let release!: () => void;
+    let killed = false;
+    pipeline = new Pipeline({
+      ...(pipeline as unknown as { deps: ConstructorParameters<typeof Pipeline>[0] }).deps,
+      shell: (_command, { signal }) =>
+        new Promise((resolve) => {
+          release = () => resolve({ code: 0, output: 'done' });
+          signal.addEventListener('abort', () => {
+            killed = true;
+            resolve({ code: 143, output: 'Terminated' });
+          });
+        }),
+    });
+    runner.queue('intake', () => ({ text: docs.task({ lane: 'solo' }) }));
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await settle();
+    await pipeline.decideGate(mergeGate(task).id, 'approve'); // returns while the deploy runs
+    await until(() => statusOf(task) === 'deploying' && typeof release === 'function');
+    await pipeline.action(task.id, 'stop');
+    await settle();
+    expect(killed).toBe(true);
+    expect(statusOf(task)).toBe('stopped');
   });
 
   it('refuses a deploy command that names another project', async () => {
@@ -1326,6 +1353,7 @@ describe('staging after the merge', () => {
     expect(fix.input).toContain('/health returns 500');
     expect(fix.lane).toBe('solo');
     await pipeline.decideGate(gateOf(task, 'rollback').id, 'approve');
+    await settle();
     expect(shellCalls.at(-1)!.command).toContain('update-traffic');
     expect(eventsOf(task, 'rolled_back')).toHaveLength(1);
     await settle();

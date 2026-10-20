@@ -14,6 +14,11 @@ describe('ship', () => {
     expect(wrongProject('gcloud run deploy --project=pos-staging-0', staging)).toBeNull();
     expect(wrongProject('npm run deploy:staging', staging)).toBeNull();
     expect(wrongProject('firebase deploy --project zobaze-pos', { deployCmd: 'x' })).toBeNull();
+    expect(wrongProject('firebase use zobaze-pos && firebase deploy', staging)).toContain('zobaze-pos');
+    expect(wrongProject('firebase deploy -P zobaze-pos', staging)).toContain('zobaze-pos');
+    expect(wrongProject('CLOUDSDK_CORE_PROJECT=zobaze-pos gcloud run deploy', staging)).toContain('zobaze-pos');
+    expect(wrongProject('gcloud config set project zobaze-pos', staging)).toContain('zobaze-pos');
+    expect(wrongProject('gcloud run deploy --configuration prod', staging)).toContain('configuration');
   });
 
   it('knows an expired login and the command that renews it', () => {

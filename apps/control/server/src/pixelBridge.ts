@@ -162,6 +162,8 @@ export class PixelBridge {
     if (role === 'architect' && residents.includes('designer')) return 'designer';
     if (role === 'ui-coder' && residents.includes('coder')) return 'coder';
     if (role === 'all-rounder') return residents.includes('captain') ? 'captain' : residents.includes('coder') ? 'coder' : role;
+    // The verifier checks staging: at the reviewer's desk until the office has a Hawkeye.
+    if (role === 'verifier') return residents.includes('hawkeye') ? 'hawkeye' : residents.includes('reviewer') ? 'reviewer' : role;
     return role;
   }
 

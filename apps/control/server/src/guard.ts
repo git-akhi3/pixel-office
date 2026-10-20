@@ -18,10 +18,10 @@ export interface GuardContext {
   /** realpaths of extra folders this run may read (never write): the task's attachments. */
   readRoots?: string[];
   /**
-   * The staging check: commands only look. Cloud CLIs may read (logs, describe, list), nothing may
-   * change or send anything, and nothing waits for me: what would ask is refused instead.
+   * The staging check: only commands on a short list run (see lookOnlyCheck), nothing waits for me, and
+   * the repo's allow-list doesn't apply. `hosts` are the only hosts curl may GET; `project` pins the CLIs.
    */
-  lookOnly?: boolean;
+  lookOnly?: { hosts: string[]; project?: string };
 }
 
 export type GuardDecision =
@@ -301,6 +301,7 @@ export function shellPathProblem(ctx: GuardContext, segment: string, cwd: string
 }
 
 export function checkCommand(ctx: GuardContext, command: string): GuardDecision {
+  if (ctx.lookOnly) return lookOnlyCheck(ctx, ctx.lookOnly, command);
   for (const [re, reason] of DENIED_COMMANDS) {
     if (re.test(command)) return deny(reason);
   }
@@ -332,19 +333,11 @@ export function checkCommand(ctx: GuardContext, command: string): GuardDecision 
     const path = shellPathProblem(ctx, bare, cwd);
     if (path?.decision === 'deny') return deny(path.reason);
     if (path?.decision === 'ask') {
-      if (ctx.lookOnly) return deny(path.reason);
       unmatched.push(bare);
       continue;
     }
-    if (matchesAllowlist(bare, ctx.allowlist)) continue;
-    if (ctx.lookOnly) {
-      const why = lookOnlyCommand(bare);
-      if (why) return deny(why);
-      continue;
-    }
-    unmatched.push(bare);
+    if (!matchesAllowlist(bare, ctx.allowlist)) unmatched.push(bare);
   }
-  if (unmatched.length && ctx.lookOnly) return deny(`not allowed in a check: ${unmatched.join(' ; ')}`);
   if (unmatched.length) {
     return { decision: 'ask', reason: `not on the allow-list: ${unmatched.join(' ; ')}`, subject: command.trim(), unmatched };
   }
@@ -440,38 +433,100 @@ export function checkToolCall(ctx: GuardContext, tool: string, input: Record<str
 }
 
 // ---------------------------------------------------------------- the staging check (look only)
+//
+// The verifier reads staging's logs, which can hold text from customers: treat everything it might be
+// told as hostile. So nothing runs unless it is on this short list, in a form that can only read.
+// No wrappers (sh -c, env, xargs, timeout), no interpreters, no redirects or substitutions.
 
-/** Verbs that only look. */
-const READ_VERBS = new Set(['read', 'describe', 'list', 'get', 'logs', 'log', 'tail', 'ls', 'inspect', 'show', 'status', 'view', 'whoami', 'info']);
-/** Verbs that change or send something, or reveal secrets and tokens. Any of these refuses the command. */
-const WRITE_VERBS = new Set([
-  'deploy', 'delete', 'update', 'create', 'set', 'add', 'remove', 'replace', 'patch', 'import', 'export', 'enable', 'disable',
-  'rollback', 'rollout', 'start', 'stop', 'restart', 'cancel', 'call', 'invoke', 'publish', 'login', 'logout', 'revoke', 'apply',
-  'submit', 'exec', 'ssh', 'scp', 'cp', 'mv', 'rm', 'promote', 'alias', 'redeploy', 'env', 'secrets', 'access', 'send', 'post', 'write', 'move',
-  'print-access-token', 'print-identity-token', 'token',
-  'set-iam-policy', 'add-iam-policy-binding', 'remove-iam-policy-binding', 'update-traffic', 'functions:delete', 'functions:shell', 'hosting:disable',
-]);
-const CLOUD_LOOKERS = new Set(['gcloud', 'firebase', 'vercel', 'kubectl', 'aws', 'gh', 'bq', 'gsutil']);
+/** Readers that only print what they read. Paths are checked like any shell path (inside the checkout). */
+const LOOK_READERS = new Set(['cat', 'head', 'tail', 'grep', 'egrep', 'rg', 'jq', 'wc', 'sort', 'uniq', 'cut', 'tr', 'ls', 'date', 'echo', 'printf', 'pwd', 'basename', 'dirname', 'diff']);
+/** git subcommands that only read. */
+const LOOK_GIT = new Set(['log', 'show', 'diff', 'status', 'rev-parse', 'ls-files', 'blame', 'grep']);
+/** Cloud CLI forms that only read: the leading words of the command, exactly. */
+const LOOK_CLOUD: Record<string, string[][]> = {
+  gcloud: [
+    ['logging', 'read'],
+    ['run', 'services', 'describe'],
+    ['run', 'services', 'list'],
+    ['run', 'revisions', 'describe'],
+    ['run', 'revisions', 'list'],
+    ['functions', 'describe'],
+    ['functions', 'list'],
+    ['functions', 'logs', 'read'],
+    ['auth', 'list'],
+    ['config', 'list'],
+  ],
+  firebase: [['functions:log'], ['functions:list']],
+  vercel: [['logs'], ['inspect']],
+};
+/** Flags that would point a cloud CLI elsewhere or load commands from a file. */
+const LOOK_STEERING_FLAGS = /^--?(project|account|configuration|impersonate-service-account|flags-file|P|token|access-token-file|scope|global|cwd|local-config|config)(=|$)/;
 
-/**
- * Why the verifier may not run a command, or null when it may. Most commands run (reading files, jq,
- * the repo's tests). A command the office counts as crucial (cloud CLIs, curl that sends data, remote
- * shells, database clients) runs only when it is a cloud CLI that just looks (logs, describe, list).
- */
-export function lookOnlyCommand(command: string): string | null {
-  const crucial = crucialCommand(command);
-  if (!crucial) return null;
+function shellTokens(segment: string): string[] {
+  return (segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map((t) => t.replace(/^(["'])([\s\S]*)\1$/, '$2'));
+}
+
+/** The verifier's command rule: a decision, never "ask". */
+function lookOnlyCheck(ctx: GuardContext, look: { hosts: string[]; project?: string }, command: string): GuardDecision {
+  if (/[`\\<>]|\$[({\w]|\beval\b/.test(command)) return deny('a check runs plain commands only: no substitutions, variables, escapes or redirects');
   for (const segment of splitCommand(command)) {
-    const tokens = (segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map((t) => t.replace(/^["']|["']$/g, ''));
-    while (tokens.length && /^\w+=/.test(tokens[0]!)) tokens.shift();
-    const tool = (tokens[0] ?? '').split('/').pop()!;
-    if (!crucialCommand(segment)) continue;
-    if (!CLOUD_LOOKERS.has(tool)) return `${crucial}; a check may only look`;
-    const words = tokens.slice(1).filter((t) => !t.startsWith('-')).map((t) => t.toLowerCase());
-    const verbs = words.flatMap((w) => [w, ...w.split(':')]);
-    const write = verbs.find((w) => WRITE_VERBS.has(w));
-    if (write) return `${tool} ${write} changes, sends or reveals something; a check may only look`;
-    if (!verbs.some((w) => READ_VERBS.has(w))) return `${tool}: only reading commands (logs, describe, list) are allowed in a check`;
+    const words = shellTokens(segment);
+    const [tool = '', ...args] = words;
+    const why = lookOnlyReason(ctx, look, tool, args, segment);
+    if (why) return deny(why);
+  }
+  return allow();
+}
+
+function lookOnlyReason(ctx: GuardContext, look: { hosts: string[]; project?: string }, tool: string, args: string[], segment: string): string | null {
+  // Options of these readers that write a file or run a program.
+  if (args.some((a) => /^(-o|--output|--pre|--to-file=)/.test(a) || (tool === 'uniq' && args.filter((x) => !x.startsWith('-')).length > 1))) {
+    return `${tool}: options that write files or run programs aren't allowed in a check`;
+  }
+  if (LOOK_READERS.has(tool)) {
+    const path = shellPathProblem(ctx, segment, ctx.worktree);
+    return path ? path.reason : null;
+  }
+  if (tool === 'git') return LOOK_GIT.has(args[0] ?? '') ? null : `git ${args[0] ?? ''}: a check may only read git history`;
+  if (tool === 'curl') return curlReason(args, look.hosts);
+  const forms = LOOK_CLOUD[tool];
+  if (!forms) return `${tool || 'that'} isn't on the check's list of reading commands`;
+  const positional = args.filter((a) => !a.startsWith('-'));
+  if (!forms.some((form) => form.every((w, i) => positional[i] === w))) return `${tool} ${positional.slice(0, 3).join(' ')}: only reading forms (logs, describe, list) are allowed in a check`;
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i]!;
+    if (!LOOK_STEERING_FLAGS.test(flag)) continue;
+    const value = flag.includes('=') ? flag.slice(flag.indexOf('=') + 1) : args[i + 1];
+    const name = flag.replace(/^--?/, '').split('=')[0];
+    if ((name === 'project' || name === 'P') && look.project && value === look.project) continue;
+    return `${tool} ${flag}: a check stays on the pinned project${look.project ? ` (${look.project})` : ''}`;
+  }
+  return null;
+}
+
+/** curl may only GET the staging hosts it was given: no bodies, uploads, config files or output files. */
+function curlReason(args: string[], hosts: string[]): string | null {
+  const urls: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (!a.startsWith('-')) {
+      urls.push(a);
+      continue;
+    }
+    if (/^-[a-zA-Z]*[dFTKoOX]|^--(data|form|upload-file|json|config|output|remote-name|request|post|url-query|variable|expand)/.test(a)) return `curl ${a}: a check may only GET`;
+    if (/^-[a-zA-Z]*[HAeb]$|^--(header|user-agent|referer|cookie|max-time|connect-timeout|retry)$/.test(a)) i++; // takes a value
+  }
+  if (!urls.length) return 'curl: no URL';
+  for (const u of urls) {
+    let host: string;
+    try {
+      const url = new URL(u);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return `curl ${u}: only web URLs`;
+      host = url.host.toLowerCase();
+    } catch {
+      return `curl ${u}: not a URL`;
+    }
+    if (!hosts.includes(host)) return `curl ${host}: a check may only GET the staging URLs it was given (${hosts.join(', ') || 'none set'})`;
   }
   return null;
 }

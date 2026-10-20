@@ -25,7 +25,7 @@ export interface ReviewComment {
   deleted: boolean;
 }
 
-export type Role = 'manager' | 'architect' | 'coder' | 'all-rounder' | 'reviewer' | 'tester' | 'debugger' | 'researcher';
+export type Role = 'manager' | 'architect' | 'coder' | 'all-rounder' | 'reviewer' | 'tester' | 'debugger' | 'researcher' | 'verifier';
 /** Roles a mission can pick skills for. */
 export const PICKABLE_ROLES: Role[] = ['all-rounder', 'architect', 'coder', 'reviewer', 'tester', 'debugger', 'researcher'];
 export type SkillPicks = Partial<Record<Role, { skills: string[]; by: 'owner' | 'manager'; why?: string }>>;

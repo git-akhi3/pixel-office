@@ -1,5 +1,5 @@
 // Shipping after the merge: the staging deploy, run by the office (not an agent) with my CLI logins.
-// The verifier's look-only command rule is lookOnlyCommand() in guard.ts.
+// The verifier's look-only command rule is lookOnlyCheck() in guard.ts.
 
 import type { ShipConfig } from './db/schema.js';
 
@@ -18,12 +18,22 @@ export function deployEnv(staging: StagingConfig, base: NodeJS.ProcessEnv = proc
   return { ...base, ...pinnedEnv(staging) };
 }
 
-/** Why a command can't run against this repo's staging (it names another project), or null. */
+/**
+ * Why a command can't run against this repo's staging (it names another project or switches the CLIs'
+ * project or configuration), or null. The pinning env vars cover gcloud; firebase deploys to the project
+ * its own command names (or .firebaserc), so for firebase the command itself must name the right one.
+ */
 export function wrongProject(command: string, staging: StagingConfig): string | null {
   if (!staging.project) return null;
-  for (const m of command.matchAll(/--project(?:=|\s+)["']?([\w.-]+)/g)) {
-    if (m[1] !== staging.project) return `it names project ${m[1]}, but this repo's staging is ${staging.project}`;
-  }
+  const named = [
+    ...command.matchAll(/(?:--project|--project_id|(?:^|\s)-P|(?:^|\s)-p)(?:=|\s+)["']?([\w.-]+)/g),
+    ...command.matchAll(/\bfirebase\s+use\s+["']?([\w.-]+)/g),
+    ...command.matchAll(/\b(?:CLOUDSDK_CORE_PROJECT|GOOGLE_CLOUD_PROJECT|GCLOUD_PROJECT)=["']?([\w.-]+)/g),
+    ...command.matchAll(/\bgcloud\s+config\s+set\s+(?:core\/)?project\s+["']?([\w.-]+)/g),
+  ].map((m) => m[1]!);
+  const other = named.find((p) => p !== staging.project);
+  if (other) return `it names project ${other}, but this repo's staging is ${staging.project}`;
+  if (/--configuration\b|\bgcloud\s+config\s+(set|configurations\s+activate)\b/.test(command)) return 'it changes the gcloud configuration';
   return null;
 }
 
@@ -38,6 +48,6 @@ export function expiredLogin(output: string): { cli: string; login: string } | n
   if (/vercel login|The specified token is not valid|Not authorized|You are not logged in/i.test(output) && /vercel/i.test(output)) {
     return { cli: 'vercel', login: 'vercel login' };
   }
-  if (/gh auth login|HTTP 401|Bad credentials/i.test(output)) return { cli: 'gh', login: 'gh auth login' };
+  if (/gh auth login|gh: .*(Bad credentials|authentication)/i.test(output)) return { cli: 'gh', login: 'gh auth login' };
   return null;
 }

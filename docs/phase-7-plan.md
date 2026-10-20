@@ -83,13 +83,13 @@ Built 2026-10-20.
   - `staging`: `deployCmd`, `cwd`, `project`, `account`, `confirm` (the second tap), `healthUrls`, `checkNotes`, `rollbackCmd`.
   - No staging section: approving a PR only merges it, as in step 1.
 - **Statuses:** `awaiting_merge_approval` → `merging` → (`awaiting_deploy_approval` when `confirm`) → `deploying` → `checking` → `retro`/`done`. A failed check goes to `check_failed` (gate `rollback`) or straight to the retrospective when the repo has no rollback command.
-- **Deploy** (`deploy()` in pipeline.ts, `ship.ts`):
+- **Deploy** (`deploy()` in pipeline.ts, `ship.ts`; runs in the background, in its own process group, so Stop and Discard kill it):
   - The office runs `deployCmd` itself, not an agent, in a fresh detached checkout of the merged default branch (`<id>-deploy`, with the repo's setup command).
-  - It uses my own CLI logins with `CLOUDSDK_CORE_PROJECT`, `GOOGLE_CLOUD_PROJECT` and `CLOUDSDK_CORE_ACCOUNT` pinned. A command naming another `--project` is refused.
+  - It uses my own CLI logins with `CLOUDSDK_CORE_PROJECT`, `GOOGLE_CLOUD_PROJECT` and `CLOUDSDK_CORE_ACCOUNT` pinned (that covers gcloud; firebase deploys where its own command or `.firebaserc` says, so a firebase deploy command must name its project). A command naming another project (`--project`, `-P`, `firebase use`, env prefixes, `gcloud config set project`) or switching configuration is refused. A failed fetch stops the deploy rather than shipping stale code.
   - The last 60 lines of output are kept as `deploy.md`. A failure blocks the task with the reason; resuming deploys again, except on a `confirm` repo, which asks for the tap again.
   - A PR I merge on GitHub myself ships the same way.
 - **Live check:** the new role `verifier` (Hawkeye; Sonnet 5.5, high effort; Read/Grep/Glob/Bash, no writes) runs in the deploy checkout with the project pinned.
-  - Its guard is `lookOnly` (`lookOnlyCommand` in guard.ts). Ordinary commands and cloud CLIs that only read (logs, describe, list) run. Anything that changes, sends or reveals is refused, never asked: deploy, update, call, `curl -d`/`-X POST`, `secrets … access`, `print-*-token`, reads outside the checkout.
+  - Its guard is `lookOnly` (`lookOnlyCheck` in guard.ts), a short list of what may run: plain readers inside the checkout, read-only git, curl GETs of the repo's staging URL hosts only, and fixed cloud read forms (`gcloud logging read`, `run services|revisions describe|list`, `functions describe|list|logs read`, `firebase functions:log`, `vercel logs|inspect`) pinned to the project. Everything else is refused without asking: wrappers, interpreters, `xargs`, env prefixes, substitutions, redirects, the repo allow-list.
   - It reports `verify.md` (stage `staging`), which is posted in the thread.
 - **Failure:** a solo follow-up task "Fix staging: …" gets the report. With a `rollbackCmd`, the task waits on **Roll back** or **Keep it**.
 - **Logins, simplified for now:** when a deploy fails on an expired login (gcloud, firebase, vercel, gh), the block note names the command to run on the Mac, e.g. `firebase login --reauth`; then resume. The sign-in-on-another-device relay through Slack waits for Fury (step 4), who can run it and pass the code.

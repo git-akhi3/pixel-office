@@ -87,11 +87,11 @@ export const reviewRef = (taskId: number) => `refs/office/pr/${taskId}`;
 export async function createDeployWorktree(repo: Repo, worktreesDir: string, taskId: number): Promise<{ path: string; sha: string }> {
   const path = join(worktreesDir, `${taskId}-deploy`);
   if (existsSync(path)) await git(repo.path, ['worktree', 'remove', '--force', path]);
-  // The merge happened on GitHub: fetch it. Without a remote (tests), the local branch is all there is.
-  await run('git', ['fetch', '--quiet', 'origin', repo.defaultBranch], { cwd: repo.path, timeoutMs: 120_000 });
-  const remoteRef = `origin/${repo.defaultBranch}`;
-  const hasRemote = (await run('git', ['rev-parse', '--verify', '--quiet', remoteRef], { cwd: repo.path })).code === 0;
-  await git(repo.path, ['worktree', 'add', '--detach', path, hasRemote ? remoteRef : repo.defaultBranch]);
+  // The merge happened on GitHub: fetch it, or stop. Deploying a stale origin/<branch> would ship the code
+  // without the change. Only a repo with no remote at all (tests) uses its local branch.
+  const hasOrigin = (await run('git', ['remote', 'get-url', 'origin'], { cwd: repo.path })).code === 0;
+  if (hasOrigin) await git(repo.path, ['fetch', '--quiet', 'origin', repo.defaultBranch], { timeoutMs: 120_000 });
+  await git(repo.path, ['worktree', 'add', '--detach', path, hasOrigin ? `origin/${repo.defaultBranch}` : repo.defaultBranch]);
   await runSetup(repo, path);
   return { path: realpathSync(path), sha: (await git(path, ['rev-parse', 'HEAD'])).trim() };
 }

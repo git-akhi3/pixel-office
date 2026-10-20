@@ -90,6 +90,7 @@ export function Repos({
         lintCmd: editing.lintCmd || null,
         ghAccount: editing.ghAccount || null,
         gitAuthor: editing.gitAuthor || null,
+        ship: editing.ship?.staging?.deployCmd?.trim() ? editing.ship : {},
       };
       delete (body as Partial<Repo>).effectiveAllowlist;
       await api.saveRepo(body, editing.id);
@@ -476,10 +477,8 @@ type Staging = NonNullable<Repo['ship']['staging']>;
 /** Staging after the merge: the deploy the office runs with your logins, and what the verifier checks. */
 function StagingFields({ value, onChange }: { value: Staging | undefined; onChange: (v: Staging | undefined) => void }) {
   const v: Staging = value ?? { deployCmd: '' };
-  const set = (patch: Partial<Staging>) => {
-    const next = { ...v, ...patch };
-    onChange(next.deployCmd.trim() ? next : undefined);
-  };
+  // Kept while I edit, even with no deploy command yet; saving drops a section without one.
+  const set = (patch: Partial<Staging>) => onChange({ ...v, ...patch });
   return (
     <fieldset className="staging">
       <legend>Staging (after you merge)</legend>
@@ -497,6 +496,10 @@ function StagingFields({ value, onChange }: { value: Staging | undefined; onChan
           <input value={v.project ?? ''} onChange={(e) => set({ project: e.target.value || undefined })} placeholder="pos-staging-0" />
         </label>
       </div>
+      <label>
+        Cloud account (optional: which of your gcloud logins to use)
+        <input value={v.account ?? ''} onChange={(e) => set({ account: e.target.value || undefined })} placeholder="you@example.com" />
+      </label>
       <label className="switch">
         <input type="checkbox" checked={!!v.confirm} onChange={(e) => set({ confirm: e.target.checked || undefined })} />
         <span>
