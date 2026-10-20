@@ -1,7 +1,7 @@
 // The architect's briefing questions in Slack: one message per question in the task's thread, with
 // buttons for the recommendation, each option, "you decide", "send what I've answered" and "enough".
-// A thread reply answers the open question. The board and Slack share one question row: the first
-// answer counts and the other side updates.
+// A typed answer goes through Fury (answer_question). The board and Slack share one question row: the
+// first answer counts and the other side updates.
 
 import { and, asc, eq } from 'drizzle-orm';
 import { answerText } from './briefing.js';
@@ -132,7 +132,7 @@ export class SlackQuestions {
       { type: 'section', text: { type: 'mrkdwn', text: clip(`${head}\n${body.join('\n\n')}`, 2900) } },
       { type: 'actions', elements: answers },
       { type: 'actions', elements: round },
-      { type: 'context', elements: [{ type: 'mrkdwn', text: 'Or reply in this thread with your own answer.' }] },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: 'Or tell me your own answer in this thread.' }] },
     ];
   }
 
@@ -203,18 +203,10 @@ export class SlackQuestions {
     }
   }
 
-  /** The open question of a task that a thread reply would answer: the one posted in Slack. */
+  /** The open question of a task that a typed answer would be for: the one posted in Slack. */
   openQuestion(taskId: number): Question | undefined {
     const pending = this.deps.db.select().from(schema.gates).where(and(eq(schema.gates.taskId, taskId), eq(schema.gates.kind, 'question'), eq(schema.gates.status, 'pending'))).get();
     if (!pending) return undefined;
     return this.roundQuestions(pending.id).find((q) => q.answer === null && !q.delegated && q.slackTs);
-  }
-
-  /** The owner's free-text reply in a task's thread. true when it answered a question. */
-  onThreadReply(taskId: number, text: string): boolean {
-    const q = this.openQuestion(taskId);
-    if (!q) return false;
-    this.deps.pipeline.answerQuestion(q.id, { text }, 'slack');
-    return true;
   }
 }

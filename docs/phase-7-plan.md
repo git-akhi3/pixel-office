@@ -1,6 +1,6 @@
 # Phase 7 plan: a fast lane, shipping, and Fury in Slack
 
-Status 2026-10-20: planned with the owner. Step 1 built and tried end to end in a sandbox office: a real solo task went intake (10 s) → the all-rounder (18 s) → PR → "Changes needed" back into the same session (19 s) → merge → retro. Steps 2-5 to do. Each step is reviewed on its own and tried on a real task before the next one starts.
+Status 2026-10-20: planned with the owner. Step 1 built and tried end to end in a sandbox office: a real solo task went intake (10 s) → the all-rounder (18 s) → PR → "Changes needed" back into the same session (19 s) → merge → retro. Step 2 built. Step 4 built 2026-10-20 (see below). Steps 3 and 5 to do. Each step is reviewed on its own and tried on a real task before the next one starts.
 
 ## Why
 
@@ -99,6 +99,15 @@ Built 2026-10-20.
   - wati-relay: `npm run deploy:staging` in `point-of-sale/wati-relay`, project `pos-staging-0`, with `confirm` on, log-only checks and no messages ever.
 
 ## Step 4: Fury at the desk (Slack in plain language)
+
+Built 2026-10-20 on `feat/phase-7-fury`. Decisions where the plan was open:
+
+- **No `conversations` table.** Another branch owns the next migration, so the thread-to-session map is a JSON file, `~/.office/slack-conversations.json` (`conversations.ts`). Fury's sessions are kept under `~/.office/desk`. Entries untouched for 30 days are dropped.
+- **A task started in a thread becomes that thread's task thread** (the bridge's existing `claim`), so the status message, gate buttons and questions stay in the conversation. If the thread already has a task, the new one gets its own thread in the owner's DM and Fury says so.
+- **Typed answers to briefing questions go through Fury** (`answer_question`, owner only); the open question is in the header Fury reads with each message. The buttons still answer directly.
+- **Heroes' handoffs** are posted from `step_end` events, reading the step's document after the pipeline saves it. A hero the owner steered live posts their first words after the steer, under their name.
+- **Added beyond the plan:** a `review_pr` tool (pasting a PR link used to start a review), `briefing_action` (send / enough), a limit of 40 assistant messages answered per hour on top of the 5 tasks per hour (Fury would otherwise answer an assistant's every message, and two bots could talk for ever), and `Pipeline.leaveNote` (a note for a hero who isn't running, which must not reach whoever is).
+- **Not done:** tasks Fury creates still go through intake (the plan's step 1 note that they skip it needs a pipeline change; their lane pick already wins over the manager's). The verifier hero (Hawkeye) is in the map and speaks for live-check reports; the staging check itself comes with step 3. `roll_back` waits for step 3's gates.
 
 - **One brain:**
   - Every owner or Instinct message in the DM or the office channel goes to Fury instead of the command parser. That means top-level messages and thread replies.

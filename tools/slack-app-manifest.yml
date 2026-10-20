@@ -16,7 +16,8 @@ oauth_config:
   scopes:
     bot:
       - chat:write # post and edit task threads
-      - im:history # read your DMs to the bot (new tasks, thread commands)
+      - chat:write.customize # heroes post their handoffs under their own name and emoji (without it they post as the app)
+      - im:history # read your DMs to the bot (you talk to Fury in plain language)
       - im:read
       - im:write # open the DM with you
       - files:read # files you attach to a task message become its attachments

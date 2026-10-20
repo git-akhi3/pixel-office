@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { connect } from 'node:net';
+import { join } from 'node:path';
 import { loadAgents } from './agents.js';
 import { ensureDirs, loadConfig, loadEnvFile, loadOauthToken, remoteConfig, slackConfig } from './config.js';
 import { getSettings, openDb, setSetting } from './db/index.js';
@@ -13,6 +14,8 @@ import { Pipeline } from './pipeline.js';
 import { SdkRunner } from './runner.js';
 import { buildServer } from './server.js';
 import { Uploads } from './attachments.js';
+import { ConversationStore } from './conversations.js';
+import { SdkDeskRunner } from './fury.js';
 import { startSlack } from './slack.js';
 import { untilConnected } from './slackLink.js';
 
@@ -82,7 +85,9 @@ try {
   const slackSettings = slackConfig(env);
   if (slackSettings) {
     const publicUrl = remoteConfig(config, env).publicUrl;
-    void untilConnected(() => startSlack(slackSettings, { db, bus, pipeline, docs, uploads, publicUrl }), { stopped: () => shuttingDown, fatal: wrongSlackSettings }).then(async (started) => {
+    // Fury, the desk agent behind Slack, and the memory of which session each Slack thread's conversation is.
+    const desk = { runner: new SdkDeskRunner(token, join(config.home, 'desk')), conversations: new ConversationStore(join(config.home, 'slack-conversations.json')) };
+    void untilConnected(() => startSlack(slackSettings, { db, bus, pipeline, docs, uploads, publicUrl, desk }), { stopped: () => shuttingDown, fatal: wrongSlackSettings }).then(async (started) => {
       if (!started) return;
       if (shuttingDown) return void (await started.stop().catch(() => undefined));
       slack = started;

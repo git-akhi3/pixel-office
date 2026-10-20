@@ -2013,4 +2013,15 @@ export class Pipeline {
     await removeWorktree(getRepo(this.deps.db, t.repoId), t.worktreePath, t.id).catch(() => {});
     this.update(t.id, { worktreePath: null });
   }
+
+  /**
+   * Keeps my note for the next agent step without sending it to the one running now: I spoke to a hero
+   * who isn't working on the task, and whoever is must not be interrupted by it.
+   */
+  leaveNote(taskId: number, text: string): void {
+    const task = this.getTask(taskId);
+    if (TERMINAL_STATUSES.includes(task.status)) throw new Error(`The task is ${task.status}.`);
+    this.update(taskId, { feedback: [task.feedback, `The owner says: ${text}`].filter(Boolean).join('\n\n') });
+    this.deps.bus.emit(taskId, 'steered', { text, live: false });
+  }
 }
