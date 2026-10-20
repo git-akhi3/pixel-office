@@ -14,7 +14,7 @@ const DOC_EXTENSIONS = new Set(['.md', '.mdx', '.markdown', '.txt', '.rst', '.ad
 const DOC_NAMES = /^(readme|license|licence|changelog|changes|authors|contributors|notice|copying)$/i;
 
 /** Markdown that steers agents (their instructions and skills) is code here, whatever its extension. */
-const AGENT_FILES = /(^|\/)(CLAUDE|AGENTS|SKILL)\.md$|(^|\/)(\.claude|agents|skills|\.cursor|\.github)\//i;
+const AGENT_FILES = /(^|\/)(CLAUDE|CLAUDE\.local|AGENTS|AGENT|GEMINI|SKILL)\.md$|(^|\/)(\.claude|agents|skills|\.cursor|\.github)\//i;
 
 /** Prose files: changing them can't change what the code (or an agent working on it) does. */
 export function isDocFile(path: string): boolean {

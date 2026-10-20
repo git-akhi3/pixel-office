@@ -1049,14 +1049,17 @@ describe('open PRs and merging', () => {
 
   it('keeps my "changes needed" comment when the fix run fails, and gives it to the retry', async () => {
     const task = await atMergeGate();
-    runner.queue('coding', () => ({ status: 'failed', error: 'prompt is too long' }));
+    // The resumed session itself fails (it started, so it has the same session id).
+    runner.queue('coding', (req) => ({ status: 'failed', error: 'prompt is too long', sessionId: req.resume?.sessionId }));
     await pipeline.decideGate(mergeGate(task).id, 'reject', 'Call it greet, not hello');
     await settle();
     expect(pipeline.getTask(task.id)).toMatchObject({ status: 'blocked', feedback: expect.stringContaining('Call it greet') });
     await pipeline.action(task.id, 'resume');
     await settle();
+    // The retry starts fresh (that session would fail again), with my comment in its prompt.
     const retry = runner.calls.filter((c) => c.step === 'coding').at(-1)!;
-    expect(retry.resume?.prompt ?? retry.prompt).toContain('Call it greet, not hello');
+    expect(retry.resume).toBeUndefined();
+    expect(retry.prompt).toContain('Call it greet, not hello');
     expect(pipeline.getTask(task.id).feedback).toBeNull();
   });
 
@@ -1078,6 +1081,41 @@ describe('open PRs and merging', () => {
     expect(coder.resume).toBeUndefined();
     expect(coder.prompt).toContain('name it greeter');
     expect(coder.prompt).not.toContain('use a lookup table');
+  });
+
+  it("doesn't push fixes into a PR that was merged on GitHub meanwhile", async () => {
+    const task = await atMergeGate();
+    runner.queue('coding', (req) => {
+      publisher.state = 'MERGED'; // I merged the old version on GitHub while the fix ran
+      writeFileSync(join(req.cwd, 'src', 'greet.ts'), 'export const greet = () => "fixed";\n');
+      return { text: docs.changes };
+    });
+    const pushes = publisher.pushed.length;
+    await pipeline.decideGate(mergeGate(task).id, 'reject', 'Say fixed');
+    await settle();
+    expect(pipeline.getTask(task.id)).toMatchObject({ status: 'blocked', statusNote: expect.stringContaining('merged on GitHub while these changes were made') });
+    expect(publisher.pushed.length).toBe(pushes);
+  });
+
+  it('keeps reviewing the fixes of a solo task that was reviewed once', async () => {
+    solo();
+    runner.queue(
+      'coding',
+      (req) => {
+        req.onEvent('tool', { tool: 'Bash', input: 'curl -s https://example.com/api-docs' });
+        writeFileSync(join(req.cwd, 'src', 'greet.ts'), 'export const greet = () => "v1";\n');
+        return { text: docs.changes };
+      },
+      (req) => {
+        writeFileSync(join(req.cwd, 'src', 'greet.ts'), 'export const greet = () => "v2";\n');
+        return { text: docs.changes };
+      },
+    );
+    runner.queue('reviewing', () => ({ text: docs.reviewFail }));
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Use the greeting from the API docs' });
+    await settle();
+    expect(steps()).toEqual(['intake', 'coding', 'reviewing', 'coding', 'reviewing']);
+    expect(eventsOf(task, 'review_added').map((e) => e.payload.reason)).toEqual(['it read web pages while working', 'its earlier version was reviewed, so the fixes are too']);
   });
 
   it('gives a solo change one review when the all-rounder read web pages', async () => {

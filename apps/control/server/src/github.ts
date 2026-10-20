@@ -68,13 +68,22 @@ export class GhPublisher implements Publisher {
   async pushAndOpenPr(repo: Repo, worktree: string, branch: string, pr: { title: string; body: string; base: string; draft: boolean }): Promise<string> {
     assertPushAllowed(repo, branch);
     const env = await ghEnv(repo.ghAccount);
+    const auth = ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential'];
+    // Someone may have updated the branch on GitHub ("Update branch"): bring that in first, so the push
+    // isn't rejected. A conflict stops here with git's message.
+    const fetched = await run('git', [...auth, 'fetch', '--quiet', 'origin', branch], { cwd: worktree, env, timeoutMs: 120_000 });
+    if (fetched.code === 0) {
+      const behind = await run('git', ['merge-base', '--is-ancestor', 'FETCH_HEAD', 'HEAD'], { cwd: worktree });
+      if (behind.code !== 0) {
+        const who = repo.gitAuthor?.match(/^(.+?)\s*<([^>]+)>$/);
+        const as = who ? ['-c', `user.name=${who[1]}`, '-c', `user.email=${who[2]}`] : [];
+        await git(worktree, [...as, 'merge', '--no-edit', 'FETCH_HEAD'], { env, timeoutMs: 60_000 });
+      }
+    }
     // Use gh as the credential helper so HTTPS pushes go out as the repo's gh account.
-    await git(
-      worktree,
-      ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential', 'push', '--set-upstream', 'origin', `${branch}:${branch}`],
-      { env, timeoutMs: 180_000 },
-    );
-    const existing = await run('gh', ['pr', 'view', branch, '--json', 'url', '--jq', '.url'], { cwd: worktree, env });
+    await git(worktree, [...auth, 'push', '--set-upstream', 'origin', `${branch}:${branch}`], { env, timeoutMs: 180_000 });
+    // gh falls back to a merged or closed PR when the branch has no open one: only an open PR is reused.
+    const existing = await run('gh', ['pr', 'view', branch, '--json', 'url,state', '--jq', 'select(.state == "OPEN") | .url'], { cwd: worktree, env });
     if (existing.code === 0 && existing.stdout.trim()) {
       const url = existing.stdout.trim();
       await runOk('gh', ['pr', 'edit', url, '--title', pr.title, '--body-file', '-'], { cwd: worktree, env, input: pr.body, timeoutMs: 60_000 });

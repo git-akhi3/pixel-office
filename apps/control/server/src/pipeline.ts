@@ -572,8 +572,10 @@ export class Pipeline {
         this.update(task.id, { status: 'stopped', resumeStatus: step });
         return;
       case 'parked':
-        // Nobody answered within the wait: free the slot and keep the questions open for me.
-        this.update(task.id, { status: 'awaiting_answer', resumeStatus: null, statusNote: this.waitingNote(task.id) });
+        // Nobody answered within the wait: free the slot and keep the questions open for me. The next
+        // session starts from brief.md and the answers, so the feedback this one started with is done.
+        this.update(task.id, { status: 'awaiting_answer', resumeStatus: null, statusNote: this.waitingNote(task.id), feedback: this.newFeedback(task) });
+        this.consumed.delete(task.id);
         this.deps.bus.emit(task.id, 'briefing_parked', {});
         this.deliverIfReady(task.id);
         return;
@@ -616,8 +618,12 @@ export class Pipeline {
       .from(schema.events)
       .where(and(eq(schema.events.runId, runId), eq(schema.events.type, 'tool')))
       .all()
-      .some((e) => e.payload.tool === 'WebFetch' || e.payload.tool === 'WebSearch');
+      .some((e) => e.payload.tool === 'WebFetch' || e.payload.tool === 'WebSearch' || (e.payload.tool === 'Bash' && /\b(curl|wget|https?:\/\/)/.test(String(e.payload.input ?? ''))));
     return used ? 'it read web pages while working' : null;
+  }
+
+  private hadEvent(taskId: number, type: string): boolean {
+    return !!this.deps.db.select({ id: schema.events.id }).from(schema.events).where(and(eq(schema.events.taskId, taskId), eq(schema.events.type, type))).get();
   }
 
   /** The task's feedback minus what the running step started with: notes I sent while it ran. */
@@ -640,6 +646,9 @@ export class Pipeline {
       .orderBy(desc(schema.runs.id))
       .get();
     if (!last?.sessionId || last.role !== role) return null;
+    // A resumed run that failed after starting (too long, a model change) would fail again: start fresh.
+    const latest = db.select().from(schema.runs).where(and(eq(schema.runs.taskId, taskId), eq(schema.runs.step, 'coding'))).orderBy(desc(schema.runs.id)).get();
+    if (latest && latest.status !== 'ok' && latest.sessionId === last.sessionId) return null;
     const plannedSince = db
       .select({ id: schema.runs.id })
       .from(schema.runs)
@@ -771,7 +780,11 @@ export class Pipeline {
         }
         // The all-rounder tested and reviewed its own work. A big diff gets one independent review on top,
         // and so does work done after reading web pages (a page could have steered it).
-        const why = (task.baseSha ? reviewReason(await diffStat(task.worktreePath!, task.baseSha)) : null) ?? this.readTheWeb(task.id);
+        // Once reviewed, a solo task's fixes are reviewed too (the session may still hold what steered it).
+        const why =
+          (task.baseSha ? reviewReason(await diffStat(task.worktreePath!, task.baseSha)) : null) ??
+          this.readTheWeb(task.id) ??
+          (this.hadEvent(task.id, 'review_added') ? 'its earlier version was reviewed, so the fixes are too' : null);
         if (why) {
           this.deps.bus.emit(task.id, 'review_added', { reason: why });
           this.update(task.id, { status: 'reviewing' });
@@ -956,6 +969,12 @@ export class Pipeline {
         if (task.prUrl) await this.deps.publisher.retargetPr(repo, task.prUrl, base);
         task = this.update(task.id, { baseBranch: null });
       }
+      // The PR may have been merged or closed on GitHub while the fixes were made: don't push into it.
+      if (task.prUrl) {
+        const state = await this.deps.publisher.prState(repo, task.prUrl);
+        if (state === 'MERGED') throw new Error(`the PR was merged on GitHub while these changes were made. They're committed on ${task.branch}: open a new PR from it, or discard the task.`);
+        if (state === 'CLOSED') throw new Error('the PR was closed on GitHub. Reopen it and resume, or discard the task.');
+      }
       sha = (await git(task.worktreePath!, ['rev-parse', 'HEAD'])).trim();
       const prDoc = this.deps.docs.latest(task.id, 'pr');
       const title = prDoc?.match(/^# (.+)$/m)?.[1] ?? task.title;
@@ -991,8 +1010,9 @@ export class Pipeline {
       throw new Error(`${gone} was ${dep.status}, so it still carries that work. Discard this task too, or rebase the branch onto ${repo.defaultBranch} yourself.`);
     }
     if (dep.status !== 'retro' && dep.status !== 'done') return base;
-    const state = dep.prUrl ? await this.deps.publisher.prState(repo, dep.prUrl) : 'UNKNOWN';
+    const state = dep.prUrl ? await this.deps.publisher.prState(repo, dep.prUrl) : 'CLOSED';
     if (state === 'MERGED') return repo.defaultBranch;
+    if (state === 'UNKNOWN') throw new Error(`couldn't check on GitHub whether milestone #${dep.id}'s PR merged. Try again in a moment.`);
     throw new Error(`${gone} was finished without its PR merging, so this branch still carries that work. Merge #${dep.id}'s PR, or rebase this branch onto ${repo.defaultBranch} yourself.`);
   }
 
@@ -1316,7 +1336,8 @@ export class Pipeline {
     if (this.queuedDelivery.get(taskId)?.gateId === gateId) this.queuedDelivery.delete(taskId);
     db.update(schema.gates).set({ status: 'approved', decision: delivery, decidedAt: this.now() }).where(eq(schema.gates.id, gateId)).run();
     docs.save(taskId, 'brief', briefDoc(this.questions(taskId)));
-    this.update(taskId, { feedback: null, statusNote: null });
+    // A session still waiting for these answers keeps the feedback it started with, in case it fails later.
+    this.update(taskId, { feedback: this.consumed.get(taskId) ?? null, statusNote: null });
     bus.emit(taskId, 'gate_decided', { gateId, kind: 'question', decision: delivery });
     if (delivery === 'enough') bus.emit(taskId, 'briefing_ended', {});
     return answersMessage(qs[0]?.round ?? 0, qs, delivery, notes, this.briefingOutput(taskId));
