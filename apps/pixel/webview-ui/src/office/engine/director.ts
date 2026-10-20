@@ -216,6 +216,7 @@ export class Director {
         this.viewZoom === null
           ? this.cameraZoom
           : this.viewZoom + (this.cameraZoom - this.viewZoom) * (1 - Math.exp(-dt / 0.45));
+      if (Math.abs(this.viewZoom - this.cameraZoom) < 0.002) this.viewZoom = this.cameraZoom;
     }
     for (const e of this.effects) e.age += dt;
     this.effects = this.effects.filter((e) => e.age < e.duration);

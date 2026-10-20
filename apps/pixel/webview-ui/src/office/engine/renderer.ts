@@ -930,10 +930,12 @@ export function renderFrame(
   pets?: Pet[],
   effects?: readonly DirectorEffect[],
 ): { offsetX: number; offsetY: number } {
+  // The sprite cache is keyed by zoom: only ever hand it the integer (a float that is merely close
+  // to one would key a fresh cache every frame).
   const renderZoom = Math.max(1, Math.round(zoom));
   const s = zoom / renderZoom;
-  if (Math.abs(s - 1) < 1e-6) {
-    return renderFrameAt(ctx, canvasWidth, canvasHeight, tileMap, furniture, characters, zoom, panX, panY, selection, editor, tileColors, layoutCols, layoutRows, carpetTiles, areas, areaTiles, showAreas, activeAreaLabel, pets, effects);
+  if (Math.abs(s - 1) < 1e-3) {
+    return renderFrameAt(ctx, canvasWidth, canvasHeight, tileMap, furniture, characters, renderZoom, panX, panY, selection, editor, tileColors, layoutCols, layoutRows, carpetTiles, areas, areaTiles, showAreas, activeAreaLabel, pets, effects);
   }
   ctx.save();
   ctx.setTransform(s, 0, 0, s, 0, 0);

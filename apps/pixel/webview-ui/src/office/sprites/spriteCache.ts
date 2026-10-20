@@ -46,6 +46,8 @@ export function getOutlineSprite(sprite: SpriteData): SpriteData {
 }
 
 export function getCachedSprite(sprite: SpriteData, zoom: number): HTMLCanvasElement {
+  // Guard against float drift keying endless caches: zooms are rendered in eighths at most.
+  zoom = Math.round(zoom * 8) / 8;
   let cache = zoomCaches.get(zoom);
   if (!cache) {
     cache = new WeakMap();

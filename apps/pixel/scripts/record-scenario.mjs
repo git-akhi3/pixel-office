@@ -32,7 +32,19 @@ const browser = await chromium.launch({
 });
 const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
 const page = await context.newPage();
+if (process.env.KEEP_FRAMES) {
+  await page.addInitScript(() => {
+    window.__canvasCount = 0;
+    const orig = document.createElement.bind(document);
+    document.createElement = (tag, ...rest) => {
+      if (String(tag).toLowerCase() === 'canvas') window.__canvasCount++;
+      return orig(tag, ...rest);
+    };
+  });
+}
 page.on('console', (m) => { if (m.type() === 'error') console.error('[page]', m.text()); });
+page.on('pageerror', (e) => console.error('[pageerror]', e.message));
+const LIMIT_SEC = Number(process.env.SCENARIO_LIMIT_SEC || 0);
 await page.goto(`${base}/?scenario=${encodeURIComponent(scenario)}`);
 await page.waitForFunction(() => window.pixelDirector?.isPlaying(), null, { timeout: 60_000 });
 // Freeze time now; every step below is one frame.
@@ -71,10 +83,21 @@ for (;;) {
   if (tail < 0 && (await page.evaluate(() => window.pixelDirector?.isDone()))) tail = n + TAIL_SEC * FPS;
   if (tail >= 0 && n >= tail) break;
   if (n > FPS * 900) break; // 15 minutes, something is stuck
-  if (n % (FPS * 10) === 0) {
+  if (n % (FPS * 5) === 0 || (jpg && jpg.length < 60000 && n % FPS === 0)) {
     const sec = n / FPS;
     const rate = n / ((Date.now() - started) / 1000);
-    console.log(`  ${sec.toFixed(0)} s of video (${rate.toFixed(1)} frames/s)`);
+    const diag = await page.evaluate(() => {
+      const c = document.querySelector('canvas');
+      const d = window.pixelDirector;
+      const t = document.createElement('canvas');
+      t.width = 64; t.height = 64;
+      const tc = t.getContext('2d');
+      tc.fillStyle = '#ff0000'; tc.fillRect(0, 0, 64, 64);
+      const probe = tc.getImageData(1, 1, 1, 1).data[0];
+      return `canvas ${c?.width}x${c?.height} heap ${Math.round((performance.memory?.usedJSHeapSize ?? 0) / 1e6)}MB canvases ${window.__canvasCount ?? '?'} newCanvasRed ${probe} clock ${d?.clock().toFixed(1)} playing ${d?.isPlaying()} errors ${d?.errors().length}`;
+    });
+    console.log(`  ${sec.toFixed(0)} s of video (${rate.toFixed(1)} frames/s) ${diag}`);
+    if (LIMIT_SEC && sec >= LIMIT_SEC) { tail = n; break; }
   }
 }
 const errors = await page.evaluate(() => window.pixelDirector?.errors() ?? []);
@@ -88,5 +111,5 @@ execFileSync(ffmpeg, [
   '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'slow', '-crf', '17',
   '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', out,
 ], { stdio: ['ignore', 'ignore', 'inherit'] });
-rmSync(frames, { recursive: true, force: true });
+if (!process.env.KEEP_FRAMES) rmSync(frames, { recursive: true, force: true });
 console.log(`wrote ${out} (${(n / FPS).toFixed(1)} s)`);
