@@ -61,13 +61,19 @@ The bottlenecks, worst first:
 
 ## Step 2: always on while the Mac is awake
 
-- **Login item:** `tools/mac-agent.sh install|uninstall` writes `~/Library/LaunchAgents/com.pixeloffice.office.plist`.
-  - Settings: RunAtLoad, KeepAlive, and a ThrottleInterval so a crash loop doesn't spin.
-  - It runs `npm run office` through a wrapper that holds `caffeinate -is`, so the Mac doesn't idle-sleep while plugged in. No system setting changes.
+Built 2026-10-20.
+
+- **Login item:** `tools/mac-agent.sh install|uninstall|status` writes `~/Library/LaunchAgents/com.pixeloffice.office.plist`.
+  - Settings: RunAtLoad, KeepAlive, a ThrottleInterval of 30 s so a crash loop doesn't spin, and the PATH of the shell `install` ran from.
+  - It runs `tools/office-service.sh`, which waits while another copy serves the port (one started by hand) and then takes over. It builds the board, then `exec`s the office itself, so launchd's SIGTERM reaches the office's shutdown handler and running steps are parked, not killed. `caffeinate -s -w <office pid>` keeps the Mac from sleeping on power only. No system setting changes.
   - Logs go to `~/.office/server.log`.
-- **Slack recovers after a dropped connection.** The log shows ping/pong timeouts during Wi-Fi drops. First test whether Bolt's socket mode reconnects by itself. If it doesn't, add a watchdog that restarts the socket client after N minutes without a pong.
-- **Pixel office:** the same pattern, optional (`npm run pixel`).
-- **README:** a "Run it on your Mac (always on)" section next to the cloud one, including the closed-lid caveat (a MacBook sleeps unless it's on an external display).
+- **Slack recovers after a dropped connection** (`server/src/slackLink.ts`). @slack/socket-mode 3.1.0's own reconnect treats a network error as unrecoverable and leaves an unhandled rejection. That fits the dead Slack link seen after Wi-Fi drops.
+  - The office turns that reconnect off and owns it: one attempt at a time (never two sockets), waiting 1 s, then doubling up to 2 min, forever.
+  - The first connection is retried the same way when the office starts before the network is up (`untilConnected`). A failed start leaves no socket behind.
+  - Stray promise rejections are logged instead of crashing the office.
+  - Tested against the real socket-mode client and a stand-in local Slack.
+- **Pixel office:** `install --with-pixel` adds `com.pixeloffice.pixel` (`start.sh`).
+- **README:** "Keep it running on your Mac", including the closed-lid caveat (a MacBook sleeps unless it's on an external display).
 
 ## Step 3: shipping (merge, staging deploy, live check, rollback, logins)
 

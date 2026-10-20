@@ -10,7 +10,7 @@ Updated 2026-10-20. Design: [design.md](design.md). Phase 1 detail: [phase-1-pla
 | 4. Smarts | Built and reviewed |
 | 5. Office tab | Built, reviewed (two rounds), verified live against Pixel Agents |
 | 6. Mission skills, briefings, attachments | Built, each step reviewed; checked in a sandbox office (no live agent run yet). Plan: [phase-6-plan.md](phase-6-plan.md) |
-| 7. Fast lane, shipping, Fury in Slack | Step 1 built (solo lane with the all-rounder, PRs open by themselves, merge on your OK, fix loops resume their session); tried end to end in a sandbox office. Steps 2-5 to do. Plan: [phase-7-plan.md](phase-7-plan.md) |
+| 7. Fast lane, shipping, Fury in Slack | Step 1 built and reviewed (solo lane with the all-rounder, PRs open by themselves, merge on your OK, fix loops resume their session); tried end to end in a sandbox office. Step 2 built (login item, Slack reconnects; see the README). Steps 3-5 to do. Plan: [phase-7-plan.md](phase-7-plan.md) |
 
 ## Using it
 

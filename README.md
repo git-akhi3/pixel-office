@@ -1,6 +1,6 @@
 # pixel-office
 
-A personal multi-agent dev workspace: hand a task to a team of Claude agents (manager, architect, coder, reviewer, tester, plus debugger and researcher on demand), approve the plan and the push, and watch them work in a pixel-art office.
+A personal multi-agent dev workspace: hand a task to a team of Claude agents (manager, architect, coder, reviewer, tester, plus debugger and researcher on demand), approve their PRs, and watch them work in a pixel-art office.
 
 Design: [docs/design.md](docs/design.md). What's built and how to use it: [docs/status.md](docs/status.md).
 
@@ -20,6 +20,19 @@ The control app needs a Claude subscription token in `~/.office/env`, created on
     CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…     (chmod 600; the folder chmod 700)
 
 Runtime data (database, task documents, worktrees, knowledge files, graphs) lives in `~/.office/`. Built-in agents and skills are in `apps/control/agents/*.md` and `apps/control/skills/*/SKILL.md`; edits made on the board's Team page are saved in `~/.office/agents` and `~/.office/skills` and override them.
+
+## Keep it running on your Mac
+
+    tools/mac-agent.sh install                # or: install --with-pixel, to keep the pixel office running too
+    tools/mac-agent.sh status
+    tools/mac-agent.sh uninstall
+
+`install` adds a login item (a launchd agent, `com.pixeloffice.office`). It starts the office when you log in and again if it stops, so Slack from your phone works whenever the Mac is awake. While it runs on power, the Mac doesn't idle-sleep (`caffeinate`); on battery it sleeps as usual. A MacBook with its lid closed sleeps anyway, unless it's on an external display.
+
+- If you start the office by hand (`npm run office`) first, the login item waits until yours stops, then takes over. While the login item's copy runs, `npm run office` just says it's already running: `tools/mac-agent.sh uninstall` stops it.
+- Run `install` from your usual terminal: it records that shell's PATH (and `OFFICE_HOME` / `OFFICE_PORT` if you set them), so the office finds node, git, gh and each repo's tools (flutter, uv, …). Run it again after changing your PATH or moving this checkout.
+- Log: `~/.office/server.log` (`~/.office/pixel.log` for the pixel office).
+- Slack reconnects by itself after Wi-Fi drops and sleep, and when the office starts before the network is up (`server/src/slackLink.ts`).
 
 ## Pixel office
 

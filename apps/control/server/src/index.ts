@@ -14,6 +14,7 @@ import { SdkRunner } from './runner.js';
 import { buildServer } from './server.js';
 import { Uploads } from './attachments.js';
 import { startSlack } from './slack.js';
+import { untilConnected } from './slackLink.js';
 
 const config = loadConfig();
 ensureDirs(config);
@@ -72,21 +73,46 @@ bridge.start(bus);
 pipeline.start();
 console.log(`Pixel Office control: http://${config.host}:${config.port}  (data: ${config.home})`);
 
-// Slack is optional. A mistake in its settings or a failed connection must not take the office down.
+// Slack is optional. A mistake in its settings must not take the office down. A failed connection
+// (the office started before the network, at login) is retried in the background until it works.
 let slack: Awaited<ReturnType<typeof startSlack>> | null = null;
+let shuttingDown = false;
 try {
   const env = loadEnvFile(config.envFile);
   const slackSettings = slackConfig(env);
   if (slackSettings) {
-    slack = await startSlack(slackSettings, { db, bus, pipeline, docs, uploads, publicUrl: remoteConfig(config, env).publicUrl });
-    await slack.bridge.announce();
-    console.log('Slack: connected. DM the bot to start a task.');
+    const publicUrl = remoteConfig(config, env).publicUrl;
+    void untilConnected(() => startSlack(slackSettings, { db, bus, pipeline, docs, uploads, publicUrl }), { stopped: () => shuttingDown, fatal: wrongSlackSettings }).then(async (started) => {
+      if (!started) return;
+      if (shuttingDown) return void (await started.stop().catch(() => undefined));
+      slack = started;
+      await started.bridge.announce().catch((e: unknown) => console.warn(`Slack: ${(e as Error).message}`));
+      console.log('Slack: connected. DM the bot to start a task.');
+    });
   }
 } catch (e) {
   console.error(`Slack is off: ${(e as Error).message}`);
 }
 
+// A stray promise from the Slack libraries (their sockets and retries) must not take down the office and
+// every step running in it: log it and carry on. Anything else is a real bug: crash as Node would, and the
+// login item starts the office again (recovery parks the running steps for me).
+process.on('unhandledRejection', (reason) => {
+  const text = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  const code = (reason as { code?: unknown } | null)?.code;
+  if ((typeof code === 'string' && code.startsWith('slack_')) || text.includes('@slack/')) return void console.error(`Slack: unhandled rejection: ${text}`);
+  console.error(`Unhandled rejection: ${text}`);
+  process.exit(1);
+});
+
+/** Slack errors that retrying won't fix: a wrong or revoked token, a wrong user or channel id. */
+function wrongSlackSettings(e: unknown): boolean {
+  const error = String((e as { data?: { error?: unknown } } | null)?.data?.error ?? (e as Error)?.message ?? '');
+  return /invalid_auth|not_authed|account_inactive|token_revoked|token_expired|user_not_found|channel_not_found|missing_scope/.test(error);
+}
+
 const shutdown = async () => {
+  shuttingDown = true;
   console.log('Shutting down: running steps are stopped; resume them from the board.');
   await slack?.stop().catch(() => undefined);
   await pipeline.shutdown();

@@ -4,7 +4,7 @@
 // only for gates, milestones and alerts. Everything the owner types or taps goes through the same
 // Pipeline calls the board uses. Only the owner's messages and button taps are honoured.
 
-import { App, LogLevel } from '@slack/bolt';
+import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import { and, eq } from 'drizzle-orm';
 import type { Db } from './db/index.js';
 import { schema } from './db/index.js';
@@ -14,6 +14,7 @@ import type { BusMessage, EventBus } from './events.js';
 import type { TaskDocs } from './handoffs.js';
 import type { Pipeline } from './pipeline.js';
 import { listRepos } from './repos.js';
+import { SlackLink } from './slackLink.js';
 import { SlackQuestions } from './slackQuestions.js';
 import { alertText, breakdownSummary, mergeSummary, planSummary, pushSummary, reviewPostSummary, statusBlocks, verificationText, type CheckStage, type Verdict } from './slackFormat.js';
 import { describeTask, duration, esc, listActive, stageOf, type StatusContext } from './slackStatus.js';
@@ -609,7 +610,20 @@ export class SlackBridge {
 
 /** Connects to Slack over Socket Mode and wires the owner's DMs and button taps to the bridge. */
 export async function startSlack(config: SlackConfig, deps: Omit<SlackBridgeDeps, 'ownerId' | 'api'>): Promise<{ bridge: SlackBridge; stop: () => Promise<void> }> {
-  const app = new App({ token: config.botToken, appToken: config.appToken, socketMode: true, logLevel: LogLevel.WARN });
+  // The office reconnects the socket itself (slackLink.ts): the client's own reconnect gives up for good
+  // after a network error. One quick try per connect, so the link's waits apply: left alone, the client
+  // retries a network error for hours, waiting longer each time.
+  const receiver = new SocketModeReceiver({
+    appToken: config.appToken,
+    logLevel: LogLevel.WARN,
+    autoReconnectEnabled: false,
+    installerOptions: { clientOptions: { retryConfig: { retries: 0 } } },
+  });
+  // Initialised below, inside the retry: Bolt keeps the result of its token check, so one that failed
+  // while the network was down must not outlive this attempt.
+  const app = new App({ token: config.botToken, receiver, logLevel: LogLevel.WARN, deferInitialization: true });
+  // Listens from the start, so a drop between Slack's hello and the end of startup isn't missed.
+  const link = new SlackLink(receiver.client);
   const api: SlackApi = {
     postMessage: (args) => app.client.chat.postMessage(args as never),
     updateMessage: (args) => app.client.chat.update(args as never),
@@ -643,9 +657,35 @@ export async function startSlack(config: SlackConfig, deps: Omit<SlackBridgeDeps
       return data;
     },
   };
-  const botUserId = (await app.client.auth.test()).user_id;
-  const bridge = new SlackBridge({ ...deps, ownerId: config.ownerId, channelId: config.channelId, assistantIds: config.assistantIds, botUserId, api });
+  let bridge: SlackBridge | null = null;
+  try {
+    await app.init();
+    const botUserId = (await app.client.auth.test()).user_id;
+    bridge = new SlackBridge({ ...deps, ownerId: config.ownerId, channelId: config.channelId, assistantIds: config.assistantIds, botUserId, api });
+    listen(app, bridge, config);
+    await app.start();
+    await bridge.start();
+  } catch (e) {
+    // The caller tries again from scratch: leave no socket behind (its handlers would still pick up events).
+    link.stop();
+    bridge?.stop();
+    await app.stop().catch(() => undefined);
+    throw e;
+  }
+  link.arm();
+  const started = bridge;
+  return {
+    bridge: started,
+    stop: async () => {
+      link.stop();
+      started.stop();
+      await app.stop();
+    },
+  };
+}
 
+/** Routes Slack messages and button taps to the bridge. */
+function listen(app: App, bridge: SlackBridge, config: SlackConfig): void {
   app.message(async ({ message }) => {
     const m = message as { channel_type?: string; user?: string; channel: string; ts: string; thread_ts?: string; text?: string; subtype?: string; bot_id?: string; files?: SlackFile[] };
     // The owner's DM with the bot, or the one private channel shared with the assistant.
@@ -665,7 +705,4 @@ export async function startSlack(config: SlackConfig, deps: Omit<SlackBridgeDeps
     if (note) await respond({ response_type: 'ephemeral', replace_original: false, text: note }).catch(() => undefined);
   });
 
-  await app.start();
-  await bridge.start();
-  return { bridge, stop: async () => { bridge.stop(); await app.stop(); } };
 }
