@@ -184,6 +184,9 @@ export function ToolOverlay({
         const isSub =
           ch.isSubagent || (!!ch.isResident && subagentCharacters.some((s) => s.id === id));
 
+        // A scenario can keep the labels of passing sessions off the deck.
+        if (officeState.director.hideExtras && !ch.isResident && !isSub && !isSelected) return null;
+
         // Only show for hovered or selected agents (unless always-show is on, or it is working in the embedded view)
         const shown = workingOnly
           ? isSelected || isHovered || ch.isActive
@@ -286,7 +289,7 @@ export function ToolOverlay({
             activityText = activeRow?.status ?? (sub?.label || 'Subtask');
           }
         } else if (ch.isResident) {
-          activityText = 'Idle';
+          activityText = ch.directedTask ?? 'Idle';
         } else {
           activityText = getActivityText(
             id,
@@ -316,7 +319,7 @@ export function ToolOverlay({
         let dotColor: string | null = null;
         if (hasPermission || hasWaiting) {
           dotColor = 'var(--color-status-permission)';
-        } else if (isActive && hasActiveTools) {
+        } else if (isActive && (hasActiveTools || ch.directedTask)) {
           dotColor = 'var(--color-status-active)';
         }
 

@@ -43,6 +43,7 @@ import { CharacterState, Direction, PetState, TILE_SIZE } from '../types.js';
 const RESIDENT_ID_BASE = -1_000_000;
 import { setActiveTheme } from '../theme.js';
 import { createCharacter, updateCharacter } from './characters.js';
+import { Director } from './director.js';
 import { advanceMatrixEffect, startMatrixEffect } from './matrixEffectState.js';
 import { createPet, updatePet } from './petEntity.js';
 import { anchorTile, closestFreeSeat } from './seatPlacement.js';
@@ -68,6 +69,8 @@ export class OfficeState {
   furnitureAnimTimer = 0;
   selectedAgentId: number | null = null;
   cameraFollowId: number | null = null;
+  /** Plays scripted scenarios (demos, recordings). */
+  director: Director = new Director(this);
   hoveredAgentId: number | null = null;
   hoveredTile: { col: number; row: number } | null = null;
   /** Maps "parentId:toolId" → sub-agent character ID (negative) */
@@ -515,10 +518,48 @@ export class OfficeState {
     return this.pickFromSeats(freeSeats, electronicsTiles);
   }
 
+  /** The middle of an area (tile units, fractional), by label (case-insensitive), or null. */
+  areaCentre(label: string): { col: number; row: number } | null {
+    const tiles = this.layout.areaTiles;
+    if (!tiles) return null;
+    const want = label.trim().toLowerCase();
+    let n = 0;
+    let sc = 0;
+    let sr = 0;
+    for (let i = 0; i < tiles.length; i++) {
+      if ((tiles[i] ?? '').toLowerCase() !== want) continue;
+      n++;
+      sc += (i % this.layout.cols) + 0.5;
+      sr += Math.floor(i / this.layout.cols) + 0.5;
+    }
+    return n > 0 ? { col: sc / n, row: sr / n } : null;
+  }
+
+  /** Walkable tiles inside an area (case-insensitive label); every walkable tile when unknown. */
+  walkableIn(label: string): Array<{ col: number; row: number }> {
+    const tiles = this.layout.areaTiles;
+    const want = label.trim().toLowerCase();
+    if (!tiles) return this.walkableTiles;
+    const inArea = this.walkableTiles.filter(
+      (t) => (tiles[t.row * this.layout.cols + t.col] ?? '').toLowerCase() === want,
+    );
+    return inArea.length > 0 ? inArea : this.walkableTiles;
+  }
+
+  /** Closest walkable tile to (col,row) nobody else stands on, or null. */
+  closestFreeWalkable(col: number, row: number, selfId?: number): { col: number; row: number } | null {
+    return this.closestFreeWalkableTile(col, row, selfId);
+  }
+
   /** Closest walkable tile to (col,row) not occupied by another character, or null. */
-  private closestFreeWalkableTile(col: number, row: number): { col: number; row: number } | null {
+  private closestFreeWalkableTile(
+    col: number,
+    row: number,
+    selfId?: number,
+  ): { col: number; row: number } | null {
     const occupied = new Set<string>();
     for (const ch of this.characters.values()) {
+      if (ch.id === selfId) continue;
       occupied.add(`${ch.tileCol},${ch.tileRow}`);
     }
     let best: { col: number; row: number } | null = null;
@@ -1246,6 +1287,7 @@ export class OfficeState {
   }
 
   update(dt: number): void {
+    this.director.update(dt);
     // Furniture animation cycling
     const prevFrame = Math.floor(this.furnitureAnimTimer / FURNITURE_ANIM_INTERVAL_SEC);
     this.furnitureAnimTimer += dt;

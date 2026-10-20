@@ -108,7 +108,7 @@ function chatSpot(
   for (const o of others.values()) if (o.id !== ch.id) standing.add(`${o.tileCol},${o.tileRow}`);
   const spots: Array<{ col: number; row: number; withId: number }> = [];
   for (const o of others.values()) {
-    if (o.id === ch.id || o.isActive || o.state !== CharacterState.IDLE || o.matrixEffect) continue;
+    if (o.id === ch.id || o.isActive || o.directed || o.state !== CharacterState.IDLE || o.matrixEffect) continue;
     for (const [dc, dr] of [
       [1, 0],
       [-1, 0],
@@ -208,6 +208,8 @@ export function updateCharacter(
         }
         break;
       }
+      // Directed by a scenario: stand where the script left you.
+      if (ch.directed) break;
       // Countdown wander timer
       ch.wanderTimer -= dt;
       if (ch.wanderTimer <= 0) {
@@ -275,7 +277,7 @@ export function updateCharacter(
           // Off duty: stand here (facing a chat partner when there is one), never sit back down.
           ch.seatTimer = 0;
           ch.state = CharacterState.IDLE;
-          if (!startChat(ch, others)) {
+          if (ch.directed || !startChat(ch, others)) {
             ch.wanderTimer = randomRange(WANDER_PAUSE_MIN_SEC, WANDER_PAUSE_MAX_SEC);
           }
         }

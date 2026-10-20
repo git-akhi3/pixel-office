@@ -221,6 +221,10 @@ export interface Character {
   wanderCount: number;
   /** Character this one is walking over to (or standing with) for a chat while idle. */
   chatWith?: number | null;
+  /** Under the director's control (a scripted scenario): stands still instead of wandering. */
+  directed?: boolean;
+  /** The task a directed resident is working on, shown as its label. */
+  directedTask?: string | null;
   /** Max wander moves before returning to seat for rest */
   wanderLimit: number;
   /** Whether the agent is actively working */

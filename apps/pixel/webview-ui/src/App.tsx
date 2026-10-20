@@ -20,6 +20,7 @@ import { useEditorActions } from './hooks/useEditorActions.js';
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js';
 import { useExtensionMessages } from './hooks/useExtensionMessages.js';
 import { useIntroTour } from './hooks/useIntroTour.js';
+import { DirectorOverlay } from './office/components/DirectorOverlay.js';
 import { OfficeCanvas } from './office/components/OfficeCanvas.js';
 import { ToolOverlay } from './office/components/ToolOverlay.js';
 import { EditorState } from './office/editor/editorState.js';
@@ -31,6 +32,7 @@ import { migrateLayoutColors } from './office/layout/layoutSerializer.js';
 import { getPetCount } from './office/sprites/petSpriteData.js';
 import { EditTool, type OfficeLayout } from './office/types.js';
 import { isBrowserRuntime, isE2E } from './runtime.js';
+import { MISSION_SCRIPT } from './scenarios/mission.js';
 import { installTestHooks } from './testHooks.js';
 import { transport } from './transport/index.js';
 
@@ -55,9 +57,49 @@ function getOfficeState(): OfficeState {
   return officeStateRef.current;
 }
 
+/** Bundled director scenarios; `?scenario=<name>` plays one once the office is up. */
+const SCENARIOS: Record<string, string> = { mission: MISSION_SCRIPT };
+const scenarioParam = new URLSearchParams(window.location.search).get('scenario');
+
+declare global {
+  interface Window {
+    /** Director mode for demos and recordings: play a script (see office/engine/director.ts). */
+    pixelDirector?: {
+      play: (script: string) => void;
+      playScenario: (name: string) => boolean;
+      stop: () => void;
+      isPlaying: () => boolean;
+      isDone: () => boolean;
+      errors: () => string[];
+      scenarios: string[];
+    };
+  }
+}
+window.pixelDirector = {
+  play: (script) => getOfficeState().director.play(script),
+  playScenario: (name) => {
+    const script = SCENARIOS[name];
+    if (!script) return false;
+    getOfficeState().director.play(script);
+    return true;
+  },
+  stop: () => getOfficeState().director.stop(),
+  isPlaying: () => getOfficeState().director.playing,
+  isDone: () => getOfficeState().director.done,
+  errors: () => getOfficeState().director.errors,
+  scenarios: Object.keys(SCENARIOS),
+};
+
 function App() {
   // Browser runtime (dev or static dist): dispatch mock messages after the
   // useExtensionMessages listener has been registered.
+  // `?scenario=`: the director plays the named scenario; it starts once the layout's residents exist.
+  useEffect(() => {
+    if (scenarioParam && SCENARIOS[scenarioParam]) {
+      getOfficeState().director.play(SCENARIOS[scenarioParam]);
+    }
+  }, []);
+
   useEffect(() => {
     // browserMock is for Vite dev mode only (UI prototyping without a server).
     // In standalone server mode, the server sends all state over WebSocket.
@@ -470,6 +512,12 @@ function App() {
         compact
         labelScale={labelScaleFor(view)}
       />
+      <DirectorOverlay
+        officeState={officeState}
+        containerRef={embedRef}
+        zoom={view.zoom}
+        panRef={embedPanRef}
+      />
     </div>
   );
 
@@ -586,6 +634,13 @@ function App() {
                 panRef={editor.panRef}
                 onCloseAgent={handleCloseAgent}
                 alwaysShowOverlay={alwaysShowOverlay}
+              />
+              <DirectorOverlay
+                officeState={officeState}
+                containerRef={containerRef}
+                zoom={editor.zoom}
+                panRef={editor.panRef}
+                onZoomChange={editor.handleZoomChange}
               />
             </>
           ) : (

@@ -8,3 +8,6 @@ dist/
 !.env.example
 # spike raw output
 apps/control/spike/results-*.json
+
+# director-mode recordings (apps/pixel/scripts/record-scenario.mjs)
+apps/pixel/demo/
