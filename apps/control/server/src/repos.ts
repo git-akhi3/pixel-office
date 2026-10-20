@@ -55,6 +55,22 @@ export const repoInput = z.object({
   testGlobs: z.array(z.string().trim().min(1)).default(['**/*.test.*', '**/*.spec.*', '**/test/**', '**/tests/**', '**/__tests__/**']),
   ghAccount: z.string().trim().nullish(),
   mergeMethod: z.enum(MERGE_METHODS).default('squash'),
+  ship: z
+    .object({
+      staging: z
+        .object({
+          deployCmd: z.string().trim().min(1).max(2000),
+          cwd: z.string().trim().regex(/^(?!\/)(?!.*\.\.)/, 'a folder inside the repo').optional(),
+          project: z.string().trim().regex(/^[\w.-]+$/).optional(),
+          account: z.string().trim().max(200).optional(),
+          confirm: z.boolean().optional(),
+          healthUrls: z.array(z.string().trim().url()).max(10).optional(),
+          checkNotes: z.string().max(4000).optional(),
+          rollbackCmd: z.string().trim().min(1).max(2000).optional(),
+        })
+        .optional(),
+    })
+    .default({}),
   gitAuthor: z
     .string()
     .trim()

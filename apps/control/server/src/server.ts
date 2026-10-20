@@ -270,14 +270,15 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   });
 
   // A live check from the desktop verifier (real APIs, logs, devices): kept as verify.md and posted to the task's thread.
-  // stage: before the push (build), on new commits to the open PR (pr), or once the merge is live (deployed).
+  // stage: before the merge (build), on new commits to the open PR (pr), on staging after the deploy (staging, normally
+  // the office's own verifier), or once the merge is live in production (deployed).
   app.post('/api/tasks/:id/verification', async (req) => {
     const taskId = id.parse((req.params as { id: string }).id);
     const { verdict, report, stage, sha } = z
       .object({
         verdict: z.enum(['pass', 'fail', 'partial']),
         report: z.string().trim().min(1).max(20_000),
-        stage: z.enum(['build', 'pr', 'deployed']).default('build'),
+        stage: z.enum(['build', 'pr', 'staging', 'deployed']).default('build'),
         sha: z.string().regex(/^[0-9a-f]{7,40}$/).optional(),
       })
       .parse(req.body);

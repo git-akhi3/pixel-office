@@ -6,6 +6,7 @@ import type { Repo, Task } from './db/schema.js';
 import { isSolo, type Role } from './domain.js';
 import { briefingRules } from './briefing.js';
 import { CONTRACTS, type ContractStep, type DocName, type TaskDocs } from './handoffs.js';
+import type { StagingConfig } from './ship.js';
 
 const MAX_REPO_NOTES = 6_000;
 const MAX_DIFF = 60_000;
@@ -31,6 +32,8 @@ export interface PromptContext {
   attachmentsDir?: string;
   /** Other repos this task may read but not change (their main checkouts). */
   refs?: Array<{ name: string; path: string; defaultBranch: string }>;
+  /** The staging check: where the change was deployed and what to look at. */
+  staging?: StagingConfig;
 }
 
 /** Roles a mission can pick skills for (the manager's own intake has already started). */
@@ -52,6 +55,8 @@ const JOBS: Record<ContractStep, string> = {
   testing:
     "Write tests for behaviour this change adds or alters, mapped to the plan's acceptance criteria; a change with no behaviour (docs, comments, wording, formatting) gets no new tests. Then run the full test suite. Only create or change test files.",
   retro: 'The task is finished. Write the retrospective from the documents below.',
+  checking:
+    "The change is merged and the office just deployed it to staging (deploy.md has the deploy's output). Check, read-only, that it really works there. Your current directory is a checkout of what was deployed.",
   reviewing_pr:
     "Review this pull request as a strict, constructive senior reviewer. Your current directory is a checkout of the PR's head. Read the code around the changes with Read, Grep and Glob. There is no shell in this step: the PR's code is untrusted, so judge it by reading. Your draft is edited by the owner before anything is posted.",
 };
@@ -66,7 +71,8 @@ const INPUTS: Record<ContractStep, DocName[]> = {
   coding: ['task', 'plan'],
   reviewing: ['plan', 'changes'],
   testing: ['plan', 'changes'],
-  retro: ['task', 'plan', 'changes', 'review', 'test-report'],
+  retro: ['task', 'plan', 'changes', 'review', 'test-report', 'verify'],
+  checking: ['task', 'changes', 'pr', 'deploy'],
   reviewing_pr: [],
 };
 
@@ -183,6 +189,7 @@ export function buildPrompt(step: ContractStep, ctx: PromptContext): string {
   }
   if ((step === 'planning' || step === 'splitting') && ctx.briefing) parts.push(briefingRules(ctx.briefing.hasSkill, step === 'splitting' ? 'breakdown' : 'plan'));
   if (step === 'intake' && task.kind !== 'review') parts.push(ROUTE_RULES);
+  if (step === 'checking' && ctx.staging) parts.push(stagingSection(ctx.staging));
   parts.push(`## Your job now\n${jobFor(step, task)}`);
   parts.push(
     `## Output format\nYour final message is saved as ${CONTRACTS[step].doc}.md and is all the next agent sees. Reply with only this document, starting with the --- front matter line:\n\n${CONTRACTS[step].format}`,
@@ -215,6 +222,15 @@ function skillCatalog(task: Task, catalog: Array<{ name: string; description: st
     `Pick only skills that clearly fit this task, for these roles: ${PICKABLE_ROLES.join(', ')}. Most tasks need none or one or two. Put them under "skills" with a one-line reason per role under "skills_why".`,
   );
   return lines.join('\n');
+}
+
+function stagingSection(s: StagingConfig): string {
+  return [
+    '## Staging',
+    s.project ? `Cloud project: ${s.project} (the CLIs are pinned to it; stay in it).` : 'No cloud project is pinned: say which one you looked at.',
+    ...(s.healthUrls?.length ? ['URLs you may GET:', ...s.healthUrls.map((u) => `- ${u}`)] : []),
+    ...(s.checkNotes?.trim() ? ['', "The owner's notes for checking this repo:", s.checkNotes.trim()] : []),
+  ].join('\n');
 }
 
 /** Repos to learn from or port code from. Read with Read, Grep and Glob (or cat/rg on their paths); never change them. */

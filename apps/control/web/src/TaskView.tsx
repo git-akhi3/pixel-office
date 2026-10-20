@@ -8,7 +8,7 @@ import { DiffView, Doc, duration, formatTokens, LANE_HINT, StageTrack, StatusBad
 
 type Tab = 'docs' | 'diff' | 'activity' | 'runs';
 
-const TERMINAL = ['done', 'discarded', 'failed', 'pushing', 'pr_open', 'merging', 'retro'];
+const TERMINAL = ['done', 'discarded', 'failed', 'pushing', 'pr_open', 'merging', 'awaiting_deploy_approval', 'deploying', 'checking', 'check_failed', 'retro'];
 
 function Steer({ taskId, running, onError, onReplanned }: { taskId: number; running: boolean; onError: (e: unknown) => void; onReplanned: () => void }) {
   const [text, setText] = useState('');
@@ -133,7 +133,7 @@ export function TaskView({ id, lastEvent, onError }: { id: number; lastEvent: Of
 
   const canStop = !['done', 'discarded', 'failed', 'stopped'].includes(task.status);
   const canResume = ['stopped', 'paused', 'blocked'].includes(task.status);
-  const canDone = ['pr_open', 'awaiting_merge_approval', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status);
+  const canDone = ['pr_open', 'awaiting_merge_approval', 'awaiting_deploy_approval', 'check_failed', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status);
 
   return (
     <div className="task-view">
@@ -369,7 +369,11 @@ function GateBar({ gate, prUrl, onDone, onError }: { gate: Gate; prUrl?: string 
           ? 'Post this review to GitHub?'
           : gate.kind === 'merge'
             ? 'The PR is open. Merge it?'
-            : 'Push the branch and open the PR?';
+            : gate.kind === 'deploy'
+              ? 'Merged. Deploy it to staging now?'
+              : gate.kind === 'rollback'
+                ? 'The staging check failed. Roll staging back?'
+                : 'Push the branch and open the PR?';
   const approveLabel =
     gate.kind === 'plan'
       ? 'Approve plan'
@@ -379,7 +383,11 @@ function GateBar({ gate, prUrl, onDone, onError }: { gate: Gate; prUrl?: string 
           ? 'Post review'
           : gate.kind === 'merge'
             ? 'Merge'
-            : 'Push & open PR';
+            : gate.kind === 'deploy'
+              ? 'Deploy now'
+              : gate.kind === 'rollback'
+                ? 'Roll back'
+                : 'Push & open PR';
   const rejectHint =
     gate.kind === 'plan' || gate.kind === 'breakdown'
       ? 'What should the architect change?'
@@ -430,8 +438,8 @@ function GateBar({ gate, prUrl, onDone, onError }: { gate: Gate; prUrl?: string 
             <button onClick={() => setRejecting(false)}>Cancel</button>
           </>
         ) : (
-          <button disabled={busy} onClick={() => setRejecting(true)}>
-            {gate.kind === 'merge' ? 'Changes needed' : 'Reject with comment'}
+          <button disabled={busy} onClick={() => (gate.kind === 'deploy' || gate.kind === 'rollback' ? decide('reject') : setRejecting(true))}>
+            {gate.kind === 'merge' ? 'Changes needed' : gate.kind === 'deploy' ? 'Not now' : gate.kind === 'rollback' ? 'Keep it' : 'Reject with comment'}
           </button>
         )}
       </div>

@@ -78,13 +78,24 @@ const OWNER_ONLY = new Set(['approve', 'reject', 'discard', 'done', 'replan', 's
 type Sender = 'owner' | 'assistant';
 
 /** What a decided gate was about, for the line that replaces its buttons. */
-const DECIDED_WHAT: Record<string, string> = { plan: 'the plan', breakdown: 'the milestones', push: 'the push', merge: 'the merge', review_post: 'the review', command: 'the command' };
+const DECIDED_WHAT: Record<string, string> = { plan: 'the plan', breakdown: 'the milestones', push: 'the push', merge: 'the merge', deploy: 'the staging deploy', rollback: 'the rollback', review_post: 'the review', command: 'the command' };
+
+/** Button labels per gate kind (approve, reject). Deploy and rollback decide on the tap; the others ask why. */
+const GATE_BUTTONS: Partial<Record<string, [string, string]>> = {
+  review_post: ['Post review', 'Reject…'],
+  merge: ['Merge', 'Changes needed…'],
+  deploy: ['Deploy now', 'Not now'],
+  rollback: ['Roll back', 'Keep it'],
+};
+const DECIDE_ON_TAP = new Set(['deploy', 'rollback']);
 
 const GATE_HEADING = {
   plan: 'Plan ready for approval',
   breakdown: 'Milestones ready for approval (each becomes its own task)',
   push: 'Ready to push and open the PR',
   merge: 'PR is open: merge it?',
+  deploy: 'Merged: deploy to staging now?',
+  rollback: 'Staging check failed: roll staging back?',
   review_post: 'Draft review ready to post',
 } as const;
 
@@ -358,7 +369,7 @@ export class SlackBridge {
     const decision = m[2] as GateDecision;
     const gate = this.deps.db.select().from(schema.gates).where(eq(schema.gates.id, gateId)).get();
     if (!gate) return 'That gate no longer exists.';
-    if (decision === 'reject') {
+    if (decision === 'reject' && !DECIDE_ON_TAP.has(gate.kind)) {
       const task = this.deps.pipeline.getTask(gate.taskId);
       await this.say(`To reject, reply in the thread with \`reject: <what to change>\`.`, task);
       return null;
@@ -414,6 +425,12 @@ export class SlackBridge {
         return void (await this.say(`:arrows_counterclockwise: PR updated with the changes: ${String(event.payload.url)}`, task));
       case 'pr_merged':
         return void (await this.say(`:tada: PR merged${event.payload.by === 'github' ? ' on GitHub' : ''}: ${String(event.payload.url)}`, task));
+      case 'deploy_started':
+        return void (await this.say(`:rocket: Merged. Deploying to staging${event.payload.project ? ` (${esc(String(event.payload.project))})` : ''}…`, task));
+      case 'deployed':
+        return void (await this.say(':white_check_mark: Deployed to staging. The verifier is checking it now.', task));
+      case 'rolled_back':
+        return void (await this.say(':leftwards_arrow_with_hook: Staging rolled back to the previous version.', task));
       case 'review_added':
         return void (await this.say(`:mag: The change is big (${esc(String(event.payload.reason ?? ''))}), so the reviewer checks it before the PR opens.`, task));
       case 'verified':
@@ -470,8 +487,8 @@ export class SlackBridge {
     const buttons = isCommand
       ? [this.button(g.gateId, 'allow_once', 'Allow once', 'primary'), this.button(g.gateId, 'allow_always', 'Always for this repo'), this.button(g.gateId, 'deny', 'Deny', 'danger')]
       : [
-          this.button(g.gateId, 'approve', g.kind === 'review_post' ? 'Post review' : g.kind === 'merge' ? 'Merge' : 'Approve', 'primary'),
-          this.button(g.gateId, 'reject', g.kind === 'merge' ? 'Changes needed…' : 'Reject…', 'danger'),
+          this.button(g.gateId, 'approve', GATE_BUTTONS[g.kind]?.[0] ?? 'Approve', 'primary'),
+          this.button(g.gateId, 'reject', GATE_BUTTONS[g.kind]?.[1] ?? 'Reject…', 'danger'),
         ];
     // A short summary with the buttons right under it; the full document is one tap away on the board.
     const blocks = [
@@ -496,6 +513,10 @@ export class SlackBridge {
         return reviewPostSummary(docs.latest(task.id, 'pr-review') ?? '');
       case 'push':
         return pushSummary({ changes: docs.latest(task.id, 'changes'), review: docs.latest(task.id, 'review'), testReport: docs.latest(task.id, 'test-report') });
+      case 'deploy':
+        return `PR: ${task.prUrl ?? 'merged'}. Staging serves real users, so the deploy waits for you.`;
+      case 'rollback':
+        return esc(clip(this.deps.docs.latest(task.id, 'verify')?.replace(/^---[\s\S]*?---\s*/, '') ?? '', 1500));
       case 'merge':
         return mergeSummary(task.prUrl, { changes: docs.latest(task.id, 'changes'), review: docs.latest(task.id, 'review'), testReport: docs.latest(task.id, 'test-report') });
       default:

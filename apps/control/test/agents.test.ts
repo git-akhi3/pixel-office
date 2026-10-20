@@ -11,7 +11,8 @@ const agent = (front: string, body = 'You are a test agent.') => `---\n${front}\
 describe('agent definitions', () => {
   it('loads every role from apps/control/agents', () => {
     const agents = loadAgents(agentsDir, skillsDir);
-    expect(Object.keys(agents).sort()).toEqual(['all-rounder', 'architect', 'coder', 'debugger', 'manager', 'researcher', 'reviewer', 'tester', 'ui-coder']);
+    expect(Object.keys(agents).sort()).toEqual(['all-rounder', 'architect', 'coder', 'debugger', 'manager', 'researcher', 'reviewer', 'tester', 'ui-coder', 'verifier']);
+    expect(agents.verifier).toMatchObject({ model: 'claude-sonnet-5-5', write: 'none' });
     expect(agents.architect.model).toBe('claude-opus-5-5');
     expect(agents['all-rounder']).toMatchObject({ model: 'claude-opus-5-5', effort: 'high', write: 'all' });
     expect(agents['all-rounder'].tools).toEqual(expect.arrayContaining(['Bash', 'Edit', 'WebSearch']));

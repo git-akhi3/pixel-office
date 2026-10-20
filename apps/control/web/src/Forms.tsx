@@ -14,6 +14,7 @@ const EMPTY: Partial<Repo> = {
   lintCmd: '',
   ghAccount: '',
   mergeMethod: 'squash',
+  ship: {},
   gitAuthor: '',
   allowlist: [],
 };
@@ -208,6 +209,7 @@ export function Repos({
             <option value="rebase">Rebase and merge</option>
           </select>
         </label>
+        <StagingFields value={editing.ship?.staging} onChange={(staging) => set('ship', staging ? { staging } : {})} />
         <label>
           Protected branches (one per line; main, master and the default branch are always protected)
           <textarea
@@ -456,5 +458,54 @@ export function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
         <p className="hint">Shown after the first agent run.</p>
       )}
     </div>
+  );
+}
+
+type Staging = NonNullable<Repo['ship']['staging']>;
+
+/** Staging after the merge: the deploy the office runs with your logins, and what the verifier checks. */
+function StagingFields({ value, onChange }: { value: Staging | undefined; onChange: (v: Staging | undefined) => void }) {
+  const v: Staging = value ?? { deployCmd: '' };
+  const set = (patch: Partial<Staging>) => {
+    const next = { ...v, ...patch };
+    onChange(next.deployCmd.trim() ? next : undefined);
+  };
+  return (
+    <fieldset className="staging">
+      <legend>Staging (after you merge)</legend>
+      <label>
+        Deploy command (run by the office in a fresh checkout of the merged branch, with your CLI logins; empty: merge only)
+        <input value={v.deployCmd} onChange={(e) => set({ deployCmd: e.target.value })} placeholder="npm run deploy:staging" />
+      </label>
+      <div className="grid2">
+        <label>
+          Run it in (folder in the repo)
+          <input value={v.cwd ?? ''} onChange={(e) => set({ cwd: e.target.value || undefined })} placeholder="point-of-sale/wati-relay" />
+        </label>
+        <label>
+          Cloud project (deploy and check are pinned to it)
+          <input value={v.project ?? ''} onChange={(e) => set({ project: e.target.value || undefined })} placeholder="pos-staging-0" />
+        </label>
+      </div>
+      <label className="switch">
+        <input type="checkbox" checked={!!v.confirm} onChange={(e) => set({ confirm: e.target.checked || undefined })} />
+        <span>
+          <strong>Ask before deploying</strong>
+          <span className="hint">For a staging that serves real users: merging waits for a second tap, "Deploy now".</span>
+        </span>
+      </label>
+      <label>
+        URLs the verifier may GET (one per line)
+        <textarea rows={2} value={(v.healthUrls ?? []).join('\n')} onChange={(e) => set({ healthUrls: lines(e.target.value) })} />
+      </label>
+      <label>
+        Notes for the verifier (log queries, what must hold, what it must never do)
+        <textarea rows={3} value={v.checkNotes ?? ''} onChange={(e) => set({ checkNotes: e.target.value || undefined })} />
+      </label>
+      <label>
+        Rollback command (offered as a button when the check fails)
+        <input value={v.rollbackCmd ?? ''} onChange={(e) => set({ rollbackCmd: e.target.value || undefined })} />
+      </label>
+    </fieldset>
   );
 }

@@ -5,7 +5,7 @@ export type TaskStatus = string;
 export interface Gate {
   id: number;
   taskId: number;
-  kind: 'plan' | 'push' | 'merge' | 'command' | 'review_post' | 'question' | 'breakdown';
+  kind: 'plan' | 'push' | 'merge' | 'deploy' | 'rollback' | 'command' | 'review_post' | 'question' | 'breakdown';
   status: 'pending' | 'approved' | 'rejected' | 'cancelled';
   subject: string | null;
   decision: string | null;
@@ -148,6 +148,19 @@ export interface Repo {
   ghAccount: string | null;
   /** How the office merges this repo's PRs once you approve them. */
   mergeMethod: 'squash' | 'merge' | 'rebase';
+  /** Deploying to staging after the merge, and checking it. No staging: the office only merges. */
+  ship: {
+    staging?: {
+      deployCmd: string;
+      cwd?: string;
+      project?: string;
+      account?: string;
+      confirm?: boolean;
+      healthUrls?: string[];
+      checkNotes?: string;
+      rollbackCmd?: string;
+    };
+  };
   gitAuthor: string | null;
   allowlist: string[];
   effectiveAllowlist: string[];

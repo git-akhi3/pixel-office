@@ -21,6 +21,10 @@ export const STATUS_LABELS: Record<string, string> = {
   pr_open: 'Draft PR open',
   awaiting_merge_approval: 'PR ready to merge',
   merging: 'Merging',
+  awaiting_deploy_approval: 'Merged: deploy to staging?',
+  deploying: 'Deploying to staging',
+  checking: 'Verifier checking staging',
+  check_failed: 'Staging check failed',
   retro: 'Writing retrospective',
   reviewing_pr: 'Reviewer reading the PR',
   awaiting_review_post: 'Draft review ready',
@@ -38,8 +42,8 @@ export const COLUMNS = ['Queued', 'Planning', 'Awaiting you', 'Building', 'Revie
 export type Tone = 'attention' | 'active' | 'done' | 'muted' | 'danger';
 
 export function statusTone(status: string): Tone {
-  if (['awaiting_answer', 'awaiting_plan_approval', 'awaiting_breakdown_approval', 'awaiting_push_approval', 'awaiting_merge_approval', 'awaiting_review_post'].includes(status)) return 'attention';
-  if (['blocked', 'failed'].includes(status)) return 'danger';
+  if (['awaiting_answer', 'awaiting_plan_approval', 'awaiting_breakdown_approval', 'awaiting_push_approval', 'awaiting_merge_approval', 'awaiting_deploy_approval', 'awaiting_review_post'].includes(status)) return 'attention';
+  if (['blocked', 'failed', 'check_failed'].includes(status)) return 'danger';
   if (['paused', 'stopped', 'discarded', 'queued'].includes(status)) return 'muted';
   if (['done', 'pr_open'].includes(status)) return 'done';
   return 'active';
@@ -57,6 +61,7 @@ const STATUS_ROLES: Record<string, string> = {
   testing: 'tester',
   retro: 'manager',
   reviewing_pr: 'reviewer',
+  checking: 'verifier',
 };
 
 /** Lanes the all-rounder builds alone (trivial and small are from before solo). */
@@ -101,6 +106,10 @@ const BUILD_POSITION: Record<string, number> = {
   pushing: 5,
   awaiting_merge_approval: 5,
   merging: 5,
+  awaiting_deploy_approval: 5,
+  deploying: 5,
+  checking: 5,
+  check_failed: 5,
   pr_open: 6,
   retro: 6,
   done: 6,

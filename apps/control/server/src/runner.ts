@@ -17,6 +17,8 @@ export interface RunRequest {
   onEvent(type: string, payload: Record<string, unknown>): void;
   /** Called for commands not on the allow-list. Resolves when I decide on the board. */
   askPermission(subject: string, unmatched: string[], reason: string): Promise<PermissionAnswer>;
+  /** Extra environment for this session (the staging check's pinned cloud project). */
+  env?: Record<string, string>;
   /** Extra MCP servers for this session (the Graphify code graph for some roles). */
   mcpServers?: Record<string, { type: 'stdio'; command: string; args: string[] }>;
   /** Checks the final message against its handoff contract. A returned message is sent back once for a fix. */
@@ -186,7 +188,7 @@ export class SdkRunner implements AgentRunner {
         permissionMode: 'default',
         maxTurns: req.agent.maxTurns,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptFor(req.agent) },
-        env: agentEnv(this.token),
+        env: { ...agentEnv(this.token), ...req.env },
         ...(req.mcpServers ? { mcpServers: req.mcpServers } : {}),
         ...(resume ? { resume: resume.sessionId } : {}),
         abortController: abort,

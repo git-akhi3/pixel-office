@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 
-export type DocName = 'task' | 'diagnosis' | 'research' | 'brief' | 'plan' | 'breakdown' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro' | 'pr-review' | 'verify';
+export type DocName = 'task' | 'diagnosis' | 'research' | 'brief' | 'plan' | 'breakdown' | 'changes' | 'blocked' | 'pr' | 'review' | 'test-report' | 'retro' | 'pr-review' | 'verify' | 'deploy';
 
 export interface Contract {
   doc: DocName;
@@ -245,6 +245,23 @@ verdict: approve | comment | request_changes   # your recommendation; the owner 
 
 Rules: use paths and NEW-side line numbers from the diff. Comment only on lines the PR adds or changes,
 or on context lines inside its hunks. No praise-only comments. No findings? Write "- none".`,
+  },
+  checking: {
+    doc: 'verify',
+    maxLines: 60,
+    schema: z.object({ verdict: z.enum(['pass', 'fail', 'partial']) }),
+    format: `---
+verdict: pass | fail | partial
+stage: staging
+---
+## Checked
+- <what you ran or opened>: <what you saw>
+
+## Not checked
+- <what you couldn't check, and why; what the owner should check> (or "- nothing")
+
+## Problems
+- <what doesn't work, how to reproduce it> (or "- none")`,
   },
   retro: {
     doc: 'retro',

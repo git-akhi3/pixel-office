@@ -19,6 +19,7 @@
 
 import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { isWrapperSkill, listSkills, withRepoSkills, withSkills, type AgentDef } from './agents.js';
 import type { Graphs } from './graph.js';
 import { proposalFromRetro, type Knowledge } from './knowledge.js';
@@ -31,14 +32,15 @@ import { AGENT_STEPS, TERMINAL_STATUSES, isAgentStep, isSolo, stepRole, type Gat
 import type { EventBus } from './events.js';
 import type { PrInfo, Publisher } from './github.js';
 import { crucialCommand, matchesAnyGlob, realPath } from './guard.js';
-import { CONTRACTS, extractPr, normalizeOutput, parseMilestones, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
+import { CONTRACTS, extractPr, normalizeOutput, parseDoc, parseMilestones, readMeta, validateDoc, type ContractStep, type TaskDocs } from './handoffs.js';
 import { laneAtIntake, PICKABLE_LANES, reviewReason, type LanePick } from './lanes.js';
 import { buildPrompt, PICKABLE_ROLES, resumePrompt } from './prompts.js';
 import { addToAllowlist, effectiveAllowlist, getRepo, listRepos } from './repos.js';
 import { emptyUsage, type AgentRunner, type PermissionAnswer, type RunOutcome, type RunUsage } from './runner.js';
 import { commentableLines, formatComment, originSlug, parsePrUrl, parseReviewDoc, prSlug, reviewBody, splitComments } from './reviews.js';
-import { changedFiles, commitAll, createReviewWorktree, createWorktree, diff, diffStat, removeWorktree } from './worktree.js';
-import { git } from './util/exec.js';
+import { changedFiles, commitAll, createDeployWorktree, createReviewWorktree, createWorktree, diff, diffStat, removeWorktree } from './worktree.js';
+import { git, run } from './util/exec.js';
+import { deployEnv, expiredLogin, pinnedEnv, wrongProject } from './ship.js';
 
 /** One spelling per PR, so manual and auto-picked reviews of the same PR match. */
 const canonicalPrUrl = (slug: string, number: number) => `https://github.com/${slug.toLowerCase()}/pull/${number}`;
@@ -77,7 +79,15 @@ export interface PipelineDeps {
   briefingWaitMs?: number;
   /** Files uploaded for missions, claimed when a task is created. */
   uploads?: Uploads;
+  /** Runs the staging deploy and rollback commands (injectable for tests). */
+  shell?: (command: string, opts: { cwd: string; env: NodeJS.ProcessEnv }) => Promise<{ code: number; output: string }>;
 }
+
+const DEPLOY_TIMEOUT_MS = 30 * 60_000;
+const runShell: NonNullable<PipelineDeps['shell']> = async (command, { cwd, env }) => {
+  const r = await run('/bin/sh', ['-c', command], { cwd, env, timeoutMs: DEPLOY_TIMEOUT_MS });
+  return { code: r.code, output: `${r.stdout}${r.stderr ? `\n${r.stderr}` : ''}`.trim() };
+};
 
 export interface NewTask {
   repoId: number;
@@ -259,7 +269,7 @@ export class Pipeline {
       .select()
       .from(schema.tasks)
       .all()
-      .filter((t) => (isAgentStep(t.status) && t.status !== 'queued') || ['pushing', 'merging', 'posting_review'].includes(t.status));
+      .filter((t) => (isAgentStep(t.status) && t.status !== 'queued') || ['pushing', 'merging', 'deploying', 'posting_review'].includes(t.status));
     for (const t of active) {
       if ((t.status === 'planning' || t.status === 'splitting') && this.openRoundGate(t.id)) {
         // The architect was waiting for my answers: keep the questions, wait for me without a session.
@@ -504,6 +514,7 @@ export class Pipeline {
     if (feedback) this.consumed.set(task.id, feedback);
     const mcpServers = graphs.mcpFor(repo, role);
     const prompt = buildPrompt(step, {
+      ...(step === 'checking' && repo.ship.staging ? { staging: repo.ship.staging } : {}),
       knowledge: knowledge.read(repo.id),
       graph: !!mcpServers,
       task,
@@ -545,7 +556,9 @@ export class Pipeline {
         testGlobs: repo.testGlobs,
         allowlist: step === 'reviewing_pr' ? [] : effectiveAllowlist(repo),
         ...(readRoots.length ? { readRoots } : {}),
+        ...(step === 'checking' ? { lookOnly: true } : {}),
       },
+      ...(step === 'checking' && repo.ship.staging ? { env: pinnedEnv(repo.ship.staging) } : {}),
       signal: abort.signal,
       onEvent: (type, payload) => bus.emit(task.id, type, payload, run.id),
       askPermission: (subject, unmatched) => this.requestPermission(task.id, subject, unmatched),
@@ -818,6 +831,20 @@ export class Pipeline {
         await this.openPr(task);
         return;
       }
+      case 'checking': {
+        const { verdict } = readMeta<{ verdict: 'pass' | 'fail' | 'partial' }>('checking', text);
+        const report = text.replace(/^---[\s\S]*?---\s*/, '').trim();
+        const sha = parseDoc(this.deps.docs.latest(task.id, 'deploy') ?? '').meta.sha;
+        this.deps.bus.emit(task.id, 'verified', { verdict, report, stage: 'staging', ...(typeof sha === 'string' ? { sha } : {}) });
+        if (verdict === 'fail') {
+          this.checkFailed(task, report);
+          return;
+        }
+        if (verdict === 'partial') this.alert(task, 'check_partial', 'The staging check could not check everything: read verify.md for what to check yourself.');
+        this.update(task.id, { ...this.finished(task), statusNote: null });
+        await this.dropWorktree(this.getTask(task.id));
+        return;
+      }
       case 'retro': {
         this.update(task.id, { status: 'done', doneAt: this.now(), statusNote: null });
         const note = proposalFromRetro(text);
@@ -1043,7 +1070,104 @@ export class Pipeline {
     }
     if (this.getTask(task.id).status !== 'merging') return;
     this.deps.bus.emit(task.id, 'pr_merged', { url: task.prUrl, by: 'office' });
-    this.update(task.id, { ...this.finished(task), statusNote: null });
+    await this.afterMerge(this.getTask(task.id));
+  }
+
+  /**
+   * Merged: deploy to staging when the repo has a staging deploy (after my "Deploy now" when its staging
+   * serves real users), else on to the retrospective.
+   */
+  private async afterMerge(task: Task): Promise<void> {
+    await this.dropWorktree(task);
+    task = this.getTask(task.id);
+    const staging = getRepo(this.deps.db, task.repoId).ship.staging;
+    if (!staging?.deployCmd) {
+      this.update(task.id, { ...this.finished(task), statusNote: null, resumeStatus: null });
+      return;
+    }
+    if (staging.confirm) {
+      this.update(task.id, { status: 'awaiting_deploy_approval', statusNote: null, resumeStatus: null });
+      this.openGate(task.id, 'deploy');
+      return;
+    }
+    await this.deploy(task);
+  }
+
+  /**
+   * The staging deploy: the repo's own deploy command, run by the office (not an agent) in a fresh
+   * checkout of the merged default branch, with my CLI logins pinned to the repo's project. Then the
+   * verifier checks staging. A failure blocks the task with the reason (an expired login says which
+   * command signs in again); resuming deploys again.
+   */
+  private async deploy(task: Task): Promise<void> {
+    task = this.update(task.id, { status: 'deploying', statusNote: null, resumeStatus: null });
+    const repo = getRepo(this.deps.db, task.repoId);
+    const staging = repo.ship.staging!;
+    let result: { code: number; output: string };
+    let sha: string;
+    try {
+      const why = wrongProject(staging.deployCmd, staging);
+      if (why) throw new Error(`refusing to deploy: ${why}.`);
+      const wt = await createDeployWorktree(repo, this.deps.config.worktreesDir, task.id);
+      sha = wt.sha;
+      task = this.update(task.id, { worktreePath: wt.path });
+      this.deps.bus.emit(task.id, 'deploy_started', { sha, project: staging.project ?? null });
+      result = await (this.deps.shell ?? runShell)(staging.deployCmd, { cwd: join(wt.path, staging.cwd ?? ''), env: deployEnv(staging) });
+    } catch (e) {
+      if (this.getTask(task.id).status === 'deploying') this.block(task, `The staging deploy failed: ${e instanceof Error ? e.message : String(e)}`, 'deploying');
+      return;
+    }
+    const tail = result.output.split('\n').slice(-60).join('\n');
+    this.deps.docs.save(task.id, 'deploy', `---\nexit: ${result.code}\nsha: ${sha}\n${staging.project ? `project: ${staging.project}\n` : ''}---\n\`\`\`\n${tail}\n\`\`\`\n`);
+    if (this.getTask(task.id).status !== 'deploying') return;
+    if (result.code !== 0) {
+      const login = expiredLogin(result.output);
+      const last = result.output.split('\n').filter(Boolean).slice(-3).join(' / ').slice(0, 400);
+      this.deps.bus.emit(task.id, 'deploy_failed', { code: result.code, login: login?.cli ?? null });
+      this.block(
+        task,
+        login
+          ? `The staging deploy failed: your ${login.cli} login has expired. Run \`${login.login}\` on the Mac, then resume.`
+          : `The staging deploy failed (exit ${result.code}): ${last}`,
+        'deploying',
+      );
+      return;
+    }
+    this.deps.bus.emit(task.id, 'deployed', { sha, project: staging.project ?? null });
+    this.update(task.id, { status: 'checking' });
+    void this.tick();
+  }
+
+  /** A failed staging check: a fix task goes on it, and the repo's rollback is offered (or the task finishes). */
+  private checkFailed(task: Task, report: string): void {
+    const repo = getRepo(this.deps.db, task.repoId);
+    const fix = this.createTask({
+      repoId: task.repoId,
+      kind: 'bug',
+      lane: 'solo',
+      title: `Fix staging: ${task.title}`.slice(0, 80),
+      input: `The staging check after #${task.id} (${task.prUrl ?? task.title}) failed. Fix what it found.\n\n${report}`,
+      refRepos: task.refRepos,
+    });
+    this.alert(task, 'check_failed', `The staging check failed. Fix task #${fix.id} is on it.`);
+    if (repo.ship.staging?.rollbackCmd) {
+      this.update(task.id, { status: 'check_failed', statusNote: `The staging check failed; fix task #${fix.id} is on it. Roll back staging meanwhile?` });
+      this.openGate(task.id, 'rollback');
+      return;
+    }
+    this.update(task.id, { ...this.finished(task), statusNote: `The staging check failed; fix task #${fix.id} is on it.` });
+  }
+
+  /** Puts staging's previous version back with the repo's rollback command. */
+  private async rollBack(task: Task): Promise<void> {
+    const repo = getRepo(this.deps.db, task.repoId);
+    const staging = repo.ship.staging!;
+    const cwd = task.worktreePath && existsSync(task.worktreePath) ? join(task.worktreePath, staging.cwd ?? '') : repo.path;
+    const why = wrongProject(staging.rollbackCmd!, staging);
+    const result = why ? { code: 1, output: `refusing to roll back: ${why}` } : await (this.deps.shell ?? runShell)(staging.rollbackCmd!, { cwd, env: deployEnv(staging) });
+    if (result.code === 0) this.deps.bus.emit(task.id, 'rolled_back', {});
+    else this.alert(task, 'rollback_failed', `Rolling back failed (exit ${result.code}): ${result.output.split('\n').slice(-3).join(' / ').slice(0, 400)}`);
+    this.update(task.id, { ...this.finished(task), statusNote: result.code === 0 ? 'Staging was rolled back.' : 'Rolling back failed: check staging.' });
     await this.dropWorktree(this.getTask(task.id));
   }
 
@@ -1094,9 +1218,17 @@ export class Pipeline {
     }
 
     if (!['approve', 'reject'].includes(decision)) throw new Error('Use approve or reject.');
-    if (decision === 'reject' && !comment?.trim()) throw new Error('Say what to change when rejecting.');
+    // "Not now" and "Keep it" need no reason; sending work back does.
+    if (decision === 'reject' && !comment?.trim() && gate.kind !== 'deploy' && gate.kind !== 'rollback') throw new Error('Say what to change when rejecting.');
     const expected = (
-      { plan: 'awaiting_plan_approval', push: 'awaiting_push_approval', merge: 'awaiting_merge_approval', breakdown: 'awaiting_breakdown_approval' } as Partial<Record<Gate['kind'], TaskStatus>>
+      {
+        plan: 'awaiting_plan_approval',
+        push: 'awaiting_push_approval',
+        merge: 'awaiting_merge_approval',
+        deploy: 'awaiting_deploy_approval',
+        rollback: 'check_failed',
+        breakdown: 'awaiting_breakdown_approval',
+      } as Partial<Record<Gate['kind'], TaskStatus>>
     )[gate.kind] ?? 'awaiting_review_post';
     if (task.status !== expected) throw new Error(`The task is ${task.status}, not ${expected}.`);
     close(decision === 'approve' ? 'approved' : 'rejected');
@@ -1110,6 +1242,15 @@ export class Pipeline {
       else this.update(task.id, { status: 'reviewing_pr', feedback: `The owner wants the draft review redone:\n\n${comment}\n\n### Previous draft\n${this.deps.docs.latest(task.id, 'pr-review') ?? ''}` });
     } else if (gate.kind === 'plan') {
       task = this.update(task.id, decision === 'approve' ? { status: 'coding' } : { status: 'planning', feedback: `The owner rejected the plan:\n\n${comment}\n\n### Rejected plan\n${this.deps.docs.latest(task.id, 'plan') ?? ''}` });
+    } else if (gate.kind === 'deploy') {
+      if (decision === 'approve') await this.deploy(task);
+      else this.update(task.id, { ...this.finished(task), statusNote: 'Merged, not deployed to staging.' });
+    } else if (gate.kind === 'rollback') {
+      if (decision === 'approve') await this.rollBack(task);
+      else {
+        this.update(task.id, { ...this.finished(task), statusNote: 'The staging check failed; staging was kept as it is.' });
+        await this.dropWorktree(this.getTask(task.id));
+      }
     } else if (gate.kind === 'merge') {
       if (decision === 'approve') await this.merge(task);
       else this.update(task.id, { status: 'coding', feedback: `The owner reviewed the PR and wants changes before it is merged:\n\n${comment}` });
@@ -1426,7 +1567,9 @@ export class Pipeline {
   /** I ask for a new plan: stop whatever runs and send the task back to the architect. Doesn't count toward the re-plan limit. */
   replanNow(taskId: number, reason: string): Task {
     const task = this.getTask(taskId);
-    if ([...TERMINAL_STATUSES, 'pushing', 'pr_open', 'merging', 'retro'].includes(task.status)) throw new Error(`The task is ${task.status}; it can't be re-planned.`);
+    if ([...TERMINAL_STATUSES, 'pushing', 'pr_open', 'merging', 'awaiting_deploy_approval', 'deploying', 'checking', 'check_failed', 'retro'].includes(task.status)) {
+      throw new Error(`The task is ${task.status}; it can't be re-planned.`);
+    }
     if (task.status === 'splitting' || task.status === 'awaiting_breakdown_approval') throw new Error('This is an epic: reject its milestones with a comment instead.');
     this.cancelGates(taskId);
     const previous = this.deps.docs.latest(taskId, 'plan');
@@ -1478,6 +1621,14 @@ export class Pipeline {
           await this.openPr(task);
           return this.getTask(taskId);
         }
+        if (target === 'deploying') {
+          // Staging that serves real users only deploys on my own tap (resume is open to the Slack assistant).
+          if (getRepo(this.deps.db, task.repoId).ship.staging?.confirm) {
+            this.update(taskId, { status: 'awaiting_deploy_approval', resumeStatus: null, statusNote: null });
+            this.openGate(taskId, 'deploy');
+          } else await this.deploy(task);
+          return this.getTask(taskId);
+        }
         if (target === 'merging') {
           // An interrupted merge isn't retried blind (resume is open to the Slack assistant too): the
           // PR waits for my OK again, unless GitHub shows the merge went through.
@@ -1512,7 +1663,7 @@ export class Pipeline {
         return discarded;
       }
       case 'done': {
-        if (!['pr_open', 'awaiting_merge_approval', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status)) {
+        if (!['pr_open', 'awaiting_merge_approval', 'awaiting_deploy_approval', 'check_failed', 'blocked', 'stopped', 'awaiting_push_approval', 'awaiting_review_post'].includes(task.status)) {
           throw new Error(`The task is ${task.status}; it cannot be marked done.`);
         }
         this.cancelGates(taskId);
@@ -1747,8 +1898,13 @@ export class Pipeline {
   private async mergedOnGitHub(t: Task): Promise<void> {
     this.cancelGates(t.id);
     this.deps.bus.emit(t.id, 'pr_merged', { url: t.prUrl, by: 'github' });
-    this.update(t.id, { ...this.finished(t), statusNote: null, resumeStatus: null });
-    await this.dropWorktree(this.getTask(t.id));
+    // A draft PR from before the merge gate just finishes; anything newer ships as if merged here.
+    if (t.status === 'pr_open') {
+      this.update(t.id, { ...this.finished(t), statusNote: null, resumeStatus: null });
+      await this.dropWorktree(this.getTask(t.id));
+      return;
+    }
+    await this.afterMerge(this.getTask(t.id));
   }
 
   private async dropWorktree(t: Task): Promise<void> {

@@ -1,6 +1,6 @@
 // Shared vocabulary for tasks, roles and gates.
 
-export const ROLES = ['manager', 'architect', 'coder', 'ui-coder', 'all-rounder', 'reviewer', 'tester', 'debugger', 'researcher'] as const;
+export const ROLES = ['manager', 'architect', 'coder', 'ui-coder', 'all-rounder', 'reviewer', 'tester', 'debugger', 'researcher', 'verifier'] as const;
 export type Role = (typeof ROLES)[number];
 
 export const TASK_STATUSES = [
@@ -21,6 +21,10 @@ export const TASK_STATUSES = [
   'pr_open', // a draft PR from before the merge gate: the sweep notices when I merge it
   'awaiting_merge_approval', // the PR is open: approving merges it
   'merging',
+  'awaiting_deploy_approval', // merged; repos whose staging serves real users wait for my "Deploy now"
+  'deploying', // the office runs the repo's staging deploy command
+  'checking', // the verifier checks staging for real, read-only
+  'check_failed', // the staging check failed: roll back or keep it (a fix task is on it)
   'retro', // manager writes retro.md after done
   // PR review tasks
   'reviewing_pr', // reviewer drafts a review of someone's PR
@@ -48,6 +52,7 @@ export const AGENT_STEPS: Record<string, Role> = {
   testing: 'tester',
   retro: 'manager',
   reviewing_pr: 'reviewer',
+  checking: 'verifier',
 };
 
 export function isAgentStep(status: TaskStatus): boolean {
@@ -96,7 +101,7 @@ export function isSolo(task: { lane?: Lane | null }): boolean {
 export const MERGE_METHODS = ['squash', 'merge', 'rebase'] as const;
 export type MergeMethod = (typeof MERGE_METHODS)[number];
 
-export type GateKind = 'plan' | 'push' | 'merge' | 'command' | 'review_post' | 'question' | 'breakdown';
+export type GateKind = 'plan' | 'push' | 'merge' | 'deploy' | 'rollback' | 'command' | 'review_post' | 'question' | 'breakdown';
 export type GateStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 export type GateDecision = 'approve' | 'reject' | 'allow_once' | 'allow_always' | 'deny';
 
@@ -116,6 +121,8 @@ export function boardColumn(status: TaskStatus): string {
     case 'awaiting_breakdown_approval':
     case 'awaiting_push_approval':
     case 'awaiting_merge_approval':
+    case 'awaiting_deploy_approval':
+    case 'check_failed':
     case 'awaiting_review_post':
     case 'blocked':
     case 'paused':
@@ -127,6 +134,8 @@ export function boardColumn(status: TaskStatus): string {
     case 'testing':
     case 'pushing':
     case 'merging':
+    case 'deploying':
+    case 'checking':
     case 'reviewing_pr':
     case 'posting_review':
       return 'Review/Test';

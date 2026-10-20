@@ -116,11 +116,11 @@ export function reviewPostSummary(doc: string): string {
 
 export type Verdict = 'pass' | 'fail' | 'partial';
 
-export type CheckStage = 'build' | 'pr' | 'deployed';
+export type CheckStage = 'build' | 'pr' | 'staging' | 'deployed';
 
 const VERDICT_ICON: Record<Verdict, string> = { pass: ':white_check_mark:', fail: ':x:', partial: ':warning:' };
 const VERDICT_WORD: Record<Verdict, string> = { pass: 'passed', fail: 'failed', partial: 'partly done' };
-const STAGE_NAME: Record<CheckStage, string> = { build: 'Live check', pr: 'PR re-check', deployed: 'Production check' };
+const STAGE_NAME: Record<CheckStage, string> = { build: 'Live check', pr: 'PR re-check', staging: 'Staging check', deployed: 'Production check' };
 
 /** The thread message for a report from the desktop verifier, which runs what the office's agents can't. */
 export function verificationText(verdict: Verdict, report: string, stage: CheckStage = 'build', sha?: string): string {
@@ -170,6 +170,10 @@ const STEP_LABEL: Partial<Record<TaskStatus, string>> = {
   pr_open: ':rocket: Draft PR open',
   awaiting_merge_approval: ':raised_hand: PR open: needs your OK to merge',
   merging: ':twisted_rightwards_arrows: Merging',
+  awaiting_deploy_approval: ':raised_hand: Merged: needs your OK to deploy to staging',
+  deploying: ':rocket: Deploying to staging',
+  checking: ':mag: Checking staging',
+  check_failed: ':x: Staging check failed',
   retro: ':thought_balloon: Wrapping up',
   reviewing_pr: ':eyes: Reviewing the PR',
   awaiting_review_post: ':raised_hand: Needs your OK to post the review',

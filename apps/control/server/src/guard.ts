@@ -17,6 +17,11 @@ export interface GuardContext {
   allowlist: string[];
   /** realpaths of extra folders this run may read (never write): the task's attachments. */
   readRoots?: string[];
+  /**
+   * The staging check: commands only look. Cloud CLIs may read (logs, describe, list), nothing may
+   * change or send anything, and nothing waits for me: what would ask is refused instead.
+   */
+  lookOnly?: boolean;
 }
 
 export type GuardDecision =
@@ -327,11 +332,19 @@ export function checkCommand(ctx: GuardContext, command: string): GuardDecision 
     const path = shellPathProblem(ctx, bare, cwd);
     if (path?.decision === 'deny') return deny(path.reason);
     if (path?.decision === 'ask') {
+      if (ctx.lookOnly) return deny(path.reason);
       unmatched.push(bare);
       continue;
     }
-    if (!matchesAllowlist(bare, ctx.allowlist)) unmatched.push(bare);
+    if (matchesAllowlist(bare, ctx.allowlist)) continue;
+    if (ctx.lookOnly) {
+      const why = lookOnlyCommand(bare);
+      if (why) return deny(why);
+      continue;
+    }
+    unmatched.push(bare);
   }
+  if (unmatched.length && ctx.lookOnly) return deny(`not allowed in a check: ${unmatched.join(' ; ')}`);
   if (unmatched.length) {
     return { decision: 'ask', reason: `not on the allow-list: ${unmatched.join(' ; ')}`, subject: command.trim(), unmatched };
   }
@@ -424,4 +437,41 @@ export function checkToolCall(ctx: GuardContext, tool: string, input: Record<str
       if (tool.startsWith('mcp__graphify__') && GRAPH_TOOLS.includes(tool.slice('mcp__graphify__'.length))) return allow();
       return deny(`tool ${tool} is not available to office agents`);
   }
+}
+
+// ---------------------------------------------------------------- the staging check (look only)
+
+/** Verbs that only look. */
+const READ_VERBS = new Set(['read', 'describe', 'list', 'get', 'logs', 'log', 'tail', 'ls', 'inspect', 'show', 'status', 'view', 'whoami', 'info']);
+/** Verbs that change or send something, or reveal secrets and tokens. Any of these refuses the command. */
+const WRITE_VERBS = new Set([
+  'deploy', 'delete', 'update', 'create', 'set', 'add', 'remove', 'replace', 'patch', 'import', 'export', 'enable', 'disable',
+  'rollback', 'rollout', 'start', 'stop', 'restart', 'cancel', 'call', 'invoke', 'publish', 'login', 'logout', 'revoke', 'apply',
+  'submit', 'exec', 'ssh', 'scp', 'cp', 'mv', 'rm', 'promote', 'alias', 'redeploy', 'env', 'secrets', 'access', 'send', 'post', 'write', 'move',
+  'print-access-token', 'print-identity-token', 'token',
+  'set-iam-policy', 'add-iam-policy-binding', 'remove-iam-policy-binding', 'update-traffic', 'functions:delete', 'functions:shell', 'hosting:disable',
+]);
+const CLOUD_LOOKERS = new Set(['gcloud', 'firebase', 'vercel', 'kubectl', 'aws', 'gh', 'bq', 'gsutil']);
+
+/**
+ * Why the verifier may not run a command, or null when it may. Most commands run (reading files, jq,
+ * the repo's tests). A command the office counts as crucial (cloud CLIs, curl that sends data, remote
+ * shells, database clients) runs only when it is a cloud CLI that just looks (logs, describe, list).
+ */
+export function lookOnlyCommand(command: string): string | null {
+  const crucial = crucialCommand(command);
+  if (!crucial) return null;
+  for (const segment of splitCommand(command)) {
+    const tokens = (segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []).map((t) => t.replace(/^["']|["']$/g, ''));
+    while (tokens.length && /^\w+=/.test(tokens[0]!)) tokens.shift();
+    const tool = (tokens[0] ?? '').split('/').pop()!;
+    if (!crucialCommand(segment)) continue;
+    if (!CLOUD_LOOKERS.has(tool)) return `${crucial}; a check may only look`;
+    const words = tokens.slice(1).filter((t) => !t.startsWith('-')).map((t) => t.toLowerCase());
+    const verbs = words.flatMap((w) => [w, ...w.split(':')]);
+    const write = verbs.find((w) => WRITE_VERBS.has(w));
+    if (write) return `${tool} ${write} changes, sends or reveals something; a check may only look`;
+    if (!verbs.some((w) => READ_VERBS.has(w))) return `${tool}: only reading commands (logs, describe, list) are allowed in a check`;
+  }
+  return null;
 }

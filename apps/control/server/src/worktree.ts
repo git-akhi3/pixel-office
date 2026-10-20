@@ -80,6 +80,22 @@ export async function createReviewWorktree(
 
 export const reviewRef = (taskId: number) => `refs/office/pr/${taskId}`;
 
+/**
+ * A detached checkout of the default branch as it is after my merge, for the staging deploy and the
+ * check. The repo's setup command runs in it, as in a task's worktree.
+ */
+export async function createDeployWorktree(repo: Repo, worktreesDir: string, taskId: number): Promise<{ path: string; sha: string }> {
+  const path = join(worktreesDir, `${taskId}-deploy`);
+  if (existsSync(path)) await git(repo.path, ['worktree', 'remove', '--force', path]);
+  // The merge happened on GitHub: fetch it. Without a remote (tests), the local branch is all there is.
+  await run('git', ['fetch', '--quiet', 'origin', repo.defaultBranch], { cwd: repo.path, timeoutMs: 120_000 });
+  const remoteRef = `origin/${repo.defaultBranch}`;
+  const hasRemote = (await run('git', ['rev-parse', '--verify', '--quiet', remoteRef], { cwd: repo.path })).code === 0;
+  await git(repo.path, ['worktree', 'add', '--detach', path, hasRemote ? remoteRef : repo.defaultBranch]);
+  await runSetup(repo, path);
+  return { path: realpathSync(path), sha: (await git(path, ['rev-parse', 'HEAD'])).trim() };
+}
+
 async function runSetup(repo: Repo, path: string): Promise<void> {
   if (repo.setupCmd) {
     // Configured by me, run by the office: not subject to the agent guard.

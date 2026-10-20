@@ -369,3 +369,35 @@ describe('crucialCommand', () => {
     ]) expect(crucialCommand(c), c).not.toBeNull();
   });
 });
+
+describe('the staging check (look only)', () => {
+  const look = () => ({ ...ctx('none'), allowlist: [...BASE_ALLOWLIST], lookOnly: true });
+  const decide = (command: string) => checkCommand(look(), command).decision;
+
+  it('lets cloud CLIs read: logs, describe, list', () => {
+    for (const c of [
+      `gcloud logging read 'resource.type="cloud_run_revision"' --project=pos-staging-0 --freshness=1h`,
+      'gcloud run services describe item-search-api --region us-central1',
+      'gcloud functions logs read watiRelay --limit 50',
+      'firebase functions:log --only wati-relay',
+      'vercel logs https://app.example.com',
+      'curl -s https://staging.example.com/health',
+      'jq .status out.json',
+    ]) expect(decide(c), c).toBe('allow');
+  });
+
+  it('refuses anything that changes, sends or reveals, and never asks me', () => {
+    for (const c of [
+      'gcloud run deploy item-search-api --source .',
+      'gcloud run services update-traffic api --to-latest',
+      'gcloud functions call watiRelay --data {}',
+      'gcloud secrets versions access latest --secret=WATI_TOKEN',
+      'gcloud auth print-identity-token',
+      'firebase deploy --only functions:wati-relay',
+      'curl -X POST https://staging.example.com/wati -d @msg.json',
+      'curl -s https://staging.example.com/health?x=$(cat ../../env)',
+      'cat /etc/hosts',
+      'ssh pos-staging-0',
+    ]) expect(decide(c), c).toBe('deny');
+  });
+});

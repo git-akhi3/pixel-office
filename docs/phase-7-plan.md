@@ -77,32 +77,26 @@ Built 2026-10-20.
 
 ## Step 3: shipping (merge, staging deploy, live check, rollback, logins)
 
-- **Data:** a `repos.ship` JSON column (next migration, 0009):
-  - `staging`: `deployCmd`, `cwd`, `account`, `project`, `confirm` (the second tap), `healthUrls`, `logsCmd`, `rollbackCmd`.
-  - Edited under Repos → Edit.
-  - wati-relay: `project: pos-staging-0`, `confirm: true`, log-only checks.
-- **Statuses:** `awaiting_merge_approval` (the merge gate, from step 1) → `merging` → (`awaiting_deploy` when `confirm`) → `deploying` → `checking` → `retro`/`done`. A failure goes to `blocked`, with Roll back and the report.
-- **Merge:** `Publisher.merge(repo, prUrl, method)` uses `gh pr merge` with the repo's gh account and deletes the branch. Branch protection and required checks still apply on GitHub.
-- **Deploy:**
-  - The office runs `deployCmd` itself, not an agent, in a fresh worktree at the merge commit.
-  - The commands use the Mac's existing logins, with the account and project pinned: `CLOUDSDK_CORE_ACCOUNT`, `CLOUDSDK_CORE_PROJECT`, and `--project` where the CLI takes it. A command naming a project other than the repo's own is refused.
-  - Output goes to the task's events. On failure, the tail is posted in Slack.
-- **Live check:** a new role `verifier` (Hawkeye), on Sonnet 5.5 at high effort.
-  - It runs right after the deploy and reads the health URLs, logs and service state.
-  - The `office-verifier` skill (`~/.claude/skills/office-verifier/SKILL.md`) is imported as its playbook, minus the parts about plan approval and scheduling.
-  - Guard: its own read-only allow-list of cloud CLI verbs (`gcloud logging read`, `… describe`, `… list`, and GET requests to the health URLs). Anything that writes or sends is denied, not asked: `crucialCommand` treats data-sending curl as a hard deny for this role.
-  - It reports with the existing verification format (stage `staging`) as `verify.md` and in the thread.
-- **Failure:**
-  - The report goes in the thread, with a Roll back button. The office runs `rollbackCmd`, for example by moving traffic back to the previous Cloud Run revision.
-  - A follow-up solo task "Fix: <failure>" is created with the report as its input.
-- **Logins:**
-  - When deploy or check output matches a CLI's auth-expired patterns, the office runs that CLI's sign-in-on-another-device flow in a pseudo-terminal: `gh auth login` with its device code, `gcloud auth login --no-launch-browser`, `firebase login --no-localhost`.
-  - It posts the link and any code in the owner's DM, takes a pasted code back from the owner only, then retries once.
-  - The password is entered only on the provider's own page.
-- **Retire the verifier** once this step is verified on a real task:
-  - delete the desktop scheduled task `office-verifier`;
-  - keep `POST /api/tasks/:id/verification` for manual reports;
-  - update `docs/status.md`.
+Built 2026-10-20.
+
+- **Data:** a `repos.ship` JSON column (migration 0009), edited under Repos → Edit → Staging:
+  - `staging`: `deployCmd`, `cwd`, `project`, `account`, `confirm` (the second tap), `healthUrls`, `checkNotes`, `rollbackCmd`.
+  - No staging section: approving a PR only merges it, as in step 1.
+- **Statuses:** `awaiting_merge_approval` → `merging` → (`awaiting_deploy_approval` when `confirm`) → `deploying` → `checking` → `retro`/`done`. A failed check goes to `check_failed` (gate `rollback`) or straight to the retrospective when the repo has no rollback command.
+- **Deploy** (`deploy()` in pipeline.ts, `ship.ts`):
+  - The office runs `deployCmd` itself, not an agent, in a fresh detached checkout of the merged default branch (`<id>-deploy`, with the repo's setup command).
+  - It uses my own CLI logins with `CLOUDSDK_CORE_PROJECT`, `GOOGLE_CLOUD_PROJECT` and `CLOUDSDK_CORE_ACCOUNT` pinned. A command naming another `--project` is refused.
+  - The last 60 lines of output are kept as `deploy.md`. A failure blocks the task with the reason; resuming deploys again, except on a `confirm` repo, which asks for the tap again.
+  - A PR I merge on GitHub myself ships the same way.
+- **Live check:** the new role `verifier` (Hawkeye; Sonnet 5.5, high effort; Read/Grep/Glob/Bash, no writes) runs in the deploy checkout with the project pinned.
+  - Its guard is `lookOnly` (`lookOnlyCommand` in guard.ts). Ordinary commands and cloud CLIs that only read (logs, describe, list) run. Anything that changes, sends or reveals is refused, never asked: deploy, update, call, `curl -d`/`-X POST`, `secrets … access`, `print-*-token`, reads outside the checkout.
+  - It reports `verify.md` (stage `staging`), which is posted in the thread.
+- **Failure:** a solo follow-up task "Fix staging: …" gets the report. With a `rollbackCmd`, the task waits on **Roll back** or **Keep it**.
+- **Logins, simplified for now:** when a deploy fails on an expired login (gcloud, firebase, vercel, gh), the block note names the command to run on the Mac, e.g. `firebase login --reauth`; then resume. The sign-in-on-another-device relay through Slack waits for Fury (step 4), who can run it and pass the code.
+- **Verifier skill:** it now also handles merge gates. The desktop scheduled task `office-verifier` is deleted once this is merged into the office you run (until then the running office still relies on it).
+- **Not done yet:** the item-search and wati-relay staging settings go into the live office's database after the merge:
+  - item-search: `bash deploy/deploy-environment.sh staging` on project `zobaze-poc-akhil`.
+  - wati-relay: `npm run deploy:staging` in `point-of-sale/wati-relay`, project `pos-staging-0`, with `confirm` on, log-only checks and no messages ever.
 
 ## Step 4: Fury at the desk (Slack in plain language)
 

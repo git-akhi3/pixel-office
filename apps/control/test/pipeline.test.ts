@@ -33,6 +33,8 @@ const docs = {
   reviewFail: '---\nverdict: fail\nblocking: 1\n---\n## Summary\nbug\n\n## Findings\n- [blocking] src/greet.ts:1 — wrong',
   testPass: '---\nresult: pass\ntests_added: 1\n---\n## Suite\nnpm test: 1 passed',
   testFail: '---\nresult: fail\ntests_added: 1\n---\n## Suite\nnpm test: 1 failed',
+  checkPass: '---\nverdict: pass\nstage: staging\n---\n## Checked\n- GET /health: 200\n\n## Not checked\n- nothing\n\n## Problems\n- none',
+  checkFail: '---\nverdict: fail\nstage: staging\n---\n## Checked\n- GET /health: 500\n\n## Not checked\n- nothing\n\n## Problems\n- /health returns 500 since the deploy',
   retro: '---\n---\n- **Went well:** fast\n- **Went wrong:** none\n- **Knowledge-file edit:** none',
   prReview:
     '---\nverdict: request_changes\n---\n## Summary\nAdds a feature; one bug.\n\n## Comments\n- [blocking] src/feature.ts:2 — returns the wrong value\n- [nit] README.md:1 — unrelated line\n- [suggestion] src/feature.ts:1 — rename',
@@ -41,7 +43,19 @@ const docs = {
 type Script = (req: RunRequest) => Promise<Partial<RunOutcome> & { text?: string }> | (Partial<RunOutcome> & { text?: string });
 
 class FakeRunner implements AgentRunner {
-  calls: Array<{ step: string; role: string; prompt: string; model?: string; effort?: string; skills: string[]; readRoots?: string[]; resume?: { sessionId: string; prompt: string } }> = [];
+  calls: Array<{
+    step: string;
+    role: string;
+    prompt: string;
+    model?: string;
+    effort?: string;
+    skills: string[];
+    readRoots?: string[];
+    resume?: { sessionId: string; prompt: string };
+    lookOnly?: boolean;
+    env?: Record<string, string>;
+    cwd?: string;
+  }> = [];
   active = 0;
   maxActive = 0;
   overrides: Partial<Record<string, Script[]>> = {};
@@ -58,7 +72,7 @@ class FakeRunner implements AgentRunner {
 
   async run(req: RunRequest): Promise<RunOutcome> {
     const step = this.stepOf(req.taskId);
-    this.calls.push({ step, role: req.role, prompt: req.prompt, skills: req.agent.skills, model: req.agent.model, effort: req.agent.effort, readRoots: req.guard.readRoots, resume: req.resume });
+    this.calls.push({ step, role: req.role, prompt: req.prompt, skills: req.agent.skills, model: req.agent.model, effort: req.agent.effort, readRoots: req.guard.readRoots, resume: req.resume, lookOnly: req.guard.lookOnly, env: req.env, cwd: req.cwd });
     this.active++;
     this.maxActive = Math.max(this.maxActive, this.active);
     try {
@@ -90,6 +104,8 @@ class FakeRunner implements AgentRunner {
         return docs.retro;
       case 'reviewing_pr':
         return docs.prReview;
+      case 'checking':
+        return docs.checkPass;
       default:
         throw new Error(`no default for ${step}`);
     }
@@ -197,8 +213,15 @@ function makePipeline(): Pipeline {
     knowledge: new Knowledge(db, config.knowledgeDir),
     graphs: new Graphs(config.graphsDir),
     slugOf: async () => 'acme/app',
+    shell: async (command, opts) => {
+      shellCalls.push({ command, cwd: opts.cwd, project: opts.env.CLOUDSDK_CORE_PROJECT });
+      return shellResults.shift() ?? { code: 0, output: 'Deploy complete.' };
+    },
   });
 }
+
+let shellCalls: Array<{ command: string; cwd: string; project?: string }> = [];
+let shellResults: Array<{ code: number; output: string }> = [];
 
 beforeEach(async () => {
   home = realpathSync(mkdtempSync(join(tmpdir(), 'office-test-')));
@@ -213,6 +236,8 @@ beforeEach(async () => {
   repo = await createRepo(db, { name: 'app', path: repoPath, testCmd: 'npm test', gitAuthor: 'Office Test <office@test.dev>' });
   runner = new FakeRunner((id) => pipeline.getTask(id).status);
   publisher = new FakePublisher();
+  shellCalls = [];
+  shellResults = [];
   pipeline = makePipeline();
 });
 
@@ -1188,6 +1213,102 @@ describe('open PRs and merging', () => {
       expect(pipeline.getTask(b!.id).baseBranch).toBeNull();
       expect(statusOf(b!)).toBe('awaiting_merge_approval');
     });
+  });
+});
+
+// ---------------------------------------------------------------- staging
+
+describe('staging after the merge', () => {
+  const staging = (extra: Record<string, unknown> = {}) =>
+    db
+      .update(schema.repos)
+      .set({ ship: { staging: { deployCmd: 'npm run deploy:staging', cwd: 'src', project: 'pos-staging-0', healthUrls: ['https://staging.example.com/health'], ...extra } } })
+      .where(eq(schema.repos.id, repo.id))
+      .run();
+  const merged = async () => {
+    runner.queue('intake', () => ({ text: docs.task({ lane: 'solo' }) }));
+    const task = pipeline.createTask({ repoId: repo.id, input: 'Add a greeting helper' });
+    await settle();
+    await pipeline.decideGate(mergeGate(task).id, 'approve');
+    await settle();
+    return task;
+  };
+  const gateOf = (t: Task, kind: string) => pipeline.pendingGates(t.id).find((g) => g.kind === kind)!;
+
+  it('deploys to staging with my logins pinned to the project, then the verifier checks it, looking only', async () => {
+    staging();
+    const task = await merged();
+    expect(shellCalls).toEqual([{ command: 'npm run deploy:staging', cwd: expect.stringMatching(/1-deploy\/src$/), project: 'pos-staging-0' }]);
+    const check = runner.calls.find((c) => c.step === 'checking')!;
+    expect(check).toMatchObject({ role: 'verifier', lookOnly: true, env: { CLOUDSDK_CORE_PROJECT: 'pos-staging-0' } });
+    expect(check.cwd).toMatch(/1-deploy$/);
+    expect(check.prompt).toContain('https://staging.example.com/health');
+    expect(check.prompt).toContain('### deploy.md');
+    expect(eventsOf(task, 'verified')[0]!.payload).toMatchObject({ verdict: 'pass', stage: 'staging' });
+    expect(statusOf(task)).toBe('done');
+    expect(pipeline.getTask(task.id).worktreePath).toBeNull();
+  });
+
+  it('waits for my "Deploy now" when staging serves real users; "Not now" just finishes', async () => {
+    staging({ confirm: true });
+    const task = await merged();
+    expect(statusOf(task)).toBe('awaiting_deploy_approval');
+    expect(shellCalls).toEqual([]);
+    await pipeline.decideGate(gateOf(task, 'deploy').id, 'reject');
+    await settle();
+    expect(statusOf(task)).toBe('done');
+    expect(shellCalls).toEqual([]);
+
+    const second = await merged();
+    await pipeline.decideGate(gateOf(second, 'deploy').id, 'approve');
+    await settle();
+    expect(shellCalls).toHaveLength(1);
+    expect(statusOf(second)).toBe('done');
+  });
+
+  it('says which login to renew when the deploy fails on an expired one; resuming deploys again', async () => {
+    staging();
+    shellResults = [{ code: 1, output: 'Error: Failed to authenticate, have you run firebase login?' }];
+    const task = await merged();
+    expect(pipeline.getTask(task.id)).toMatchObject({ status: 'blocked', resumeStatus: 'deploying', statusNote: expect.stringContaining('firebase login --reauth') });
+    await pipeline.action(task.id, 'resume');
+    await settle();
+    expect(shellCalls).toHaveLength(2);
+    expect(statusOf(task)).toBe('done');
+  });
+
+  it('never resumes a confirm-first deploy without my tap', async () => {
+    staging({ confirm: true });
+    const task = await merged();
+    await pipeline.decideGate(gateOf(task, 'deploy').id, 'approve');
+    // (say the deploy was cut off by a restart)
+    db.update(schema.tasks).set({ status: 'paused', resumeStatus: 'deploying' }).where(eq(schema.tasks.id, task.id)).run();
+    const deploys = shellCalls.length;
+    await pipeline.action(task.id, 'resume');
+    expect(statusOf(task)).toBe('awaiting_deploy_approval');
+    expect(shellCalls.length).toBe(deploys);
+  });
+
+  it('refuses a deploy command that names another project', async () => {
+    staging({ deployCmd: 'firebase deploy --only functions --project zobaze-pos' });
+    const task = await merged();
+    expect(pipeline.getTask(task.id).statusNote).toContain('names project zobaze-pos');
+    expect(shellCalls).toEqual([]);
+  });
+
+  it('on a failed check: a fix task goes on it, and rolling back runs the repo\'s rollback', async () => {
+    staging({ rollbackCmd: 'gcloud run services update-traffic api --to-revisions=LATEST=0' });
+    runner.queue('checking', () => ({ text: docs.checkFail }));
+    const task = await merged();
+    expect(statusOf(task)).toBe('check_failed');
+    const fix = db.select().from(schema.tasks).all().find((t) => t.input.startsWith(`The staging check after #${task.id}`))!;
+    expect(fix.input).toContain('/health returns 500');
+    expect(fix.lane).toBe('solo');
+    await pipeline.decideGate(gateOf(task, 'rollback').id, 'approve');
+    expect(shellCalls.at(-1)!.command).toContain('update-traffic');
+    expect(eventsOf(task, 'rolled_back')).toHaveLength(1);
+    await settle();
+    expect(statusOf(task)).toBe('done');
   });
 });
 

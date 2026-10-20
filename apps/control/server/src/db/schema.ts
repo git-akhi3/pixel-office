@@ -5,6 +5,26 @@ const now = () => Date.now();
 
 export type SkillPicks = Partial<Record<Role, { skills: string[]; by: 'owner' | 'manager'; why?: string }>>;
 export type GrillMode = 'auto' | 'always' | 'never';
+/** How the office ships a repo after I approve a merge. No staging section: it only merges. */
+export interface ShipConfig {
+  staging?: {
+    /** Run by the office (not an agent) in a fresh checkout of the merged default branch, with my CLI logins. */
+    deployCmd: string;
+    /** Folder to run it in, relative to the repo root (e.g. point-of-sale/wati-relay). */
+    cwd?: string;
+    /** Cloud project and account the deploy and the check are pinned to (CLOUDSDK_CORE_PROJECT/ACCOUNT); a command naming another project is refused. */
+    project?: string;
+    account?: string;
+    /** Staging serves real users: deploying needs a second tap ("Deploy now"). */
+    confirm?: boolean;
+    /** What the verifier checks after the deploy: URLs it may GET, and notes (log queries, what must hold, what it must never do). */
+    healthUrls?: string[];
+    checkNotes?: string;
+    /** Puts the previous version back (e.g. move Cloud Run traffic to the last revision). Offered as a button when the check fails. */
+    rollbackCmd?: string;
+  };
+}
+
 export interface Attachment {
   name: string;
   size: number;
@@ -27,6 +47,8 @@ export const repos = sqliteTable('repos', {
   ghAccount: text('gh_account'),
   /** How the office merges this repo's PRs once I approve them. */
   mergeMethod: text('merge_method').$type<MergeMethod>().notNull().default('squash'),
+  /** Deploying to staging after the merge, and checking it (see ShipConfig). */
+  ship: text('ship', { mode: 'json' }).$type<ShipConfig>().notNull().default({}),
   gitAuthor: text('git_author'), // "Name <email>" used for office commits when the repo has none
   allowlist: text('allowlist', { mode: 'json' }).$type<string[]>().notNull().default([]),
   /** Extra skills per role for this repo only, e.g. { coder: ["fastify-conventions"] }. */

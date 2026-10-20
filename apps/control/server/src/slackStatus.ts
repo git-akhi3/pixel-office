@@ -71,6 +71,10 @@ export function waitingOnYou(task: Task, gates: Gate[]): string | null {
       return 'approve or reject the push (opens the PR)';
     case 'awaiting_merge_approval':
       return 'merge the PR, or send it back with what to change';
+    case 'awaiting_deploy_approval':
+      return 'deploy it to staging, or not now';
+    case 'check_failed':
+      return 'roll staging back, or keep it (a fix task is on it)';
     case 'awaiting_review_post':
       return 'edit and post the draft review';
     case 'blocked':

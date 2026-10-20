@@ -1,0 +1,1 @@
+ALTER TABLE `repos` ADD `ship` text DEFAULT '{}' NOT NULL;
