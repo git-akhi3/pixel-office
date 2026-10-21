@@ -93,12 +93,17 @@ export class SlackLink {
     } catch (e) {
       this.failures++;
       // Every attempt while it's brief, then every fifth, so a long outage doesn't flood the log.
-      if (this.failures <= 3 || this.failures % 5 === 0) this.log(`Slack: still offline (attempt ${this.failures}): ${(e as Error).message}`);
+      if (this.failures <= 3 || this.failures % 5 === 0) this.log(`Slack: still offline (attempt ${this.failures}): ${errorMessage(e)}`);
     } finally {
       this.connecting = false;
     }
     if (!this.up) this.retryLater();
   }
+}
+
+/** The message of whatever was thrown; the Slack SDK sometimes rejects with nothing at all. */
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : e === undefined || e === null ? 'no error given' : String(e);
 }
 
 /**
@@ -119,10 +124,10 @@ export async function untilConnected<T>(
     } catch (e) {
       // A wrong token or ID won't fix itself: say so once instead of retrying forever.
       if (opts.fatal?.(e)) {
-        (opts.log ?? console.warn)(`Slack is off: ${(e as Error).message}`);
+        (opts.log ?? console.warn)(`Slack is off: ${errorMessage(e)}`);
         return null;
       }
-      if (failures < 3 || failures % 5 === 4) (opts.log ?? console.warn)(`Slack: can't connect yet (attempt ${failures + 1}): ${(e as Error).message}`);
+      if (failures < 3 || failures % 5 === 4) (opts.log ?? console.warn)(`Slack: can't connect yet (attempt ${failures + 1}): ${errorMessage(e)}`);
       await sleep(Math.min(FIRST_RETRY_MS * 2 ** failures, MAX_RETRY_MS));
     }
   }

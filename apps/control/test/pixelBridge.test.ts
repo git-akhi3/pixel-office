@@ -67,30 +67,57 @@ beforeEach(() => {
 describe('pixel bridge', () => {
   it('announces once (confirmed without the done chime), closes a stale turn, then shows steps as residents', async () => {
     pixelRunning();
+    // A crashed run left a tool_use open in the transcript.
+    mkdirSync(join(projectsRoot, projectDirName(WORKSPACE)), { recursive: true });
+    writeFileSync(transcript(), JSON.stringify({ type: 'assistant', message: { content: [] } }) + '\n');
     await bridge.enqueue('step_start', { role: 'coder' }, 3, 10);
-    // SessionStart + PostToolUse adopt it; then the stale turn a crashed run may have left is closed.
+    // SessionStart + PostToolUse adopt it; then the stale turn the crashed run left is closed.
     expect(hooks()).toEqual(['SessionStart', 'PostToolUse', 'Stop']);
     expect(posts[0]!.url).toBe('http://127.0.0.1:3100/api/hooks/claude');
     expect(posts[0]!.auth).toBe('Bearer secret-token');
     expect(posts[0]!.body).toMatchObject({ session_id: SESSION, cwd: WORKSPACE, transcript_path: transcript() });
-    expect(toolUses()[0]).toMatchObject({
+    expect(toolUses().at(-1)).toMatchObject({
       message: { content: [{ type: 'tool_use', id: 'toolu_office_10', name: 'Agent', input: { subagent_type: 'coder', description: '#3 Add greeting' } }] },
     });
   });
 
-  it('announces at startup, closing a stale turn before any task event', async () => {
+  it('announces at startup without a chime when the last turn was closed cleanly', async () => {
     pixelRunning();
     await bridge.enqueue('startup', {}, 0, null);
-    expect(hooks()).toEqual(['SessionStart', 'PostToolUse', 'Stop']);
-    expect(records().map((r) => r.type)).toEqual(['system']);
+    expect(hooks()).toEqual(['SessionStart', 'PostToolUse']);
+    expect(records()).toEqual([]);
   });
 
-  it('goes idle in both places when the last step ends: transcript turn end and a Stop hook', async () => {
+  it('announces at startup and closes a turn a crash left open', async () => {
+    pixelRunning();
+    mkdirSync(join(projectsRoot, projectDirName(WORKSPACE)), { recursive: true });
+    writeFileSync(transcript(), JSON.stringify({ type: 'assistant', message: { content: [] } }) + '\n');
+    await bridge.enqueue('startup', {}, 0, null);
+    expect(hooks()).toEqual(['SessionStart', 'PostToolUse', 'Stop']);
+    expect(records().map((r) => r.type)).toEqual(['assistant', 'system']);
+  });
+
+  it('closes the turn quietly when the last step ends, and chimes only when the mission finishes', async () => {
     pixelRunning();
     await bridge.enqueue('step_start', { role: 'coder' }, 3, 10);
     posts = [];
     await bridge.enqueue('step_end', { role: 'coder', status: 'ok' }, 3, 10);
     expect(records().slice(-2).map((r) => r.type)).toEqual(['user', 'system']);
+    expect(hooks()).toEqual([]); // no Stop: no chime between steps
+    await bridge.enqueue('task_finished', {}, 3, null);
+    expect(hooks()).toEqual(['Stop']);
+  });
+
+  it('notices a mission finishing from the task bus and plays the chime once', async () => {
+    pixelRunning();
+    const listeners: Array<(msg: unknown) => void> = [];
+    const bus = { subscribe: (l: (msg: unknown) => void) => (listeners.push(l), () => {}) } as unknown as Parameters<typeof bridge.start>[0];
+    bridge.start(bus);
+    await bridge.enqueue('step_start', { role: 'coder' }, 3, 10);
+    await bridge.enqueue('step_end', { role: 'coder' }, 3, 10);
+    posts = [];
+    for (const status of ['coding', 'reviewing', 'done', 'done']) listeners[0]!({ type: 'task', task: { id: 3, status } });
+    await bridge.enqueue('startup', {}, 0, null); // drains the queue behind the task events
     expect(hooks()).toEqual(['Stop']);
   });
 
@@ -137,12 +164,13 @@ describe('pixel bridge', () => {
     expect(hooks().slice(0, 2)).toEqual(['SessionStart', 'PostToolUse']);
   });
 
-  it('shows the waiting bubble for a gate and clears it after the decision when idle', async () => {
+  it('shows the waiting bubble for a gate; the decision itself makes no sound', async () => {
     pixelRunning();
     await bridge.enqueue('gate', { kind: 'plan', status: 'pending' }, 3, null);
     expect(posts.at(-1)!.body).toMatchObject({ hook_event_name: 'Notification', notification_type: 'permission_prompt' });
+    posts = [];
     await bridge.enqueue('gate_decided', { kind: 'plan', decision: 'approve' }, 3, null);
-    expect(hooks().at(-1)).toBe('Stop');
+    expect(hooks()).toEqual([]);
   });
 
   it('puts the architect at the designer desk in layouts without an architect', async () => {

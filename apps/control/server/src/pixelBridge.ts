@@ -15,7 +15,11 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statS
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Task } from './db/schema.js';
+import type { TaskStatus } from './domain.js';
 import type { EventBus } from './events.js';
+
+/** Statuses at which a mission is over for the office: the one moment the done chime plays. */
+const FINISHED: ReadonlySet<TaskStatus> = new Set<TaskStatus>(['done', 'failed', 'blocked', 'stopped', 'discarded']);
 
 export interface PixelServer {
   port: number;
@@ -64,6 +68,8 @@ export class PixelBridge {
   private staleTurn = true;
   /** runId → tool_use id of steps currently shown as working. */
   private active = new Map<number, string>();
+  /** Last status seen per task, to notice the moment a mission finishes. */
+  private statuses = new Map<number, TaskStatus>();
   /** Events are handled one at a time, in order (announce, then tool_use before tool_result). */
   private queue: Promise<void> = Promise.resolve();
   private unsubscribe?: () => void;
@@ -81,6 +87,12 @@ export class PixelBridge {
 
   start(bus: EventBus): void {
     this.unsubscribe = bus.subscribe((msg) => {
+      if (msg.type === 'task') {
+        const prev = this.statuses.get(msg.task.id);
+        this.statuses.set(msg.task.id, msg.task.status);
+        if (prev !== msg.task.status && FINISHED.has(msg.task.status)) void this.enqueue('task_finished', {}, msg.task.id, null);
+        return;
+      }
       if (msg.type !== 'event' || msg.event.taskId === null) return;
       const { type, payload, runId, taskId } = msg.event;
       void this.enqueue(type, payload, taskId, runId);
@@ -189,10 +201,24 @@ export class PixelBridge {
     appendFileSync(path, JSON.stringify({ sessionId: this._sessionId, uuid: randomUUID(), timestamp: new Date().toISOString(), ...record }) + '\n');
   }
 
-  /** Ends the current turn in both places Pixel Agents may look: transcript and Stop hook. */
+  /** Ends the current turn in both places Pixel Agents may look: transcript and Stop hook (the done chime). */
   private async endTurn(server: PixelServer): Promise<void> {
     this.append({ type: 'system', subtype: 'turn_duration', durationMs: 0 });
     await this.hook(server, { hook_event_name: 'Stop' });
+  }
+
+  /** Whether the transcript already ends on a closed turn (so a restart need not close one again). */
+  private turnClosed(): boolean {
+    const path = this.transcriptPath();
+    if (!path || !existsSync(path)) return true;
+    const last = readFileSync(path, 'utf8').trim().split('\n').pop();
+    if (!last) return true;
+    try {
+      const r = JSON.parse(last) as { type?: string; subtype?: string };
+      return r.type === 'system' && r.subtype === 'turn_duration';
+    } catch {
+      return false;
+    }
   }
 
   /** Starts a fresh transcript under a new session id once the current one is too big. */
@@ -232,13 +258,14 @@ export class PixelBridge {
     // Close anything a crashed run of the control server left "working".
     if (this.staleTurn) {
       this.staleTurn = false;
-      if (!this.active.size) await this.endTurn(server);
+      // Only a turn a crash left open gets closed (with its chime); a clean restart stays quiet.
+      if (!this.active.size && !this.turnClosed()) await this.endTurn(server);
     }
     return true;
   }
 
   async onEvent(type: string, payload: Record<string, unknown>, taskId: number, runId: number | null): Promise<void> {
-    if (!['startup', 'step_start', 'step_end', 'gate', 'gate_decided'].includes(type)) return;
+    if (!['startup', 'step_start', 'step_end', 'gate', 'task_finished'].includes(type)) return;
     const server = this.server();
     if (!server) {
       this.announcedTo = null;
@@ -277,7 +304,9 @@ export class PixelBridge {
             message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolId, content: String(payload.status ?? 'done') }] },
           });
         }
-        if (!this.active.size) await this.endTurn(server); // nothing else running: everyone idles
+        // Nothing else running: the transcript's turn closes quietly. The Stop hook (and its chime)
+        // waits for the mission to finish.
+        if (!this.active.size) this.append({ type: 'system', subtype: 'turn_duration', durationMs: 0 });
         return;
       }
       case 'gate':
@@ -285,7 +314,7 @@ export class PixelBridge {
           await this.hook(server, { hook_event_name: 'Notification', notification_type: 'permission_prompt', message: `#${taskId} needs you` });
         }
         return;
-      case 'gate_decided':
+      case 'task_finished':
         if (!this.active.size) await this.hook(server, { hook_event_name: 'Stop' });
         return;
     }
